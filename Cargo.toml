@@ -1,0 +1,18 @@
+[package]
+name = "tinyplayer"
+version = "0.1.0"
+edition = "2024"
+description = "A fast, small, cross-platform video player built on libmpv"
+
+[dependencies]
+eframe = { version = "0.37.0", default-features = false, features = ["glow", "default_fonts"] }
+libloading = "0.9.0"
+rfd = "0.17.2"
+rusqlite = { version = "0.41.1", features = ["bundled"] }
+
+[profile.release]
+opt-level = 3
+lto = true
+codegen-units = 1
+panic = "abort"
+strip = true

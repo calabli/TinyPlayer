@@ -1,0 +1,4 @@
+/target
+# libmpv binaries are large; fetch them with scripts or copy them in locally
+/third_party/mpv/windows/*.dll
+/third_party/mpv/macos/*.dylib

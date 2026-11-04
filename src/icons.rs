@@ -1,0 +1,122 @@
+//! Vector icons drawn with egui shapes — no icon font, no image assets.
+
+use eframe::egui::{Color32, Painter, Pos2, Shape, Stroke, pos2, vec2};
+
+#[derive(Clone, Copy, PartialEq)]
+pub enum Icon {
+    Play,
+    Pause,
+    Prev,
+    Next,
+    Volume,
+    Muted,
+    Fullscreen,
+    ExitFullscreen,
+    Drop,
+    Settings,
+}
+
+/// Draws `icon` centered at `c`, fitting in a `s`×`s` box.
+pub fn draw(p: &Painter, icon: Icon, c: Pos2, s: f32, color: Color32) {
+    let h = s / 2.0;
+    let stroke = Stroke::new((s / 11.0).max(1.4), color);
+    match icon {
+        Icon::Play => {
+            let pts = vec![
+                pos2(c.x - h * 0.55, c.y - h * 0.75),
+                pos2(c.x + h * 0.75, c.y),
+                pos2(c.x - h * 0.55, c.y + h * 0.75),
+            ];
+            p.add(Shape::convex_polygon(pts, color, Stroke::NONE));
+        }
+        Icon::Pause => {
+            let w = h * 0.28;
+            for dx in [-h * 0.38, h * 0.38] {
+                let r = eframe::egui::Rect::from_center_size(pos2(c.x + dx, c.y), vec2(w, h * 1.5));
+                p.rect_filled(r, 1.0, color);
+            }
+        }
+        Icon::Prev | Icon::Next => {
+            let dir = if icon == Icon::Next { 1.0 } else { -1.0 };
+            let tri = vec![
+                pos2(c.x - dir * h * 0.6, c.y - h * 0.6),
+                pos2(c.x + dir * h * 0.45, c.y),
+                pos2(c.x - dir * h * 0.6, c.y + h * 0.6),
+            ];
+            p.add(Shape::convex_polygon(tri, color, Stroke::NONE));
+            let x = c.x + dir * h * 0.6;
+            p.line_segment([pos2(x, c.y - h * 0.6), pos2(x, c.y + h * 0.6)], stroke);
+        }
+        Icon::Volume | Icon::Muted => {
+            let body = vec![
+                pos2(c.x - h * 0.75, c.y - h * 0.28),
+                pos2(c.x - h * 0.4, c.y - h * 0.28),
+                pos2(c.x + h * 0.05, c.y - h * 0.68),
+                pos2(c.x + h * 0.05, c.y + h * 0.68),
+                pos2(c.x - h * 0.4, c.y + h * 0.28),
+                pos2(c.x - h * 0.75, c.y + h * 0.28),
+            ];
+            p.add(Shape::convex_polygon(body, color, Stroke::NONE));
+            if icon == Icon::Muted {
+                let (a, b) = (c.x + h * 0.32, c.x + h * 0.8);
+                p.line_segment([pos2(a, c.y - h * 0.24), pos2(b, c.y + h * 0.24)], stroke);
+                p.line_segment([pos2(a, c.y + h * 0.24), pos2(b, c.y - h * 0.24)], stroke);
+            } else {
+                arc(p, c + vec2(h * 0.05, 0.0), h * 0.4, stroke);
+                arc(p, c + vec2(h * 0.05, 0.0), h * 0.75, stroke);
+            }
+        }
+        Icon::Fullscreen | Icon::ExitFullscreen => {
+            let o = h * 0.75;
+            let l = h * 0.4;
+            let inward = icon == Icon::ExitFullscreen;
+            for (sx, sy) in [(-1.0, -1.0), (1.0, -1.0), (-1.0, 1.0), (1.0, 1.0)] {
+                let corner = pos2(c.x + sx * o, c.y + sy * o);
+                let (dx, dy) = if inward { (sx * l, sy * l) } else { (-sx * l, -sy * l) };
+                let origin = if inward { pos2(corner.x - dx, corner.y - dy) } else { corner };
+                p.line_segment([origin, pos2(origin.x + dx, origin.y)], stroke);
+                p.line_segment([origin, pos2(origin.x, origin.y + dy)], stroke);
+            }
+        }
+        Icon::Settings => {
+            // Gear: thick ring with six stubby teeth touching it.
+            let teeth = Stroke::new(stroke.width * 2.2, color);
+            for i in 0..6 {
+                let a = std::f32::consts::TAU * i as f32 / 6.0;
+                let (sn, cs) = a.sin_cos();
+                p.line_segment(
+                    [pos2(c.x + cs * h * 0.5, c.y + sn * h * 0.5), pos2(c.x + cs * h * 0.82, c.y + sn * h * 0.82)],
+                    teeth,
+                );
+            }
+            p.circle_stroke(c, h * 0.5, Stroke::new(stroke.width * 1.6, color));
+            p.circle_stroke(c, h * 0.18, stroke);
+        }
+        Icon::Drop => {
+            p.line_segment([pos2(c.x, c.y - h * 0.8), pos2(c.x, c.y + h * 0.2)], stroke);
+            p.line_segment([pos2(c.x - h * 0.4, c.y - h * 0.2), pos2(c.x, c.y + h * 0.2)], stroke);
+            p.line_segment([pos2(c.x + h * 0.4, c.y - h * 0.2), pos2(c.x, c.y + h * 0.2)], stroke);
+            p.line_segment([pos2(c.x - h * 0.7, c.y + h * 0.75), pos2(c.x + h * 0.7, c.y + h * 0.75)], stroke);
+        }
+    }
+}
+
+/// Right-facing sound-wave arc.
+fn arc(p: &Painter, c: Pos2, r: f32, stroke: Stroke) {
+    let pts: Vec<Pos2> = (0..=8)
+        .map(|i| {
+            let a = -0.85 + 1.7 * i as f32 / 8.0;
+            pos2(c.x + r * a.cos(), c.y + r * a.sin())
+        })
+        .collect();
+    p.add(Shape::line(pts, stroke));
+}
+
+/// Four corner brackets around `rect` — the "viewfinder" frame from the design.
+pub fn corner_brackets(p: &Painter, rect: eframe::egui::Rect, len: f32, stroke: Stroke) {
+    let (l, r, t, b) = (rect.left(), rect.right(), rect.top(), rect.bottom());
+    for (x, y, dx, dy) in [(l, t, len, len), (r, t, -len, len), (l, b, len, -len), (r, b, -len, -len)] {
+        p.line_segment([pos2(x, y), pos2(x + dx, y)], stroke);
+        p.line_segment([pos2(x, y), pos2(x, y + dy)], stroke);
+    }
+}
