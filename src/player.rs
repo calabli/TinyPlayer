@@ -182,12 +182,8 @@ impl Player {
         let _ = self.mpv.command(&["cycle", "sub"]);
     }
 
-    pub fn next(&self) {
-        let _ = self.mpv.command(&["playlist-next"]);
-    }
-
-    pub fn prev(&self) {
-        let _ = self.mpv.command(&["playlist-prev"]);
+    pub fn stop(&self) {
+        let _ = self.mpv.command(&["stop"]);
     }
 
     pub fn screenshot(&self) {

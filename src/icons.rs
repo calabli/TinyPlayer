@@ -14,6 +14,12 @@ pub enum Icon {
     ExitFullscreen,
     Drop,
     Settings,
+    List,
+    Shuffle,
+    Repeat,
+    RepeatOne,
+    Close,
+    Stop,
 }
 
 /// Draws `icon` centered at `c`, fitting in a `s`×`s` box.
@@ -91,6 +97,52 @@ pub fn draw(p: &Painter, icon: Icon, c: Pos2, s: f32, color: Color32) {
             }
             p.circle_stroke(c, h * 0.5, Stroke::new(stroke.width * 1.6, color));
             p.circle_stroke(c, h * 0.18, stroke);
+        }
+        Icon::List => {
+            for dy in [-0.5, 0.0, 0.5] {
+                let y = c.y + dy * h * 1.2;
+                p.circle_filled(pos2(c.x - h * 0.7, y), stroke.width * 0.75, color);
+                p.line_segment([pos2(c.x - h * 0.35, y), pos2(c.x + h * 0.8, y)], stroke);
+            }
+        }
+        Icon::Shuffle => {
+            let (l, r, t, b) = (c.x - h * 0.8, c.x + h * 0.55, c.y - h * 0.5, c.y + h * 0.5);
+            p.line_segment([pos2(l, b), pos2(r, t)], stroke);
+            p.line_segment([pos2(l, t), pos2(r, b)], stroke);
+            for y in [t, b] {
+                let tip = pos2(c.x + h * 0.85, y);
+                let pts = vec![tip, pos2(r - h * 0.05, y - h * 0.28), pos2(r - h * 0.05, y + h * 0.28)];
+                p.add(Shape::convex_polygon(pts, color, Stroke::NONE));
+            }
+        }
+        Icon::Repeat | Icon::RepeatOne => {
+            // Two half-loops with opposing arrowheads (the classic repeat glyph).
+            let (l, r, t, b) = (c.x - h * 0.8, c.x + h * 0.8, c.y - h * 0.45, c.y + h * 0.45);
+            p.add(Shape::line(vec![pos2(l, c.y + h * 0.1), pos2(l, t), pos2(r - h * 0.3, t)], stroke));
+            p.add(Shape::line(vec![pos2(r, c.y - h * 0.1), pos2(r, b), pos2(l + h * 0.3, b)], stroke));
+            let ah = h * 0.3;
+            p.add(Shape::convex_polygon(
+                vec![pos2(r, t), pos2(r - ah, t - ah), pos2(r - ah, t + ah)],
+                color,
+                Stroke::NONE,
+            ));
+            p.add(Shape::convex_polygon(
+                vec![pos2(l, b), pos2(l + ah, b - ah), pos2(l + ah, b + ah)],
+                color,
+                Stroke::NONE,
+            ));
+            if icon == Icon::RepeatOne {
+                p.text(c, eframe::egui::Align2::CENTER_CENTER, "1", eframe::egui::FontId::monospace(s * 0.5), color);
+            }
+        }
+        Icon::Stop => {
+            let r = eframe::egui::Rect::from_center_size(c, vec2(h * 1.1, h * 1.1));
+            p.rect_filled(r, 2.0, color);
+        }
+        Icon::Close => {
+            let d = h * 0.45;
+            p.line_segment([pos2(c.x - d, c.y - d), pos2(c.x + d, c.y + d)], stroke);
+            p.line_segment([pos2(c.x - d, c.y + d), pos2(c.x + d, c.y - d)], stroke);
         }
         Icon::Drop => {
             p.line_segment([pos2(c.x, c.y - h * 0.8), pos2(c.x, c.y + h * 0.2)], stroke);

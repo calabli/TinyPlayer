@@ -6,7 +6,7 @@ use eframe::egui::{self, Color32, FontData, FontDefinitions, FontFamily};
 
 pub const BG: Color32 = Color32::from_rgb(0x07, 0x09, 0x0C);
 pub const PANEL: Color32 = Color32::from_rgb(0x0D, 0x11, 0x17);
-pub const ACCENT: Color32 = Color32::from_rgb(0x5C, 0xE1, 0xE6);
+pub const ACCENT: Color32 = Color32::from_rgb(0x3D, 0x8E, 0xF0);
 pub const TEXT: Color32 = Color32::from_rgb(0xE6, 0xED, 0xF3);
 pub const TEXT_2: Color32 = Color32::from_rgb(0x8B, 0x94, 0x9E);
 pub const TEXT_3: Color32 = Color32::from_rgb(0x48, 0x4F, 0x58);
@@ -18,7 +18,7 @@ pub fn scrim(alpha: u8) -> Color32 {
 }
 
 pub fn accent_alpha(alpha: u8) -> Color32 {
-    Color32::from_rgba_unmultiplied(0x5C, 0xE1, 0xE6, alpha)
+    Color32::from_rgba_unmultiplied(0x3D, 0x8E, 0xF0, alpha)
 }
 
 pub fn apply(ctx: &egui::Context) {

@@ -5,6 +5,7 @@ mod history;
 mod icons;
 mod mpv;
 mod player;
+mod playlist;
 mod session;
 mod settings_panel;
 mod theme;

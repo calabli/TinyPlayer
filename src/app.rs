@@ -12,19 +12,19 @@ use crate::history::Entry;
 use crate::icons::{self, Icon};
 use crate::mpv::{Event, RenderContext};
 use crate::player::Player;
+use crate::playlist::{self, LoopMode, Playlist};
 use crate::session::{Resume, Tracker};
 use crate::settings_panel::{self, PanelState};
 use crate::theme::{self, ACCENT, LINE, TEXT, TEXT_2, TEXT_3};
 use crate::video::VideoTarget;
 
-const MEDIA_EXTS: &[&str] = &[
-    "mp4", "mkv", "webm", "mov", "avi", "flv", "wmv", "m4v", "ts", "m2ts", "mpg", "mpeg", "3gp",
-    "ogv", "rmvb", "mp3", "flac", "wav", "m4a", "aac", "ogg", "opus", "wma",
-];
 const HIDE_AFTER: f64 = 2.0;
 const OSD_SECS: f64 = 1.5;
 /// The "continue from…" prompt disappears after this long.
 const RESUME_PROMPT_SECS: f64 = 10.0;
+const SIDEBAR_W: f32 = 280.0;
+/// Height of the bottom control bar (seek line + button row).
+const BAR_H: f32 = 64.0;
 
 type ProcAddr = Arc<dyn Fn(&std::ffi::CStr) -> *const std::ffi::c_void + Send + Sync>;
 
@@ -48,6 +48,15 @@ pub struct App {
     panel: PanelState,
     recent: Vec<Entry>,
     recent_dirty: bool,
+    playlist: Playlist,
+    sidebar_open: bool,
+    /// Index of the playlist row being dragged.
+    drag_from: Option<usize>,
+    was_eof: bool,
+    side_rect: Rect,
+    side_scroll: f32,
+    scroll_to_current: bool,
+    speed_menu: bool,
 }
 
 impl App {
@@ -61,6 +70,8 @@ impl App {
             }
             Err(e) => (None, Some(e)),
         };
+        let tracker = Tracker::new();
+        let playlist = Playlist::new(tracker.settings.loop_mode, tracker.settings.shuffle);
         Self {
             render: None,
             video: None,
@@ -72,12 +83,20 @@ impl App {
             osd: None,
             seek_preview: None,
             shown_title: String::new(),
-            tracker: Tracker::new(),
+            tracker,
             resume_prompt: None,
             settings_open: false,
             panel: PanelState::default(),
             recent: Vec::new(),
             recent_dirty: true,
+            playlist,
+            sidebar_open: false,
+            drag_from: None,
+            was_eof: false,
+            side_rect: Rect::NOTHING,
+            side_scroll: 0.0,
+            scroll_to_current: false,
+            speed_menu: false,
         }
     }
 
@@ -113,7 +132,7 @@ impl App {
 
     fn open_dialog(&mut self) {
         if let Some(files) = rfd::FileDialog::new()
-            .add_filter("媒体文件", MEDIA_EXTS)
+            .add_filter("媒体文件", playlist::MEDIA_EXTS)
             .add_filter("所有文件", &["*"])
             .pick_files()
         {
@@ -154,6 +173,7 @@ impl App {
         let s = player.state.clone();
         let mut osd: Option<String> = None;
         let mut open_dialog = false;
+        let (mut want_next, mut want_prev, mut want_side) = (false, false, false);
 
         // The settings overlay is modal: only its own shortcuts apply.
         if keys.iter().any(|k| *k == Key::Comma) && cmd {
@@ -233,8 +253,9 @@ impl App {
                     player.cycle_subtitles();
                     osd = Some("SUBTITLE  NEXT".into());
                 }
-                Key::PageDown | Key::N => player.next(),
-                Key::PageUp | Key::P => player.prev(),
+                Key::PageDown | Key::N => want_next = true,
+                Key::PageUp | Key::P => want_prev = true,
+                Key::L => want_side = true,
                 Key::S if cmd => {
                     player.screenshot();
                     osd = Some("SCREENSHOT  → DESKTOP".into());
@@ -243,7 +264,12 @@ impl App {
             }
         }
 
-        if scroll != 0.0 && !s.idle {
+        // Over the sidebar the wheel scrolls the list instead of changing volume.
+        let over_side = self.sidebar_open
+            && ctx.input(|i| i.pointer.hover_pos()).is_some_and(|p| self.side_rect.contains(p));
+        if over_side {
+            self.side_scroll -= scroll;
+        } else if scroll != 0.0 && !s.idle {
             let v = s.volume + scroll.signum() as f64 * 5.0;
             player.set_volume(v);
             osd = Some(format!("VOLUME  {}%", v.clamp(0.0, 150.0).round()));
@@ -255,12 +281,81 @@ impl App {
         if open_dialog {
             self.open_dialog();
         }
+        if want_next {
+            self.play_next(ctx);
+        }
+        if want_prev {
+            self.play_prev(ctx);
+        }
+        if want_side {
+            self.toggle_sidebar();
+        }
     }
 
+    /// Replaces the queue with whatever was opened/dropped and starts playing.
     fn flush_open(&mut self) {
-        let Some(player) = &self.player else { return };
-        for (i, path) in self.pending_open.drain(..).enumerate() {
-            player.open(&path, i > 0);
+        if self.pending_open.is_empty() {
+            return;
+        }
+        let paths: Vec<String> = self.pending_open.drain(..).collect();
+        let fill = self.tracker.settings.fill_folder;
+        if let Some(i) = self.playlist.set_files(&paths, fill) {
+            self.play_index(i);
+        }
+    }
+
+    fn play_index(&mut self, i: usize) {
+        if let (Some(player), Some(item)) = (&self.player, self.playlist.items.get(i)) {
+            player.open(&item.path, false);
+            self.playlist.select(i);
+            self.scroll_to_current = true;
+        }
+    }
+
+    fn toggle_sidebar(&mut self) {
+        self.sidebar_open = !self.sidebar_open;
+        self.scroll_to_current = self.sidebar_open;
+        if !self.sidebar_open {
+            self.side_rect = Rect::NOTHING;
+        }
+    }
+
+    fn play_next(&mut self, ctx: &egui::Context) {
+        match self.playlist.next(false) {
+            Some(i) => self.play_index(i),
+            None => self.show_osd(ctx, "LAST ITEM"),
+        }
+    }
+
+    fn play_prev(&mut self, ctx: &egui::Context) {
+        match self.playlist.prev() {
+            Some(i) => self.play_index(i),
+            None => self.show_osd(ctx, "FIRST ITEM"),
+        }
+    }
+
+    /// Called when the current file reaches its end.
+    fn on_eof(&mut self) {
+        let cur = self.playlist.current;
+        match self.playlist.next(true) {
+            Some(i) if Some(i) == cur => {
+                // Repeat one: rewind instead of reloading.
+                if let Some(p) = &self.player {
+                    p.seek_to(0.0, true);
+                    p.mpv.set_flag("pause", false);
+                }
+            }
+            Some(i) => self.play_index(i),
+            None => {}
+        }
+    }
+
+    /// Keeps loop/shuffle on the queue in sync with saved settings.
+    fn sync_playlist_settings(&mut self) {
+        let s = &self.tracker.settings;
+        self.playlist.loop_mode = s.loop_mode;
+        if self.playlist.shuffle() != s.shuffle {
+            self.playlist.set_shuffle(s.shuffle);
         }
     }
 }
@@ -275,6 +370,11 @@ impl eframe::App for App {
         let full = ctx.content_rect();
         let painter = ui.painter().clone();
         painter.rect_filled(full, 0.0, Color32::BLACK);
+        // The playlist sidebar floats over the video (the video never resizes);
+        // only the chrome (bars, OSD, prompts) moves aside to stay visible.
+        let side_t = ctx.animate_bool_with_time(ui.scope_id().with("sidebar"), self.sidebar_open, 0.18);
+        let side_w = (SIDEBAR_W * side_t).min(full.width() * 0.5).round();
+        let stage = Rect::from_min_max(full.min, pos2(full.right() - side_w, full.bottom()));
 
         if let Some(err) = &self.error {
             draw_error(&painter, full, err);
@@ -315,7 +415,7 @@ impl eframe::App for App {
         let hovering_files = ctx.input(|i| !i.raw.hovered_files.is_empty());
 
         if s.idle {
-            match draw_empty_state(ui, full, &self.recent) {
+            match draw_empty_state(ui, stage, &self.recent) {
                 EmptyAction::Open => self.open_dialog(),
                 EmptyAction::Recent(path) => self.pending_open.push(path),
                 EmptyAction::Settings => self.settings_open = true,
@@ -325,11 +425,12 @@ impl eframe::App for App {
             let now = ctx.input(|i| i.time);
             let pointer_in_bar = ctx
                 .input(|i| i.pointer.hover_pos())
-                .is_some_and(|p| p.y > full.bottom() - 70.0 || p.y < full.top() + 50.0);
+                .is_some_and(|p| p.y > stage.bottom() - BAR_H - 30.0 || p.y < stage.top() + 50.0);
             let visible = s.paused
                 || now - self.last_activity < HIDE_AFTER
                 || pointer_in_bar
-                || self.seek_preview.is_some();
+                || self.seek_preview.is_some()
+                || self.speed_menu;
             let alpha = ctx.animate_bool_with_time(ui.scope_id().with("chrome"), visible, 0.15);
             if !visible && surface.hovered() {
                 ctx.set_cursor_icon(CursorIcon::None);
@@ -342,10 +443,19 @@ impl eframe::App for App {
                 icons::draw(&painter, Icon::Play, full.center(), 40.0, Color32::from_white_alpha(220));
             }
             if alpha > 0.0 {
-                draw_top_bar(&painter, full, &s, self.tracker.current_play_count(), alpha);
-                self.draw_controls(ui, full, alpha);
+                draw_top_bar(&painter, stage, &s, self.tracker.current_play_count(), alpha);
+                self.draw_controls(ui, stage, alpha);
             }
-            self.draw_resume_prompt(ui, full, now);
+            self.draw_resume_prompt(ui, stage, now);
+
+            // Edge handle: "‹" while paused opens the playlist, "›" closes it.
+            let show_handle = self.sidebar_open || s.paused;
+            let ha = ctx.animate_bool_with_time(ui.scope_id().with("edge_handle"), show_handle, 0.15);
+            if ha > 0.0 && self.drag_from.is_none() {
+                if draw_edge_handle(ui, stage, self.sidebar_open, ha) {
+                    self.toggle_sidebar();
+                }
+            }
         }
 
         // ---- OSD ----
@@ -354,11 +464,16 @@ impl eframe::App for App {
             let age = now - at;
             if age < *life {
                 let a = ((life - age) / 0.2).min(1.0) as f32;
-                draw_osd(&painter, full, text, a);
+                draw_osd(&painter, stage, text, a);
                 ctx.request_repaint_after_secs(0.05);
             } else {
                 self.osd = None;
             }
+        }
+
+        if side_w > 0.5 {
+            let side = Rect::from_min_max(pos2(stage.right(), full.top()), full.max);
+            self.draw_sidebar(ui, side, side_t);
         }
 
         if hovering_files {
@@ -381,6 +496,7 @@ impl eframe::App for App {
             );
             if act.settings_changed && self.tracker.settings != before {
                 self.tracker.save_settings();
+                self.sync_playlist_settings();
             }
             if act.clear_history {
                 if let Some(st) = &self.tracker.store {
@@ -428,7 +544,14 @@ impl eframe::App for App {
             }
         }
         self.tracker.tick(&player.state);
-        if player.state.idle && self.recent_dirty {
+        let eof = player.state.eof && !player.state.idle;
+        let eof_edge = eof && !self.was_eof;
+        self.was_eof = eof;
+        let idle = player.state.idle;
+        if eof_edge {
+            self.on_eof();
+        }
+        if idle && self.recent_dirty {
             self.recent = self.tracker.recent(5);
             self.recent_dirty = false;
         }
@@ -450,142 +573,61 @@ impl eframe::App for App {
 // ---- Controls --------------------------------------------------------------
 
 impl App {
-    fn draw_controls(&mut self, ui: &mut egui::Ui, full: Rect, alpha: f32) {
+    /// Bottom control bar: a full-width seek line on top, then
+    /// time on the left, transport + volume in the middle, tools on the right.
+    fn draw_controls(&mut self, ui: &mut egui::Ui, chrome: Rect, alpha: f32) {
         let Some(player) = &self.player else { return };
         let s = player.state.clone();
         let painter = ui.painter().clone();
         let a = |c: Color32| c.gamma_multiply(alpha);
+        let ctx = ui.ctx().clone();
 
-        let bar = Rect::from_min_max(
-            pos2(full.left() + 14.0, full.bottom() - 50.0),
-            pos2(full.right() - 14.0, full.bottom() - 12.0),
-        );
-        painter.rect_filled(bar, 19.0, theme::scrim((184.0 * alpha) as u8));
-        painter.rect_stroke(bar, 19.0, Stroke::new(0.5, theme::accent_alpha((46.0 * alpha) as u8)), StrokeKind::Inside);
+        let bar = Rect::from_min_max(pos2(chrome.left(), chrome.bottom() - BAR_H), chrome.max);
+        // Soft fade above the bar, then a solid band so text stays readable.
+        let fade = Rect::from_min_max(pos2(bar.left(), bar.top() - 28.0), pos2(bar.right(), bar.top()));
+        painter.rect_filled(fade, 0.0, theme::scrim((70.0 * alpha) as u8));
+        painter.rect_filled(bar, 0.0, theme::scrim((215.0 * alpha) as u8));
 
-        let cy = bar.center().y;
-        let mut x = bar.left() + 8.0;
         let mut osd: Option<String> = None;
+        let mut want_prev = false;
+        let mut want_next = false;
+        let mut want_stop = false;
+        let mut open_settings = false;
+        let mut toggle_list = false;
 
-        let button = |ui: &mut egui::Ui, x: &mut f32, id: &str, icon: Icon, size: f32| -> bool {
-            let rect = Rect::from_center_size(pos2(*x + 15.0, cy), vec2(30.0, 30.0));
-            *x += 30.0;
-            let resp = ui.interact(rect, ui.scope_id().with(id), Sense::click());
-            let hovered = resp.hovered();
-            if hovered {
-                painter.circle_filled(rect.center(), 15.0, a(theme::accent_alpha(20)));
-            }
-            icons::draw(&painter, icon, rect.center(), size, a(if hovered { ACCENT } else { TEXT }));
-            resp.clicked()
-        };
-
-        if button(ui, &mut x, "prev", Icon::Prev, 14.0) {
-            player.prev();
-        }
-        let pp_icon = if s.paused || s.eof { Icon::Play } else { Icon::Pause };
-        if button(ui, &mut x, "pp", pp_icon, 18.0) {
-            player.toggle_pause();
-        }
-        if button(ui, &mut x, "next", Icon::Next, 14.0) {
-            player.next();
-        }
-
-        // Right side, laid out from the right edge inward.
-        let mut rx = bar.right() - 8.0 - 30.0;
-        let fs = ui.ctx().input(|i| i.viewport().fullscreen.unwrap_or(false));
-        let mut tmp = rx;
-        if button(ui, &mut tmp, "fs", if fs { Icon::ExitFullscreen } else { Icon::Fullscreen }, 14.0) {
-            ui.ctx().send_viewport_cmd(ViewportCommand::Fullscreen(!fs));
-        }
-
-        rx -= 30.0;
-        let mut tmp = rx;
-        let open_settings = button(ui, &mut tmp, "settings", Icon::Settings, 15.0);
-
-        rx -= 30.0;
-        let cc_rect = Rect::from_min_size(pos2(rx, cy - 15.0), vec2(30.0, 30.0));
-        if text_button(ui, &painter, cc_rect, "cc", "CC", alpha) {
-            player.cycle_subtitles();
-            osd = Some("SUBTITLE  NEXT".into());
-        }
-
-        rx -= 46.0;
-        let sp_rect = Rect::from_min_size(pos2(rx, cy - 15.0), vec2(46.0, 30.0));
-        if text_button(ui, &painter, sp_rect, "speed", &fmt_speed(s.speed), alpha) {
-            let next = crate::player::SPEEDS
-                .iter()
-                .copied()
-                .find(|v| *v > s.speed + 0.01)
-                .unwrap_or(crate::player::SPEEDS[0]);
-            player.set_speed(next);
-            osd = Some(format!("SPEED  {}", fmt_speed(next)));
-        }
-
-        // Volume slider
-        rx -= 70.0;
-        let vol_rect = Rect::from_min_size(pos2(rx, cy - 10.0), vec2(62.0, 20.0));
-        let vresp = ui.interact(vol_rect, ui.scope_id().with("vol"), Sense::click_and_drag());
-        let vol_frac = if s.muted { 0.0 } else { (s.volume / 100.0).clamp(0.0, 1.0) as f32 };
-        let line = |from: f32, to: f32, c: Color32| {
-            painter.line_segment(
-                [pos2(vol_rect.left() + from * vol_rect.width(), cy), pos2(vol_rect.left() + to * vol_rect.width(), cy)],
-                Stroke::new(2.0, a(c)),
-            );
-        };
-        line(0.0, 1.0, LINE);
-        line(0.0, vol_frac, if vresp.hovered() || vresp.dragged() { ACCENT } else { TEXT_2 });
-        if let Some(p) = vresp.interact_pointer_pos() {
-            if vresp.dragged() || vresp.clicked() {
-                let v = ((p.x - vol_rect.left()) / vol_rect.width()).clamp(0.0, 1.0) as f64 * 100.0;
-                player.set_volume(v);
-                osd = Some(format!("VOLUME  {}%", v.round()));
-            }
-        }
-
-        rx -= 30.0;
-        let mut tmp = rx;
-        if button(ui, &mut tmp, "mute", if s.muted || s.volume <= 0.0 { Icon::Muted } else { Icon::Volume }, 16.0) {
-            player.toggle_mute();
-        }
-
-        // Times + progress track fill the space between.
+        // ---- Seek line ----
+        let line_y = bar.top() + 3.0;
+        let track = Rect::from_min_max(pos2(bar.left(), line_y - 8.0), pos2(bar.right(), line_y + 8.0));
         let cur = self.seek_preview.map_or(s.position, |f| f * s.duration);
-        let cur_txt = fmt_time(cur);
-        let dur_txt = fmt_time(s.duration);
-        let mono = FontId::monospace(11.0);
-        painter.text(pos2(x + 8.0, cy), Align2::LEFT_CENTER, &cur_txt, mono.clone(), a(TEXT));
-        x += 8.0 + 9.0 * cur_txt.len() as f32 * 0.75 + 10.0;
-        let dur_w = 9.0 * dur_txt.len() as f32 * 0.75;
-        let right_end = rx - 10.0;
-        painter.text(pos2(right_end, cy), Align2::RIGHT_CENTER, &dur_txt, mono.clone(), a(TEXT_3.lerp_to_gamma(TEXT_2, 0.5)));
-
-        let track = Rect::from_min_max(pos2(x, cy - 10.0), pos2(right_end - dur_w - 10.0, cy + 10.0));
-        if track.width() > 20.0 && s.duration > 0.0 {
+        if s.duration > 0.0 {
             let tresp = ui.interact(track, ui.scope_id().with("track"), Sense::click_and_drag());
+            let hot = tresp.hovered() || tresp.dragged();
+            let thick = if hot { 5.0 } else { 3.0 };
             let at = |f: f64| track.left() + (f.clamp(0.0, 1.0) as f32) * track.width();
             let seg = |from: f32, to: f32, c: Color32| {
-                painter.line_segment([pos2(from, cy), pos2(to, cy)], Stroke::new(2.0, a(c)));
+                if to > from {
+                    painter.line_segment([pos2(from, line_y), pos2(to, line_y)], Stroke::new(thick, a(c)));
+                }
             };
             let frac = cur / s.duration;
-            seg(track.left(), track.right(), LINE);
-            seg(track.left(), at(s.cached_until / s.duration), Color32::from_rgb(0x30, 0x36, 0x3D));
+            seg(track.left(), track.right(), Color32::from_white_alpha(38));
+            seg(track.left(), at(s.cached_until / s.duration), Color32::from_white_alpha(80));
             seg(track.left(), at(frac), ACCENT);
-            let kx = at(frac);
-            painter.line_segment([pos2(kx, cy - 5.0), pos2(kx, cy + 5.0)], Stroke::new(2.0, a(ACCENT)));
+            knob(&painter, pos2(at(frac), line_y), if hot { 7.0 } else { 6.0 }, alpha);
 
             let pointer_frac = tresp
                 .hover_pos()
                 .or(tresp.interact_pointer_pos())
                 .map(|p| ((p.x - track.left()) / track.width()).clamp(0.0, 1.0) as f64);
             if let Some(f) = pointer_frac {
-                if tresp.hovered() || tresp.dragged() {
-                    painter.text(
-                        pos2(at(f), track.top() - 4.0),
-                        Align2::CENTER_BOTTOM,
-                        fmt_time(f * s.duration),
-                        FontId::monospace(10.0),
-                        a(ACCENT),
-                    );
+                if hot {
+                    let label = fmt_time(f * s.duration);
+                    let g = painter.layout_no_wrap(label, FontId::monospace(11.0), TEXT);
+                    let x = at(f).clamp(track.left() + g.size().x / 2.0 + 6.0, track.right() - g.size().x / 2.0 - 6.0);
+                    let r = Rect::from_center_size(pos2(x, line_y - 20.0), g.size() + vec2(12.0, 6.0));
+                    painter.rect_filled(r, 4.0, theme::scrim(225));
+                    painter.galley(r.min + vec2(6.0, 3.0), g, TEXT);
+                    ctx.set_cursor_icon(CursorIcon::PointingHand);
                 }
                 if tresp.dragged() {
                     self.seek_preview = Some(f);
@@ -599,12 +641,174 @@ impl App {
             }
         }
 
+        let cy = bar.top() + 37.0;
+        let button = |ui: &mut egui::Ui, center: egui::Pos2, id: &str, icon: Icon, size: f32, enabled: bool| -> bool {
+            let rect = Rect::from_center_size(center, vec2(34.0, 34.0));
+            let resp = ui.interact(rect, ui.scope_id().with(id), Sense::click());
+            let hovered = enabled && resp.hovered();
+            let color = if !enabled {
+                TEXT_3
+            } else if hovered {
+                ACCENT
+            } else {
+                TEXT
+            };
+            icons::draw(&painter, icon, center, size, a(color));
+            if hovered {
+                ui.ctx().set_cursor_icon(CursorIcon::PointingHand);
+            }
+            enabled && resp.clicked()
+        };
+
+        // ---- Left: time ----
+        let cur_g = painter.layout_no_wrap(fmt_time(cur), FontId::monospace(13.0), a(TEXT));
+        let cur_w = cur_g.size().x;
+        painter.galley(pos2(bar.left() + 18.0, cy - cur_g.size().y / 2.0), cur_g, TEXT);
+        painter.text(
+            pos2(bar.left() + 18.0 + cur_w + 6.0, cy),
+            Align2::LEFT_CENTER,
+            format!("/  {}", fmt_time(s.duration)),
+            FontId::monospace(13.0),
+            a(TEXT_2),
+        );
+
+        // ---- Middle: stop, prev, play, next, volume ----
+        let group_w = 36.0 * 4.0 + 12.0 + 30.0 + 84.0;
+        let mut x = bar.center().x - group_w / 2.0;
+        // Keep clear of the time on narrow windows.
+        x = x.max(bar.left() + 200.0);
+        if button(ui, pos2(x + 18.0, cy), "stop", Icon::Stop, 15.0, true) {
+            want_stop = true;
+        }
+        x += 36.0;
+        if button(ui, pos2(x + 18.0, cy), "prev", Icon::Prev, 15.0, self.playlist.has_prev()) {
+            want_prev = true;
+        }
+        x += 36.0;
+        let pp_icon = if s.paused || s.eof { Icon::Play } else { Icon::Pause };
+        if button(ui, pos2(x + 18.0, cy), "pp", pp_icon, 26.0, true) {
+            player.toggle_pause();
+        }
+        x += 36.0;
+        if button(ui, pos2(x + 18.0, cy), "next", Icon::Next, 15.0, self.playlist.has_next()) {
+            want_next = true;
+        }
+        x += 36.0 + 12.0;
+        let vol_icon = if s.muted || s.volume <= 0.0 { Icon::Muted } else { Icon::Volume };
+        if button(ui, pos2(x + 15.0, cy), "mute", vol_icon, 17.0, true) {
+            player.toggle_mute();
+        }
+        x += 32.0;
+        let vol = Rect::from_min_size(pos2(x, cy - 10.0), vec2(80.0, 20.0));
+        let vresp = ui.interact(vol, ui.scope_id().with("vol"), Sense::click_and_drag());
+        let vol_frac = if s.muted { 0.0 } else { (s.volume / 100.0).clamp(0.0, 1.0) as f32 };
+        let vx = vol.left() + vol_frac * vol.width();
+        painter.line_segment([pos2(vol.left(), cy), pos2(vol.right(), cy)], Stroke::new(3.0, a(Color32::from_white_alpha(45))));
+        painter.line_segment([pos2(vol.left(), cy), pos2(vx, cy)], Stroke::new(3.0, a(ACCENT)));
+        knob(&painter, pos2(vx, cy), 5.0, alpha);
+        if let Some(p) = vresp.interact_pointer_pos() {
+            if vresp.dragged() || vresp.clicked() {
+                let v = ((p.x - vol.left()) / vol.width()).clamp(0.0, 1.0) as f64 * 100.0;
+                player.set_volume(v);
+                osd = Some(format!("VOLUME  {}%", v.round()));
+            }
+        }
+        if vresp.hovered() {
+            ctx.set_cursor_icon(CursorIcon::PointingHand);
+        }
+
+        // ---- Right: CC, speed, playlist, settings, fullscreen ----
+        let mut rx = bar.right() - 14.0 - 18.0;
+        let fs = ctx.input(|i| i.viewport().fullscreen.unwrap_or(false));
+        if button(ui, pos2(rx, cy), "fs", if fs { Icon::ExitFullscreen } else { Icon::Fullscreen }, 16.0, true) {
+            ctx.send_viewport_cmd(ViewportCommand::Fullscreen(!fs));
+        }
+        rx -= 40.0;
+        if button(ui, pos2(rx, cy), "settings", Icon::Settings, 17.0, true) {
+            open_settings = true;
+        }
+        rx -= 40.0;
+        if button(ui, pos2(rx, cy), "playlist", Icon::List, 17.0, true) {
+            toggle_list = true;
+        }
+
+        // Speed: outlined pill that opens a small menu.
+        rx -= 50.0;
+        let pill = Rect::from_center_size(pos2(rx, cy), vec2(54.0, 24.0));
+        let presp = ui.interact(pill, ui.scope_id().with("speed"), Sense::click());
+        let pc = if presp.hovered() || self.speed_menu { ACCENT } else { TEXT_2 };
+        painter.rect_stroke(pill, 12.0, Stroke::new(1.0, a(pc)), StrokeKind::Inside);
+        let label = if (s.speed - 1.0).abs() < 0.01 { "倍速".to_string() } else { fmt_speed(s.speed) };
+        painter.text(pill.center(), Align2::CENTER_CENTER, label, FontId::proportional(12.0), a(if presp.hovered() { ACCENT } else { TEXT }));
+        if presp.hovered() {
+            ctx.set_cursor_icon(CursorIcon::PointingHand);
+        }
+        if presp.clicked() {
+            self.speed_menu = !self.speed_menu;
+        }
+
+        rx -= 48.0;
+        let cc = Rect::from_center_size(pos2(rx, cy), vec2(34.0, 34.0));
+        let ccresp = ui.interact(cc, ui.scope_id().with("cc"), Sense::click());
+        painter.text(cc.center(), Align2::CENTER_CENTER, "字幕", FontId::proportional(12.0), a(if ccresp.hovered() { ACCENT } else { TEXT }));
+        if ccresp.clicked() {
+            player.cycle_subtitles();
+            osd = Some("SUBTITLE  NEXT".into());
+        }
+
+        // Speed menu, opening upward from the pill.
+        if self.speed_menu {
+            let item_h = 30.0;
+            let speeds: Vec<f64> = crate::player::SPEEDS.iter().rev().copied().collect();
+            let menu = Rect::from_min_size(
+                pos2(pill.center().x - 36.0, pill.top() - 10.0 - item_h * speeds.len() as f32 - 8.0),
+                vec2(72.0, item_h * speeds.len() as f32 + 8.0),
+            );
+            painter.rect_filled(menu, 8.0, Color32::from_rgba_unmultiplied(0x16, 0x1A, 0x20, 245));
+            painter.rect_stroke(menu, 8.0, Stroke::new(0.5, Color32::from_white_alpha(30)), StrokeKind::Inside);
+            let _blocker = ui.interact(menu, ui.scope_id().with("speed_menu"), Sense::click());
+            for (i, sp) in speeds.iter().enumerate() {
+                let r = Rect::from_min_size(pos2(menu.left() + 4.0, menu.top() + 4.0 + i as f32 * item_h), vec2(64.0, item_h));
+                let resp = ui.interact(r, ui.scope_id().with(("speed_item", i)), Sense::click());
+                let on = (sp - s.speed).abs() < 0.01;
+                if resp.hovered() {
+                    painter.rect_filled(r, 5.0, Color32::from_white_alpha(14));
+                    ctx.set_cursor_icon(CursorIcon::PointingHand);
+                }
+                painter.text(r.center(), Align2::CENTER_CENTER, fmt_speed(*sp), FontId::monospace(12.0), if on { ACCENT } else { TEXT });
+                if resp.clicked() {
+                    player.set_speed(*sp);
+                    osd = Some(format!("SPEED  {}", fmt_speed(*sp)));
+                    self.speed_menu = false;
+                }
+            }
+            // Any click elsewhere closes the menu.
+            let clicked_outside = ctx.input(|i| i.pointer.any_click())
+                && ctx.input(|i| i.pointer.interact_pos()).is_some_and(|p| !menu.contains(p) && !pill.contains(p));
+            if clicked_outside {
+                self.speed_menu = false;
+            }
+        }
+
         if let Some(t) = osd {
-            let ctx = ui.ctx().clone();
             self.show_osd(&ctx, t);
         }
         if open_settings {
             self.settings_open = true;
+        }
+        if toggle_list {
+            self.toggle_sidebar();
+        }
+        if want_stop {
+            if let Some(p) = &self.player {
+                p.stop();
+            }
+        }
+        if want_prev {
+            self.play_prev(&ctx);
+        }
+        if want_next {
+            self.play_next(&ctx);
         }
     }
 
@@ -627,7 +831,7 @@ impl App {
         let sg = p.layout_no_wrap("从头开始".into(), font.clone(), TEXT_2);
         let h = 34.0;
         let w = 14.0 + mg.size().x + 18.0 + rg.size().x + 16.0 + sg.size().x + 14.0;
-        let rect = Rect::from_min_size(pos2(full.left() + 16.0, full.bottom() - 64.0 - h), vec2(w, h));
+        let rect = Rect::from_min_size(pos2(full.left() + 16.0, full.bottom() - BAR_H - 24.0 - h), vec2(w, h));
         p.rect_filled(rect, 0.0, theme::scrim((210.0 * a) as u8));
         p.line_segment([rect.left_top(), rect.left_bottom()], Stroke::new(2.0, ACCENT.gamma_multiply(a)));
 
@@ -663,11 +867,10 @@ impl App {
     }
 }
 
-fn text_button(ui: &mut egui::Ui, painter: &egui::Painter, rect: Rect, id: &str, label: &str, alpha: f32) -> bool {
-    let resp = ui.interact(rect, ui.scope_id().with(id), Sense::click());
-    let color = if resp.hovered() { ACCENT } else { TEXT_2 };
-    painter.text(rect.center(), Align2::CENTER_CENTER, label, FontId::monospace(11.0), color.gamma_multiply(alpha));
-    resp.clicked()
+/// White dot with an accent ring, as on the seek and volume sliders.
+fn knob(p: &egui::Painter, c: egui::Pos2, r: f32, alpha: f32) {
+    p.circle_filled(c, r, Color32::WHITE.gamma_multiply(alpha));
+    p.circle_stroke(c, r, Stroke::new(2.0, ACCENT.gamma_multiply(alpha)));
 }
 
 fn draw_top_bar(p: &egui::Painter, full: Rect, s: &crate::player::State, plays: i64, alpha: f32) {
@@ -824,4 +1027,217 @@ pub fn fmt_time(secs: f64) -> String {
 
 fn fmt_speed(s: f64) -> String {
     if (s * 10.0).fract().abs() < 1e-6 { format!("{s:.1}×") } else { format!("{s:.2}×") }
+}
+
+// ---- Playlist sidebar ------------------------------------------------------
+
+const ROW_H: f32 = 36.0;
+
+/// A small tab on the right edge of the video, vertically centered.
+/// Shows "‹" (open playlist) or "›" (close it). Returns true when clicked.
+fn draw_edge_handle(ui: &mut egui::Ui, stage: Rect, open: bool, alpha: f32) -> bool {
+    let rect = Rect::from_min_size(pos2(stage.right() - 22.0, stage.center().y - 30.0), vec2(22.0, 60.0));
+    let resp = ui.interact(rect, ui.scope_id().with("edge_handle_btn"), Sense::click());
+    let p = ui.painter();
+    let hovered = resp.hovered();
+    let radius = egui::CornerRadius { nw: 8, sw: 8, ne: 0, se: 0 };
+    p.rect_filled(rect, radius, theme::scrim(((if hovered { 220.0 } else { 160.0 }) * alpha) as u8));
+    p.rect_stroke(rect, radius, Stroke::new(0.5, theme::accent_alpha((60.0 * alpha) as u8)), StrokeKind::Inside);
+    let c = rect.center();
+    let dir = if open { 1.0 } else { -1.0 };
+    let color = (if hovered { ACCENT } else { TEXT }).gamma_multiply(alpha);
+    let stroke = Stroke::new(1.8, color);
+    p.line_segment([pos2(c.x - dir * 3.5, c.y - 7.0), pos2(c.x + dir * 3.5, c.y)], stroke);
+    p.line_segment([pos2(c.x + dir * 3.5, c.y), pos2(c.x - dir * 3.5, c.y + 7.0)], stroke);
+    if hovered {
+        ui.ctx().set_cursor_icon(CursorIcon::PointingHand);
+    }
+    resp.clicked()
+}
+
+enum SideAction {
+    Play(usize),
+    Remove(usize),
+    Move(usize, usize),
+    ToggleShuffle,
+    CycleLoop,
+}
+
+impl App {
+    fn draw_sidebar(&mut self, ui: &mut egui::Ui, side: Rect, t: f32) {
+        let ctx = ui.ctx().clone();
+        let p = ui.painter_at(side);
+        self.side_rect = side;
+        p.rect_filled(side, 0.0, Color32::from_rgba_unmultiplied(0x0B, 0x0E, 0x12, 236));
+        p.line_segment([side.left_top(), side.left_bottom()], Stroke::new(0.5, Color32::from_rgb(0x16, 0x1B, 0x22)));
+        let a = t.clamp(0.0, 1.0);
+        let left = side.left();
+        let right = left + SIDEBAR_W;
+        let mut action: Option<SideAction> = None;
+
+        // Header
+        let hy = side.top() + 24.0;
+        let n = self.playlist.len();
+        p.text(pos2(left + 16.0, hy), Align2::LEFT_CENTER, format!("PLAYLIST · {n:02}"), FontId::monospace(10.0), TEXT_3.gamma_multiply(a));
+        let loop_mode = self.playlist.loop_mode;
+        let header_btn = |ui: &mut egui::Ui, cx: f32, id: &str, icon: Icon, on: bool| -> bool {
+            let r = Rect::from_center_size(pos2(cx, hy), vec2(28.0, 28.0));
+            let resp = ui.interact(r, ui.scope_id().with(id), Sense::click());
+            let c = if on { ACCENT } else if resp.hovered() { TEXT } else { TEXT_3.lerp_to_gamma(TEXT_2, 0.5) };
+            if resp.hovered() {
+                p.circle_filled(r.center(), 14.0, theme::accent_alpha(16));
+            }
+            icons::draw(&p, icon, r.center(), 14.0, c.gamma_multiply(a));
+            resp.clicked()
+        };
+        let loop_icon = if loop_mode == LoopMode::One { Icon::RepeatOne } else { Icon::Repeat };
+        if header_btn(ui, right - 24.0, "pl_loop", loop_icon, loop_mode != LoopMode::Off) {
+            action = Some(SideAction::CycleLoop);
+        }
+        if header_btn(ui, right - 54.0, "pl_shuffle", Icon::Shuffle, self.playlist.shuffle()) {
+            action = Some(SideAction::ToggleShuffle);
+        }
+
+        // List
+        let list = Rect::from_min_max(pos2(left, side.top() + 48.0), pos2(right, side.bottom() - 34.0));
+        let max_scroll = (n as f32 * ROW_H - list.height()).max(0.0);
+        if self.scroll_to_current {
+            if let Some(c) = self.playlist.current {
+                let top = c as f32 * ROW_H;
+                if top < self.side_scroll {
+                    self.side_scroll = top;
+                } else if top + ROW_H > self.side_scroll + list.height() {
+                    self.side_scroll = top + ROW_H - list.height();
+                }
+            }
+            self.scroll_to_current = false;
+        }
+        self.side_scroll = self.side_scroll.clamp(0.0, max_scroll);
+        let lp = ui.painter_at(list.intersect(side));
+
+        if n == 0 {
+            lp.text(list.center() - vec2(0.0, 10.0), Align2::CENTER_CENTER, "列表为空", FontId::proportional(13.0), TEXT_2.gamma_multiply(a));
+            lp.text(list.center() + vec2(0.0, 12.0), Align2::CENTER_CENTER, "拖入文件或文件夹即可播放", FontId::proportional(11.0), TEXT_3.gamma_multiply(a));
+        }
+
+        let pointer = ctx.input(|i| i.pointer.hover_pos());
+        let dragging = self.drag_from.is_some();
+        let drop_index = pointer.map(|p| {
+            (((p.y - list.top() + self.side_scroll) / ROW_H) + 0.5).floor().clamp(0.0, n as f32) as usize
+        });
+
+        for i in 0..n {
+            let y = list.top() + i as f32 * ROW_H - self.side_scroll;
+            if y + ROW_H < list.top() || y > list.bottom() {
+                continue;
+            }
+            let row = Rect::from_min_size(pos2(left, y), vec2(SIDEBAR_W, ROW_H));
+            let resp = ui.interact(row.intersect(list), ui.scope_id().with(("pl_row", i)), Sense::click_and_drag());
+            let current = self.playlist.current == Some(i);
+            let being_dragged = self.drag_from == Some(i);
+
+            if current {
+                lp.rect_filled(row, 0.0, theme::accent_alpha(14));
+                lp.line_segment([row.left_top(), row.left_bottom()], Stroke::new(2.0, ACCENT.gamma_multiply(a)));
+            } else if resp.hovered() && !dragging {
+                lp.rect_filled(row, 0.0, Color32::from_white_alpha(6));
+            }
+            let fade = if being_dragged { 0.4 } else { a };
+            let cy = row.center().y;
+            lp.text(
+                pos2(left + 16.0, cy),
+                Align2::LEFT_CENTER,
+                format!("{:02}", i + 1),
+                FontId::monospace(11.0),
+                (if current { ACCENT } else { TEXT_3 }).gamma_multiply(fade),
+            );
+            let close_rect = Rect::from_center_size(pos2(right - 20.0, cy), vec2(24.0, 24.0));
+            let row_hot = !dragging && (resp.hovered() || ui.rect_contains_pointer(close_rect));
+            let title_w = SIDEBAR_W - 46.0 - if row_hot { 34.0 } else { 14.0 };
+            let title = elide(&lp, &self.playlist.items[i].title, FontId::proportional(12.0), title_w);
+            lp.text(
+                pos2(left + 46.0, cy),
+                Align2::LEFT_CENTER,
+                title,
+                FontId::proportional(12.0),
+                (if current { TEXT } else { TEXT_2 }).gamma_multiply(fade),
+            );
+
+            if row_hot {
+                let cresp = ui.interact(close_rect, ui.scope_id().with(("pl_rm", i)), Sense::click());
+                icons::draw(&lp, Icon::Close, close_rect.center(), 12.0, if cresp.hovered() { ACCENT } else { TEXT_3 });
+                if cresp.clicked() {
+                    action = Some(SideAction::Remove(i));
+                }
+            }
+
+            if resp.drag_started() {
+                self.drag_from = Some(i);
+            } else if resp.clicked() && action.is_none() {
+                action = Some(SideAction::Play(i));
+            }
+            if resp.hovered() || resp.dragged() {
+                ctx.set_cursor_icon(if dragging { CursorIcon::Grabbing } else { CursorIcon::PointingHand });
+            }
+        }
+
+        // Drop indicator and finishing a drag.
+        let released = ctx.input(|i| !i.pointer.primary_down());
+        if let (Some(from), Some(to)) = (self.drag_from, drop_index) {
+            let y = list.top() + to as f32 * ROW_H - self.side_scroll;
+            lp.line_segment([pos2(left + 8.0, y), pos2(right - 8.0, y)], Stroke::new(2.0, ACCENT));
+            if released {
+                let target = if to > from { to - 1 } else { to };
+                action = Some(SideAction::Move(from, target));
+                self.drag_from = None;
+            }
+        } else if self.drag_from.is_some() && released {
+            self.drag_from = None;
+        }
+
+        p.text(
+            pos2(left + 16.0, side.bottom() - 17.0),
+            Align2::LEFT_CENTER,
+            "拖动排序 · L 收起",
+            FontId::proportional(10.0),
+            TEXT_3.gamma_multiply(a),
+        );
+
+        match action {
+            Some(SideAction::Play(i)) => self.play_index(i),
+            Some(SideAction::Move(from, to)) => self.playlist.move_item(from, to),
+            Some(SideAction::Remove(i)) => {
+                if self.playlist.remove(i) {
+                    match self.playlist.current {
+                        Some(c) => self.play_index(c),
+                        None => {
+                            if let Some(pl) = &self.player {
+                                pl.stop();
+                            }
+                        }
+                    }
+                }
+            }
+            Some(SideAction::ToggleShuffle) => {
+                self.tracker.settings.shuffle = !self.tracker.settings.shuffle;
+                self.tracker.save_settings();
+                self.sync_playlist_settings();
+                let on = self.tracker.settings.shuffle;
+                self.show_osd(&ctx, if on { "SHUFFLE  ON" } else { "SHUFFLE  OFF" });
+            }
+            Some(SideAction::CycleLoop) => {
+                let next = self.tracker.settings.loop_mode.cycle();
+                self.tracker.settings.loop_mode = next;
+                self.tracker.save_settings();
+                self.sync_playlist_settings();
+                let label = match next {
+                    LoopMode::Off => "LOOP  OFF",
+                    LoopMode::All => "LOOP  ALL",
+                    LoopMode::One => "LOOP  ONE",
+                };
+                self.show_osd(&ctx, label);
+            }
+            None => {}
+        }
+    }
 }

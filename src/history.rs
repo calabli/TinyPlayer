@@ -10,6 +10,8 @@ use std::time::{SystemTime, UNIX_EPOCH};
 
 use rusqlite::{Connection, OptionalExtension, params};
 
+use crate::playlist::LoopMode;
+
 /// A play counts once the viewer has watched this long (or 10% of the file,
 /// whichever is shorter).
 pub const COUNT_AFTER_SECS: f64 = 30.0;
@@ -33,6 +35,11 @@ pub struct Settings {
     pub min_duration: u32,
     pub clear_finished: bool,
     pub clear_on_exit: bool,
+    // Playback
+    /// Opening one file also queues the other media files in its folder.
+    pub fill_folder: bool,
+    pub loop_mode: LoopMode,
+    pub shuffle: bool,
 }
 
 impl Default for Settings {
@@ -43,6 +50,9 @@ impl Default for Settings {
             min_duration: 180,
             clear_finished: true,
             clear_on_exit: false,
+            fill_folder: true,
+            loop_mode: LoopMode::Off,
+            shuffle: false,
         }
     }
 }
@@ -149,6 +159,9 @@ impl Store {
             min_duration: get("min_duration").and_then(|v| v.parse().ok()).unwrap_or(d.min_duration),
             clear_finished: flag("clear_finished", d.clear_finished),
             clear_on_exit: flag("clear_on_exit", d.clear_on_exit),
+            fill_folder: flag("fill_folder", d.fill_folder),
+            loop_mode: get("loop_mode").and_then(|v| LoopMode::parse(&v)).unwrap_or(d.loop_mode),
+            shuffle: flag("shuffle", d.shuffle),
         }
     }
 
@@ -165,6 +178,9 @@ impl Store {
             ("min_duration", s.min_duration.to_string()),
             ("clear_finished", b(s.clear_finished)),
             ("clear_on_exit", b(s.clear_on_exit)),
+            ("fill_folder", b(s.fill_folder)),
+            ("loop_mode", s.loop_mode.as_str().to_string()),
+            ("shuffle", b(s.shuffle)),
         ] {
             let _ = self.db.execute(
                 "INSERT INTO settings (k, v) VALUES (?1, ?2) ON CONFLICT(k) DO UPDATE SET v = ?2",
@@ -292,6 +308,9 @@ mod tests {
             min_duration: 600,
             clear_finished: false,
             clear_on_exit: true,
+            fill_folder: false,
+            loop_mode: LoopMode::One,
+            shuffle: true,
         };
         s.save_settings(&custom);
         assert_eq!(s.load_settings(), custom);

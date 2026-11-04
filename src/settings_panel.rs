@@ -1,14 +1,23 @@
-//! The settings overlay ("播放记录" page), drawn in the tech-minimal style.
+//! The settings overlay (播放 and 播放记录 pages), drawn in the tech-minimal style.
 
 use eframe::egui::{self, Align2, Color32, FontId, Rect, Sense, Stroke, StrokeKind, pos2, vec2};
 
 use crate::history::{ResumeMode, Settings};
+use crate::playlist::LoopMode;
 use crate::theme::{self, ACCENT, LINE, PANEL, TEXT, TEXT_2, TEXT_3};
 
 #[derive(Default)]
 pub struct PanelState {
     /// Time until which "清除播放统计" is armed for a confirming second click.
     confirm_stats_until: f64,
+    page: Page,
+}
+
+#[derive(Default, Clone, Copy, PartialEq)]
+enum Page {
+    #[default]
+    Playback,
+    History,
 }
 
 #[derive(Default)]
@@ -53,10 +62,20 @@ pub fn show(
     let nav = Rect::from_min_size(panel.min, vec2(NAV_W, panel.height()));
     p.line_segment([nav.right_top(), nav.right_bottom()], Stroke::new(0.5, LINE));
     p.text(nav.min + vec2(16.0, 22.0), Align2::LEFT_CENTER, "SETTINGS", FontId::monospace(10.0), TEXT_3);
-    let item = Rect::from_min_size(nav.min + vec2(0.0, 44.0), vec2(NAV_W, 32.0));
-    p.rect_filled(item, 0.0, theme::accent_alpha(12));
-    p.line_segment([item.left_top(), item.left_bottom()], Stroke::new(2.0, ACCENT));
-    p.text(item.left_center() + vec2(16.0, 0.0), Align2::LEFT_CENTER, "播放记录", FontId::proportional(13.0), TEXT);
+    for (i, (page, name)) in [(Page::Playback, "播放"), (Page::History, "播放记录")].into_iter().enumerate() {
+        let item = Rect::from_min_size(nav.min + vec2(0.0, 44.0 + 34.0 * i as f32), vec2(NAV_W, 32.0));
+        let resp = ui.interact(item, ui.scope_id().with(("settings_nav", i)), Sense::click());
+        let on = st.page == page;
+        if on {
+            p.rect_filled(item, 0.0, theme::accent_alpha(12));
+            p.line_segment([item.left_top(), item.left_bottom()], Stroke::new(2.0, ACCENT));
+        }
+        let c = if on || resp.hovered() { TEXT } else { TEXT_2 };
+        p.text(item.left_center() + vec2(16.0, 0.0), Align2::LEFT_CENTER, name, FontId::proportional(13.0), c);
+        if resp.clicked() {
+            st.page = page;
+        }
+    }
 
     // Close button
     let close = Rect::from_center_size(pos2(panel.right() - 22.0, panel.top() + 22.0), vec2(24.0, 24.0));
@@ -83,6 +102,34 @@ pub fn show(
         }
         p.line_segment([r.left_bottom(), r.right_bottom()], Stroke::new(0.5, LINE));
     };
+
+    if st.page == Page::Playback {
+        let r = row(y);
+        label(r, "自动加入同目录文件", "打开单个文件时，把同一文件夹的其他媒体按文件名顺序加入列表", true);
+        if toggle(ui, &p, r, "fill_folder", settings.fill_folder, true) {
+            settings.fill_folder = !settings.fill_folder;
+            out.settings_changed = true;
+        }
+        y += ROW_H;
+
+        let r = row(y);
+        label(r, "播完后", "", true);
+        let modes = [LoopMode::Off, LoopMode::All, LoopMode::One];
+        let sel = modes.iter().position(|m| *m == settings.loop_mode).unwrap_or(0);
+        if let Some(i) = segment(ui, &p, r, "loop_mode", &["播下一个", "列表循环", "单个循环"], sel, true) {
+            settings.loop_mode = modes[i];
+            out.settings_changed = true;
+        }
+        y += ROW_H;
+
+        let r = row(y);
+        label(r, "随机播放", "列表中每个文件播放一次后才会重复", true);
+        if toggle(ui, &p, r, "shuffle", settings.shuffle, true) {
+            settings.shuffle = !settings.shuffle;
+            out.settings_changed = true;
+        }
+        return out;
+    }
 
     let dep = settings.remember;
 
