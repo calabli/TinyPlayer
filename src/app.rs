@@ -453,13 +453,14 @@ impl eframe::App for App {
         let Some(player) = &self.player else { return };
         let s = player.state.clone();
 
-        // Window title follows the media title.
-        let title = if s.idle { "TinyPlayer".to_string() } else { format!("{} — TinyPlayer", s.title) };
-        if title != self.shown_title {
+        // The window title stays "TinyPlayer"; the file name is shown in the
+        // in-app top bar instead. Still track the media title to detect a
+        // newly loaded file.
+        let media = if s.idle { String::new() } else { s.title.clone() };
+        if media != self.shown_title {
             // New media: show the controls briefly so the user sees what loaded.
             self.last_activity = ctx.input(|i| i.time);
-            ctx.send_viewport_cmd(ViewportCommand::Title(title.clone()));
-            self.shown_title = title;
+            self.shown_title = media;
         }
 
         // ---- Video ----
