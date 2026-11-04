@@ -1,0 +1,6 @@
+# Shell scripts must keep LF line endings or bash fails on macOS/Linux,
+# even when the repo is checked out on Windows with core.autocrlf=true.
+*.sh text eol=lf
+
+# PowerShell scripts are run on Windows.
+*.ps1 text eol=crlf
