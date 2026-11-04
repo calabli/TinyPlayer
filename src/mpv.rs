@@ -87,6 +87,8 @@ struct Api {
     wait_event: unsafe extern "C" fn(*mut RawHandle, c_double) -> *mut RawEvent,
     set_wakeup_callback: unsafe extern "C" fn(*mut RawHandle, Option<Callback>, *mut c_void),
     error_string: unsafe extern "C" fn(c_int) -> *const c_char,
+    get_property_string: unsafe extern "C" fn(*mut RawHandle, *const c_char) -> *mut c_char,
+    free: unsafe extern "C" fn(*mut c_void),
     render_create:
         unsafe extern "C" fn(*mut *mut RawRenderCtx, *mut RawHandle, *mut RawRenderParam) -> c_int,
     render_set_update_callback:
@@ -119,6 +121,8 @@ impl Api {
             wait_event: sym!("mpv_wait_event"),
             set_wakeup_callback: sym!("mpv_set_wakeup_callback"),
             error_string: sym!("mpv_error_string"),
+            get_property_string: sym!("mpv_get_property_string"),
+            free: sym!("mpv_free"),
             render_create: sym!("mpv_render_context_create"),
             render_set_update_callback: sym!("mpv_render_context_set_update_callback"),
             render_update: sym!("mpv_render_context_update"),
@@ -242,6 +246,18 @@ impl Mpv {
         unsafe {
             (self.api.set_property)(self.handle, n.as_ptr(), FORMAT_DOUBLE, (&raw mut value).cast());
         }
+    }
+
+    /// Reads a property as a string (None if unavailable).
+    pub fn get_string(&self, name: &str) -> Option<String> {
+        let n = cstr(name);
+        let raw = unsafe { (self.api.get_property_string)(self.handle, n.as_ptr()) };
+        if raw.is_null() {
+            return None;
+        }
+        let s = unsafe { CStr::from_ptr(raw) }.to_string_lossy().into_owned();
+        unsafe { (self.api.free)(raw.cast()) };
+        Some(s)
     }
 
     /// Sets a property from its string form (as on mpv's command line).

@@ -7,6 +7,7 @@ mod library;
 mod library_ui;
 mod mpv;
 mod player;
+mod quick_panel;
 mod playlist;
 mod probe;
 mod scanner;

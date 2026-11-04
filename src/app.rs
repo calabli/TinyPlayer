@@ -14,6 +14,7 @@ use crate::library_ui::{Action as LibAction, LibraryView};
 use crate::scanner::{Msg as ScanMsg, Scanner};
 use crate::mpv::{Event, RenderContext};
 use crate::player::Player;
+use crate::quick_panel::QuickPanel;
 use crate::playlist::{self, LoopMode, Playlist};
 use crate::session::{Resume, Tracker};
 use crate::settings_panel::{self, PanelState};
@@ -66,6 +67,7 @@ pub struct App {
     /// Results of background folder scans: (playlist generation, playing file name, files).
     fill_tx: std::sync::mpsc::Sender<(u64, String, Vec<String>)>,
     fill_rx: std::sync::mpsc::Receiver<(u64, String, Vec<String>)>,
+    quick: QuickPanel,
 }
 
 impl App {
@@ -118,6 +120,7 @@ impl App {
             current_fav: None,
             fill_tx,
             fill_rx,
+            quick: QuickPanel::default(),
         }
     }
 
@@ -485,6 +488,9 @@ impl eframe::App for App {
 
         let hovering_files = ctx.input(|i| !i.raw.hovered_files.is_empty());
 
+        if s.idle {
+            self.quick.close();
+        }
         if s.idle && self.library.has_folders() {
             match self.library.show(ui, stage) {
                 LibAction::Play(path) => self.pending_open.push(path),
@@ -511,7 +517,8 @@ impl eframe::App for App {
                 || now - self.last_activity < HIDE_AFTER
                 || pointer_in_bar
                 || self.seek_preview.is_some()
-                || self.speed_menu;
+                || self.speed_menu
+                || self.quick.open;
             let alpha = ctx.animate_bool_with_time(ui.scope_id().with("chrome"), visible, 0.15);
             if !visible && surface.hovered() {
                 ctx.set_cursor_icon(CursorIcon::None);
@@ -540,6 +547,30 @@ impl eframe::App for App {
                 self.draw_controls(ui, stage, alpha);
             }
             self.draw_resume_prompt(ui, stage, now);
+
+            if self.quick.open {
+                if let Some(player) = &self.player {
+                    let act = self.quick.show(ui, stage, BAR_H, player, &mut self.tracker.settings);
+                    if act.settings_changed {
+                        self.tracker.save_settings();
+                        player.apply_settings(&self.tracker.settings);
+                    }
+                    if act.load_subtitle {
+                        if let Some(file) = rfd::FileDialog::new()
+                            .set_title("加载字幕文件")
+                            .add_filter("字幕", &["srt", "ass", "ssa", "vtt", "sub", "sup", "idx"])
+                            .pick_file()
+                        {
+                            let f = file.to_string_lossy().into_owned();
+                            let _ = player.mpv.command(&["sub-add", &f, "select"]);
+                            self.osd = Some(("SUBTITLE  LOADED".into(), now, OSD_SECS));
+                        }
+                    }
+                    if act.more_settings {
+                        self.settings_open = true;
+                    }
+                }
+            }
 
             // Edge handle: "‹" while paused opens the playlist, "›" closes it.
             let show_handle = self.sidebar_open || s.paused;
@@ -906,7 +937,7 @@ impl App {
             self.show_osd(&ctx, t);
         }
         if open_settings {
-            self.settings_open = true;
+            self.quick.toggle();
         }
         if toggle_list {
             self.toggle_sidebar();

@@ -44,6 +44,8 @@ pub struct Settings {
     pub hwdec: bool,
     /// Aspect override: "auto", "16:9", "4:3", "2.35:1" or "stretch".
     pub aspect: String,
+    /// 画质增强: debanding + sharper scaling (more GPU work).
+    pub enhance: bool,
     // Subtitles
     /// Load subtitle files whose name matches the video.
     pub sub_auto: bool,
@@ -68,6 +70,7 @@ impl Default for Settings {
             shuffle: false,
             hwdec: true,
             aspect: "auto".into(),
+            enhance: false,
             sub_auto: true,
             sub_size: 46,
             sub_pos: 100,
@@ -183,6 +186,7 @@ impl Store {
             shuffle: flag("shuffle", d.shuffle),
             hwdec: flag("hwdec", d.hwdec),
             aspect: get("aspect").unwrap_or(d.aspect),
+            enhance: flag("enhance", d.enhance),
             sub_auto: flag("sub_auto", d.sub_auto),
             sub_size: get("sub_size").and_then(|v| v.parse().ok()).unwrap_or(d.sub_size),
             sub_pos: get("sub_pos").and_then(|v| v.parse().ok()).unwrap_or(d.sub_pos),
@@ -208,6 +212,7 @@ impl Store {
             ("shuffle", b(s.shuffle)),
             ("hwdec", b(s.hwdec)),
             ("aspect", s.aspect.clone()),
+            ("enhance", b(s.enhance)),
             ("sub_auto", b(s.sub_auto)),
             ("sub_size", s.sub_size.to_string()),
             ("sub_pos", s.sub_pos.to_string()),
@@ -344,6 +349,7 @@ mod tests {
             shuffle: true,
             hwdec: false,
             aspect: "4:3".into(),
+            enhance: true,
             sub_auto: false,
             sub_size: 60,
             sub_pos: 90,

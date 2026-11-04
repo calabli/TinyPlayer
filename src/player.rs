@@ -26,6 +26,24 @@ pub struct State {
     pub eof: bool,
 }
 
+#[derive(Clone, Debug)]
+pub struct Track {
+    pub id: i64,
+    pub label: String,
+    pub selected: bool,
+}
+
+fn language_name(code: &str) -> String {
+    match code.to_lowercase().as_str() {
+        "chi" | "zho" | "zh" | "chs" | "sc" | "zh-hans" | "zh-cn" => "中文".into(),
+        "cht" | "tc" | "zh-hant" | "zh-tw" | "zh-hk" => "繁体中文".into(),
+        "eng" | "en" => "英文".into(),
+        "jpn" | "ja" => "日文".into(),
+        "kor" | "ko" => "韩文".into(),
+        other => other.to_string(),
+    }
+}
+
 pub struct Player {
     pub mpv: Mpv,
     pub state: State,
@@ -201,6 +219,10 @@ impl Player {
                 m.set_property_string("video-aspect-override", ratio);
             }
         }
+        // 画质增强: debanding plus a sharper (heavier) upscaler.
+        m.set_property_string("deband", if s.enhance { "yes" } else { "no" });
+        m.set_property_string("scale", if s.enhance { "ewa_lanczossharp" } else { "lanczos" });
+        m.set_property_string("cscale", if s.enhance { "ewa_lanczossharp" } else { "bilinear" });
         m.set_property_string("sub-auto", if s.sub_auto { "fuzzy" } else { "no" });
         m.set_property_string("sub-font-size", &s.sub_size.to_string());
         m.set_property_string("sub-pos", &s.sub_pos.to_string());
@@ -210,6 +232,33 @@ impl Player {
             _ => "",
         };
         m.set_property_string("slang", slang);
+    }
+
+    /// Tracks of one kind ("video", "audio" or "sub") from mpv's track list.
+    pub fn tracks(&self, kind: &str) -> Vec<Track> {
+        let m = &self.mpv;
+        let n: usize = m.get_string("track-list/count").and_then(|c| c.parse().ok()).unwrap_or(0);
+        let mut out = Vec::new();
+        for i in 0..n {
+            let get = |k: &str| m.get_string(&format!("track-list/{i}/{k}"));
+            if get("type").as_deref() != Some(kind) {
+                continue;
+            }
+            let Some(id) = get("id").and_then(|v| v.parse().ok()) else { continue };
+            let lang = get("lang").unwrap_or_default();
+            let title = get("title").unwrap_or_default();
+            let external = get("external").as_deref() == Some("yes");
+            let mut label = match (title.is_empty(), lang.is_empty()) {
+                (false, _) => title,
+                (true, false) => language_name(&lang),
+                (true, true) => format!("轨道 {id}"),
+            };
+            if external {
+                label.push_str("（外挂）");
+            }
+            out.push(Track { id, label, selected: get("selected").as_deref() == Some("yes") });
+        }
+        out
     }
 
     pub fn stop(&self) {
