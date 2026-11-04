@@ -277,22 +277,49 @@ impl Mpv {
     pub fn poll_events(&self) -> Vec<Event> {
         let mut out = Vec::new();
         loop {
-            let ev = unsafe { &*(self.api.wait_event)(self.handle, 0.0) };
-            match ev.event_id {
-                EVENT_NONE => break,
-                EVENT_SHUTDOWN => out.push(Event::Shutdown),
-                EVENT_FILE_LOADED => out.push(Event::FileLoaded),
-                EVENT_END_FILE => out.push(Event::EndFile),
-                EVENT_PROPERTY_CHANGE if !ev.data.is_null() => {
-                    let p = unsafe { &*(ev.data as *const RawEventProperty) };
-                    let name = unsafe { CStr::from_ptr(p.name) }.to_string_lossy().into_owned();
-                    let value = unsafe { read_value(p.format, p.data) };
-                    out.push(Event::PropertyChange { name, value });
-                }
-                _ => {}
+            match self.next_event(0.0) {
+                Ok(Some(ev)) => out.push(ev),
+                Ok(None) => {}
+                Err(()) => break,
             }
         }
         out
+    }
+
+    /// Blocks up to `timeout` seconds for one interesting event.
+    /// Returns None on timeout.
+    pub fn wait_event(&self, timeout: f64) -> Option<Event> {
+        let deadline = std::time::Instant::now() + std::time::Duration::from_secs_f64(timeout);
+        loop {
+            let left = deadline.saturating_duration_since(std::time::Instant::now()).as_secs_f64();
+            match self.next_event(left) {
+                Ok(Some(ev)) => return Some(ev),
+                Ok(None) => {}
+                Err(()) => return None,
+            }
+            if left <= 0.0 {
+                return None;
+            }
+        }
+    }
+
+    /// Ok(Some) = an event we care about, Ok(None) = an event we ignore,
+    /// Err = the queue is empty (timed out).
+    fn next_event(&self, timeout: f64) -> Result<Option<Event>, ()> {
+        let ev = unsafe { &*(self.api.wait_event)(self.handle, timeout) };
+        Ok(match ev.event_id {
+            EVENT_NONE => return Err(()),
+            EVENT_SHUTDOWN => Some(Event::Shutdown),
+            EVENT_FILE_LOADED => Some(Event::FileLoaded),
+            EVENT_END_FILE => Some(Event::EndFile),
+            EVENT_PROPERTY_CHANGE if !ev.data.is_null() => {
+                let p = unsafe { &*(ev.data as *const RawEventProperty) };
+                let name = unsafe { CStr::from_ptr(p.name) }.to_string_lossy().into_owned();
+                let value = unsafe { read_value(p.format, p.data) };
+                Some(Event::PropertyChange { name, value })
+            }
+            _ => None,
+        })
     }
 }
 

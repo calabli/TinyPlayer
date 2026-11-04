@@ -1,0 +1,348 @@
+//! Media library: watched folders, the videos found in them, and tags.
+//! Shares the SQLite file with `history.rs` (separate connection, WAL mode).
+//!
+//! Search uses `LIKE` rather than FTS5: SQLite's FTS tokenizers don't split
+//! Chinese text, so "王朝" wouldn't match "大明王朝". Filtering a few thousand
+//! rows in memory is well under a frame anyway.
+
+use std::path::{Path, PathBuf};
+
+use rusqlite::{Connection, OptionalExtension, params};
+
+use crate::history::now_secs;
+
+#[derive(Clone, Debug)]
+pub struct Folder {
+    pub id: i64,
+    pub path: String,
+    pub count: i64,
+}
+
+#[derive(Clone, Debug)]
+pub struct Video {
+    pub id: i64,
+    pub path: String,
+    pub title: String,
+    pub folder_id: i64,
+    pub duration: f64,
+    pub width: i64,
+    pub height: i64,
+    pub thumb: Option<String>,
+    pub added_at: i64,
+    /// Saved resume position, if any (from `history`).
+    pub position: Option<f64>,
+    pub last_played: Option<i64>,
+    pub plays: i64,
+    pub tags: Vec<String>,
+}
+
+impl Video {
+    pub fn progress(&self) -> Option<f32> {
+        match self.position {
+            Some(p) if self.duration > 0.0 => Some((p / self.duration).clamp(0.0, 1.0) as f32),
+            _ => None,
+        }
+    }
+}
+
+pub struct Library {
+    db: Connection,
+}
+
+pub const SCHEMA: &str = "
+    CREATE TABLE IF NOT EXISTS folders (
+        id       INTEGER PRIMARY KEY,
+        path     TEXT NOT NULL UNIQUE,
+        added_at INTEGER NOT NULL
+    );
+    CREATE TABLE IF NOT EXISTS videos (
+        id        INTEGER PRIMARY KEY,
+        folder_id INTEGER NOT NULL,
+        path      TEXT NOT NULL UNIQUE,
+        key       TEXT NOT NULL,
+        title     TEXT NOT NULL,
+        size      INTEGER NOT NULL,
+        mtime     INTEGER NOT NULL,
+        duration  REAL NOT NULL DEFAULT 0,
+        width     INTEGER NOT NULL DEFAULT 0,
+        height    INTEGER NOT NULL DEFAULT 0,
+        thumb     TEXT,
+        probed    INTEGER NOT NULL DEFAULT 0,   -- 0 = pending, 1 = done, 2 = failed
+        missing   INTEGER NOT NULL DEFAULT 0,
+        added_at  INTEGER NOT NULL
+    );
+    CREATE INDEX IF NOT EXISTS videos_folder ON videos(folder_id);
+    CREATE INDEX IF NOT EXISTS videos_key ON videos(key);
+    CREATE TABLE IF NOT EXISTS tags (
+        id   INTEGER PRIMARY KEY,
+        name TEXT NOT NULL UNIQUE COLLATE NOCASE
+    );
+    CREATE TABLE IF NOT EXISTS video_tags (
+        video_id INTEGER NOT NULL,
+        tag_id   INTEGER NOT NULL,
+        PRIMARY KEY (video_id, tag_id)
+    );
+";
+
+impl Library {
+    pub fn open(path: &Path) -> Result<Self, String> {
+        let db = Connection::open(path).map_err(|e| e.to_string())?;
+        db.busy_timeout(std::time::Duration::from_secs(3)).map_err(|e| e.to_string())?;
+        db.execute_batch("PRAGMA journal_mode = WAL; PRAGMA synchronous = NORMAL;")
+            .map_err(|e| e.to_string())?;
+        // history.rs owns these tables; make sure they exist for the joins below.
+        db.execute_batch(
+            "CREATE TABLE IF NOT EXISTS history (key TEXT PRIMARY KEY, path TEXT NOT NULL,
+                 title TEXT NOT NULL, position REAL NOT NULL, duration REAL NOT NULL,
+                 updated_at INTEGER NOT NULL);
+             CREATE TABLE IF NOT EXISTS play_events (id INTEGER PRIMARY KEY, key TEXT NOT NULL,
+                 path TEXT NOT NULL, started_at INTEGER NOT NULL, watched_secs REAL NOT NULL DEFAULT 0);",
+        )
+        .map_err(|e| e.to_string())?;
+        db.execute_batch(SCHEMA).map_err(|e| e.to_string())?;
+        Ok(Self { db })
+    }
+
+    pub fn db_path() -> PathBuf {
+        crate::history::data_dir().join("tinyplayer.db")
+    }
+
+    pub fn thumbs_dir() -> PathBuf {
+        crate::history::data_dir().join("thumbs")
+    }
+
+    // ---- Folders ----
+
+    /// Adds a watched folder. Returns its id (existing id if already added).
+    pub fn add_folder(&self, path: &str) -> Option<i64> {
+        let canon = std::fs::canonicalize(path).ok()?;
+        let p = display_path(&canon);
+        let _ = self.db.execute(
+            "INSERT OR IGNORE INTO folders (path, added_at) VALUES (?1, ?2)",
+            params![p, now_secs()],
+        );
+        self.db.query_row("SELECT id FROM folders WHERE path = ?1", [&p], |r| r.get(0)).ok()
+    }
+
+    /// Removes a folder and its videos from the library (files are untouched).
+    pub fn remove_folder(&self, id: i64) {
+        let _ = self.db.execute(
+            "DELETE FROM video_tags WHERE video_id IN (SELECT id FROM videos WHERE folder_id = ?1)",
+            [id],
+        );
+        let _ = self.db.execute("DELETE FROM videos WHERE folder_id = ?1", [id]);
+        let _ = self.db.execute("DELETE FROM folders WHERE id = ?1", [id]);
+    }
+
+    pub fn folders(&self) -> Vec<Folder> {
+        let Ok(mut stmt) = self.db.prepare(
+            "SELECT f.id, f.path, (SELECT COUNT(*) FROM videos v WHERE v.folder_id = f.id AND v.missing = 0)
+             FROM folders f ORDER BY f.path",
+        ) else {
+            return Vec::new();
+        };
+        stmt.query_map([], |r| Ok(Folder { id: r.get(0)?, path: r.get(1)?, count: r.get(2)? }))
+            .map(|it| it.flatten().collect())
+            .unwrap_or_default()
+    }
+
+    // ---- Videos ----
+
+    /// Inserts or refreshes a file found by the scanner. Returns true if the
+    /// file is new or changed (and so needs probing).
+    pub fn upsert_file(&self, folder_id: i64, path: &Path, size: u64, mtime: i64) -> bool {
+        let p = display_path(path);
+        let key = crate::history::file_key(&p).unwrap_or_else(|| format!("{p}|{size}"));
+        let existing: Option<(i64, i64, i64)> = self
+            .db
+            .query_row("SELECT id, size, mtime FROM videos WHERE path = ?1", [&p], |r| {
+                Ok((r.get(0)?, r.get(1)?, r.get(2)?))
+            })
+            .optional()
+            .ok()
+            .flatten();
+        match existing {
+            Some((id, s, m)) if s == size as i64 && m == mtime => {
+                let _ = self.db.execute("UPDATE videos SET missing = 0, folder_id = ?2 WHERE id = ?1", params![id, folder_id]);
+                false
+            }
+            Some((id, ..)) => {
+                let _ = self.db.execute(
+                    "UPDATE videos SET size = ?2, mtime = ?3, key = ?4, probed = 0, missing = 0 WHERE id = ?1",
+                    params![id, size as i64, mtime, key],
+                );
+                true
+            }
+            None => {
+                let title = path.file_stem().map(|s| s.to_string_lossy().into_owned()).unwrap_or_else(|| p.clone());
+                let _ = self.db.execute(
+                    "INSERT INTO videos (folder_id, path, key, title, size, mtime, added_at)
+                     VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7)",
+                    params![folder_id, p, key, title, size as i64, mtime, now_secs()],
+                );
+                true
+            }
+        }
+    }
+
+    /// Flags every video of `folder_id` not in `seen` as missing.
+    pub fn mark_missing(&self, folder_id: i64, seen: &std::collections::HashSet<String>) {
+        let Ok(mut stmt) = self.db.prepare("SELECT id, path FROM videos WHERE folder_id = ?1 AND missing = 0") else {
+            return;
+        };
+        let rows: Vec<(i64, String)> = stmt
+            .query_map([folder_id], |r| Ok((r.get(0)?, r.get(1)?)))
+            .map(|it| it.flatten().collect())
+            .unwrap_or_default();
+        for (id, path) in rows {
+            if !seen.contains(&path) {
+                let _ = self.db.execute("UPDATE videos SET missing = 1 WHERE id = ?1", [id]);
+            }
+        }
+    }
+
+    /// Videos still waiting for duration/thumbnail, newest first.
+    pub fn pending_probe(&self) -> Vec<(i64, String)> {
+        let Ok(mut stmt) = self
+            .db
+            .prepare("SELECT id, path FROM videos WHERE probed = 0 AND missing = 0 ORDER BY added_at DESC, id DESC")
+        else {
+            return Vec::new();
+        };
+        stmt.query_map([], |r| Ok((r.get(0)?, r.get(1)?)))
+            .map(|it| it.flatten().collect())
+            .unwrap_or_default()
+    }
+
+    pub fn set_probe_result(&self, id: i64, info: Option<&crate::probe::Info>) {
+        match info {
+            Some(i) => {
+                let thumb = i.thumb.as_ref().map(|t| t.to_string_lossy().into_owned());
+                let _ = self.db.execute(
+                    "UPDATE videos SET duration = ?2, width = ?3, height = ?4, thumb = ?5, probed = 1 WHERE id = ?1",
+                    params![id, i.duration, i.width, i.height, thumb],
+                );
+            }
+            None => {
+                let _ = self.db.execute("UPDATE videos SET probed = 2 WHERE id = ?1", [id]);
+            }
+        }
+    }
+
+    pub fn remove_video(&self, id: i64) {
+        let _ = self.db.execute("DELETE FROM video_tags WHERE video_id = ?1", [id]);
+        let _ = self.db.execute("DELETE FROM videos WHERE id = ?1", [id]);
+    }
+
+    /// Every present video with its tags, resume position and play count.
+    pub fn videos(&self) -> Vec<Video> {
+        let Ok(mut stmt) = self.db.prepare(
+            "SELECT v.id, v.path, v.title, v.folder_id, v.duration, v.width, v.height, v.thumb, v.added_at,
+                    h.position, h.updated_at,
+                    (SELECT COUNT(*) FROM play_events p WHERE p.key = v.key),
+                    (SELECT GROUP_CONCAT(t.name, char(31)) FROM video_tags vt JOIN tags t ON t.id = vt.tag_id
+                      WHERE vt.video_id = v.id)
+             FROM videos v LEFT JOIN history h ON h.key = v.key
+             WHERE v.missing = 0",
+        ) else {
+            return Vec::new();
+        };
+        stmt.query_map([], |r| {
+            let tags: Option<String> = r.get(12)?;
+            Ok(Video {
+                id: r.get(0)?,
+                path: r.get(1)?,
+                title: r.get(2)?,
+                folder_id: r.get(3)?,
+                duration: r.get(4)?,
+                width: r.get(5)?,
+                height: r.get(6)?,
+                thumb: r.get(7)?,
+                added_at: r.get(8)?,
+                position: r.get(9)?,
+                last_played: r.get(10)?,
+                plays: r.get(11)?,
+                tags: tags
+                    .map(|t| t.split('\u{1f}').map(str::to_string).collect())
+                    .unwrap_or_default(),
+            })
+        })
+        .map(|it| it.flatten().collect())
+        .unwrap_or_default()
+    }
+
+    // ---- Tags ----
+
+    pub fn add_tag(&self, video_id: i64, name: &str) {
+        let name = name.trim().trim_start_matches('#').trim();
+        if name.is_empty() {
+            return;
+        }
+        let _ = self.db.execute("INSERT OR IGNORE INTO tags (name) VALUES (?1)", [name]);
+        let _ = self.db.execute(
+            "INSERT OR IGNORE INTO video_tags (video_id, tag_id) SELECT ?1, id FROM tags WHERE name = ?2",
+            params![video_id, name],
+        );
+    }
+
+    pub fn remove_tag(&self, video_id: i64, name: &str) {
+        let _ = self.db.execute(
+            "DELETE FROM video_tags WHERE video_id = ?1 AND tag_id = (SELECT id FROM tags WHERE name = ?2)",
+            params![video_id, name],
+        );
+        // Drop tags nobody uses any more.
+        let _ = self.db.execute("DELETE FROM tags WHERE id NOT IN (SELECT tag_id FROM video_tags)", []);
+    }
+}
+
+/// Paths are stored without Windows' `\\?\` prefix so they match what the
+/// rest of the app (and mpv) uses.
+pub fn display_path(p: &Path) -> String {
+    let s = p.to_string_lossy();
+    s.strip_prefix(r"\\?\").unwrap_or(&s).to_string()
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    fn temp_lib() -> (Library, PathBuf) {
+        let dir = std::env::temp_dir().join(format!("tp-lib-test-{}", std::process::id()));
+        let _ = std::fs::remove_dir_all(&dir);
+        std::fs::create_dir_all(dir.join("media")).unwrap();
+        let lib = Library::open(&dir.join("t.db")).unwrap();
+        (lib, dir)
+    }
+
+    #[test]
+    fn scan_tag_and_remove() {
+        let (lib, dir) = temp_lib();
+        let media = dir.join("media");
+        let file = media.join("第1讲.mp4");
+        std::fs::write(&file, b"x").unwrap();
+        let fid = lib.add_folder(&media.to_string_lossy()).unwrap();
+        assert_eq!(lib.add_folder(&media.to_string_lossy()), Some(fid), "adding twice is a no-op");
+
+        let canon = std::fs::canonicalize(&file).unwrap();
+        assert!(lib.upsert_file(fid, &canon, 1, 100), "new file needs probing");
+        assert!(!lib.upsert_file(fid, &canon, 1, 100), "unchanged file is skipped");
+        assert!(lib.upsert_file(fid, &canon, 2, 200), "changed file is re-probed");
+
+        let v = &lib.videos()[0];
+        assert_eq!(v.title, "第1讲");
+        lib.add_tag(v.id, "#课程");
+        lib.add_tag(v.id, "Rust");
+        let mut tags = lib.videos()[0].tags.clone();
+        tags.sort();
+        assert_eq!(tags, ["Rust", "课程"]);
+        lib.remove_tag(v.id, "Rust");
+        assert_eq!(lib.videos()[0].tags, ["课程"]);
+
+        lib.mark_missing(fid, &Default::default());
+        assert!(lib.videos().is_empty(), "missing files are hidden");
+
+        lib.remove_folder(fid);
+        assert!(lib.folders().is_empty());
+        let _ = std::fs::remove_dir_all(&dir);
+    }
+}

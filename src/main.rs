@@ -3,9 +3,13 @@
 mod app;
 mod history;
 mod icons;
+mod library;
+mod library_ui;
 mod mpv;
 mod player;
 mod playlist;
+mod probe;
+mod scanner;
 mod session;
 mod settings_panel;
 mod theme;

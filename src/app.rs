@@ -10,6 +10,8 @@ use eframe::glow;
 
 use crate::history::Entry;
 use crate::icons::{self, Icon};
+use crate::library_ui::{Action as LibAction, LibraryView};
+use crate::scanner::{Msg as ScanMsg, Scanner};
 use crate::mpv::{Event, RenderContext};
 use crate::player::Player;
 use crate::playlist::{self, LoopMode, Playlist};
@@ -57,6 +59,8 @@ pub struct App {
     side_scroll: f32,
     scroll_to_current: bool,
     speed_menu: bool,
+    library: LibraryView,
+    scanner: Scanner,
 }
 
 impl App {
@@ -71,6 +75,9 @@ impl App {
             Err(e) => (None, Some(e)),
         };
         let tracker = Tracker::new();
+        // Pick up new/changed files in watched folders on every start.
+        let scanner = Scanner::spawn(cc.egui_ctx.clone());
+        scanner.scan();
         let playlist = Playlist::new(tracker.settings.loop_mode, tracker.settings.shuffle);
         Self {
             render: None,
@@ -97,6 +104,8 @@ impl App {
             side_scroll: 0.0,
             scroll_to_current: false,
             speed_menu: false,
+            library: LibraryView::new(),
+            scanner,
         }
     }
 
@@ -141,6 +150,14 @@ impl App {
         }
     }
 
+    fn add_folder_dialog(&mut self) {
+        if let Some(dir) = rfd::FileDialog::new().set_title("添加到媒体库").pick_folder() {
+            if self.library.add_folder(&dir.to_string_lossy()) {
+                self.scanner.scan();
+            }
+        }
+    }
+
     fn handle_input(&mut self, ctx: &egui::Context) {
         let Some(player) = &self.player else { return };
         let (dropped, keys, cmd, scroll, moved) = ctx.input(|i| {
@@ -168,6 +185,9 @@ impl App {
             self.last_activity = now;
         }
         self.pending_open.extend(dropped);
+        if ctx.egui_wants_keyboard_input() {
+            return;
+        }
 
         let fullscreen = ctx.input(|i| i.viewport().fullscreen.unwrap_or(false));
         let s = player.state.clone();
@@ -407,16 +427,25 @@ impl eframe::App for App {
                 );
             }
         }
-        if surface.double_clicked() {
+        if surface.double_clicked() && !s.idle {
             let fs = ctx.input(|i| i.viewport().fullscreen.unwrap_or(false));
             ctx.send_viewport_cmd(ViewportCommand::Fullscreen(!fs));
         }
 
         let hovering_files = ctx.input(|i| !i.raw.hovered_files.is_empty());
 
-        if s.idle {
+        if s.idle && self.library.has_folders() {
+            match self.library.show(ui, stage) {
+                LibAction::Play(path) => self.pending_open.push(path),
+                LibAction::AddFolder => self.add_folder_dialog(),
+                LibAction::OpenFile => self.open_dialog(),
+                LibAction::Settings => self.settings_open = true,
+                LibAction::None => {}
+            }
+        } else if s.idle {
             match draw_empty_state(ui, stage, &self.recent) {
                 EmptyAction::Open => self.open_dialog(),
+                EmptyAction::AddFolder => self.add_folder_dialog(),
                 EmptyAction::Recent(path) => self.pending_open.push(path),
                 EmptyAction::Settings => self.settings_open = true,
                 EmptyAction::None => {}
@@ -444,6 +473,12 @@ impl eframe::App for App {
             }
             if alpha > 0.0 {
                 draw_top_bar(&painter, stage, &s, self.tracker.current_play_count(), alpha);
+                if back_button(ui, stage, alpha) {
+                    // Stopping returns to the library; progress is saved on EndFile.
+                    if let Some(p) = &self.player {
+                        p.stop();
+                    }
+                }
                 self.draw_controls(ui, stage, alpha);
             }
             self.draw_resume_prompt(ui, stage, now);
@@ -539,8 +574,17 @@ impl eframe::App for App {
                 Event::EndFile => {
                     self.tracker.finish();
                     self.recent_dirty = true;
+                    // Progress and play counts shown on cards may have changed.
+                    self.library.mark_dirty();
                 }
                 _ => {}
+            }
+        }
+        while let Ok(msg) = self.scanner.rx.try_recv() {
+            match msg {
+                ScanMsg::Changed => self.library.mark_dirty(),
+                ScanMsg::Probing(done, total) => self.library.probing = Some((done, total)),
+                ScanMsg::Idle => self.library.probing = None,
             }
         }
         self.tracker.tick(&player.state);
@@ -558,6 +602,7 @@ impl eframe::App for App {
     }
 
     fn on_exit(&mut self, gl: Option<&glow::Context>) {
+        self.scanner.quit();
         self.tracker.shutdown();
         if let (Some(v), Some(gl)) = (self.video.take(), gl) {
             v.destroy(gl);
@@ -873,12 +918,31 @@ fn knob(p: &egui::Painter, c: egui::Pos2, r: f32, alpha: f32) {
     p.circle_stroke(c, r, Stroke::new(2.0, ACCENT.gamma_multiply(alpha)));
 }
 
+/// "‹ 媒体库" at the top-left of the player. Returns true when clicked.
+fn back_button(ui: &mut egui::Ui, stage: Rect, alpha: f32) -> bool {
+    let r = Rect::from_min_size(pos2(stage.left() + 8.0, stage.top() + 8.0), vec2(74.0, 28.0));
+    let resp = ui.interact(r, ui.scope_id().with("back_to_library"), Sense::click());
+    let p = ui.painter();
+    let c = if resp.hovered() { ACCENT } else { TEXT };
+    if resp.hovered() {
+        p.rect_filled(r, 14.0, theme::accent_alpha((30.0 * alpha) as u8));
+        ui.ctx().set_cursor_icon(CursorIcon::PointingHand);
+    }
+    let cy = r.center().y;
+    let x = r.left() + 14.0;
+    let st = Stroke::new(1.8, c.gamma_multiply(alpha));
+    p.line_segment([pos2(x + 4.0, cy - 6.0), pos2(x - 2.0, cy)], st);
+    p.line_segment([pos2(x - 2.0, cy), pos2(x + 4.0, cy + 6.0)], st);
+    p.text(pos2(x + 12.0, cy), Align2::LEFT_CENTER, "媒体库", FontId::proportional(13.0), c.gamma_multiply(alpha));
+    resp.clicked()
+}
+
 fn draw_top_bar(p: &egui::Painter, full: Rect, s: &crate::player::State, plays: i64, alpha: f32) {
     let a = |c: Color32| c.gamma_multiply(alpha);
     let band = Rect::from_min_max(full.min, pos2(full.right(), full.top() + 44.0));
     p.rect_filled(band, 0.0, theme::scrim((110.0 * alpha) as u8));
     let y = full.top() + 22.0;
-    p.text(pos2(full.left() + 16.0, y), Align2::LEFT_CENTER, &s.title, FontId::proportional(13.0), a(TEXT));
+    p.text(pos2(full.left() + 92.0, y), Align2::LEFT_CENTER, &s.title, FontId::proportional(13.0), a(TEXT));
 
     let mut tags: Vec<(String, Color32)> = Vec::new();
     if plays > 0 {
@@ -919,6 +983,7 @@ fn draw_osd(p: &egui::Painter, full: Rect, text: &str, alpha: f32) {
 enum EmptyAction {
     None,
     Open,
+    AddFolder,
     Recent(String),
     Settings,
 }
@@ -932,7 +997,7 @@ fn draw_empty_state(ui: &mut egui::Ui, full: Rect, recent: &[Entry]) -> EmptyAct
     icons::draw(&p, Icon::Drop, frame.center() - vec2(0.0, 14.0), 24.0, ACCENT);
     p.text(frame.center() + vec2(0.0, 22.0), Align2::CENTER_CENTER, "拖入媒体文件", FontId::proportional(13.0), TEXT);
 
-    let open_rect = Rect::from_center_size(pos2(c.x, frame.bottom() + 26.0), vec2(150.0, 28.0));
+    let open_rect = Rect::from_center_size(pos2(c.x - 84.0, frame.bottom() + 26.0), vec2(150.0, 28.0));
     let resp = ui.interact(open_rect, ui.scope_id().with("open"), Sense::click());
     let color = if resp.hovered() { ACCENT } else { TEXT_2 };
     if resp.hovered() {
@@ -940,6 +1005,19 @@ fn draw_empty_state(ui: &mut egui::Ui, full: Rect, recent: &[Entry]) -> EmptyAct
     }
     let shortcut = if cfg!(target_os = "macos") { "⌘O" } else { "Ctrl+O" };
     p.text(open_rect.center(), Align2::CENTER_CENTER, format!("打开文件  {shortcut}"), FontId::monospace(11.0), color);
+
+    let lib_rect = Rect::from_center_size(pos2(c.x + 84.0, frame.bottom() + 26.0), vec2(150.0, 28.0));
+    let lresp = ui.interact(lib_rect, ui.scope_id().with("add_folder"), Sense::click());
+    if lresp.hovered() {
+        ui.ctx().set_cursor_icon(CursorIcon::PointingHand);
+    }
+    p.text(
+        lib_rect.center(),
+        Align2::CENTER_CENTER,
+        "+ 建立媒体库",
+        FontId::proportional(12.0),
+        if lresp.hovered() { TEXT } else { ACCENT },
+    );
 
     p.text(
         pos2(c.x, frame.bottom() + 64.0),
@@ -949,7 +1027,13 @@ fn draw_empty_state(ui: &mut egui::Ui, full: Rect, recent: &[Entry]) -> EmptyAct
         TEXT_3,
     );
 
-    let mut action = if resp.clicked() { EmptyAction::Open } else { EmptyAction::None };
+    let mut action = if resp.clicked() {
+        EmptyAction::Open
+    } else if lresp.clicked() {
+        EmptyAction::AddFolder
+    } else {
+        EmptyAction::None
+    };
 
     // Settings link, top-right corner.
     let gear = Rect::from_center_size(pos2(full.right() - 24.0, full.top() + 24.0), vec2(30.0, 30.0));
