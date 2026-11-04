@@ -182,6 +182,36 @@ impl Player {
         let _ = self.mpv.command(&["cycle", "sub"]);
     }
 
+    /// Pushes the user's video/subtitle preferences to mpv. Safe to call at
+    /// any time; most take effect immediately, sub-auto/slang on the next file.
+    pub fn apply_settings(&self, s: &crate::history::Settings) {
+        let m = &self.mpv;
+        m.set_property_string("hwdec", if s.hwdec { "auto-safe" } else { "no" });
+        match s.aspect.as_str() {
+            "stretch" => {
+                m.set_property_string("keepaspect", "no");
+                m.set_property_string("video-aspect-override", "-1");
+            }
+            "auto" | "" => {
+                m.set_property_string("keepaspect", "yes");
+                m.set_property_string("video-aspect-override", "-1");
+            }
+            ratio => {
+                m.set_property_string("keepaspect", "yes");
+                m.set_property_string("video-aspect-override", ratio);
+            }
+        }
+        m.set_property_string("sub-auto", if s.sub_auto { "fuzzy" } else { "no" });
+        m.set_property_string("sub-font-size", &s.sub_size.to_string());
+        m.set_property_string("sub-pos", &s.sub_pos.to_string());
+        let slang = match s.sub_lang.as_str() {
+            "zh" => "chi,zho,zh,chs,cht,sc,tc,zh-Hans,zh-Hant,zh-CN,zh-TW",
+            "en" => "eng,en",
+            _ => "",
+        };
+        m.set_property_string("slang", slang);
+    }
+
     pub fn stop(&self) {
         let _ = self.mpv.command(&["stop"]);
     }

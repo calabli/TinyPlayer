@@ -1,4 +1,4 @@
-//! The settings overlay (播放 and 播放记录 pages), drawn in the tech-minimal style.
+//! The settings overlay (播放 / 画面 / 字幕 / 播放记录 / 快捷键), drawn in the tech-minimal style.
 
 use eframe::egui::{self, Align2, Color32, FontId, Rect, Sense, Stroke, StrokeKind, pos2, vec2};
 
@@ -17,7 +17,10 @@ pub struct PanelState {
 enum Page {
     #[default]
     Playback,
+    Video,
+    Subtitles,
     History,
+    Shortcuts,
 }
 
 #[derive(Default)]
@@ -28,7 +31,7 @@ pub struct Actions {
     pub close: bool,
 }
 
-const W: f32 = 600.0;
+const W: f32 = 660.0;
 const NAV_W: f32 = 132.0;
 const ROW_H: f32 = 58.0;
 
@@ -62,7 +65,14 @@ pub fn show(
     let nav = Rect::from_min_size(panel.min, vec2(NAV_W, panel.height()));
     p.line_segment([nav.right_top(), nav.right_bottom()], Stroke::new(0.5, LINE));
     p.text(nav.min + vec2(16.0, 22.0), Align2::LEFT_CENTER, "SETTINGS", FontId::monospace(10.0), TEXT_3);
-    for (i, (page, name)) in [(Page::Playback, "播放"), (Page::History, "播放记录")].into_iter().enumerate() {
+    let pages = [
+        (Page::Playback, "播放"),
+        (Page::Video, "画面"),
+        (Page::Subtitles, "字幕"),
+        (Page::History, "播放记录"),
+        (Page::Shortcuts, "快捷键"),
+    ];
+    for (i, (page, name)) in pages.into_iter().enumerate() {
         let item = Rect::from_min_size(nav.min + vec2(0.0, 44.0 + 34.0 * i as f32), vec2(NAV_W, 32.0));
         let resp = ui.interact(item, ui.scope_id().with(("settings_nav", i)), Sense::click());
         let on = st.page == page;
@@ -127,6 +137,104 @@ pub fn show(
         if toggle(ui, &p, r, "shuffle", settings.shuffle, true) {
             settings.shuffle = !settings.shuffle;
             out.settings_changed = true;
+        }
+        return out;
+    }
+
+    if st.page == Page::Video {
+        let r = row(y);
+        label(r, "硬件解码", "用显卡解码，省电、降低 CPU 占用；画面异常时可关闭", true);
+        if toggle(ui, &p, r, "hwdec", settings.hwdec, true) {
+            settings.hwdec = !settings.hwdec;
+            out.settings_changed = true;
+        }
+        y += ROW_H;
+
+        let r = row(y);
+        label(r, "画面比例", "", true);
+        let opts = ["auto", "16:9", "4:3", "2.35:1", "stretch"];
+        let sel = opts.iter().position(|o| *o == settings.aspect).unwrap_or(0);
+        if let Some(i) = segment(ui, &p, r, "aspect", &["原始", "16:9", "4:3", "2.35:1", "拉伸"], sel, true) {
+            settings.aspect = opts[i].to_string();
+            out.settings_changed = true;
+        }
+        return out;
+    }
+
+    if st.page == Page::Subtitles {
+        let r = row(y);
+        label(r, "自动加载外挂字幕", "打开视频时加载同名的 .srt / .ass 等字幕文件", true);
+        if toggle(ui, &p, r, "sub_auto", settings.sub_auto, true) {
+            settings.sub_auto = !settings.sub_auto;
+            out.settings_changed = true;
+        }
+        y += ROW_H;
+
+        let r = row(y);
+        label(r, "字幕大小", "", true);
+        let sizes = [36u32, 46, 58, 72];
+        let sel = sizes.iter().position(|v| *v == settings.sub_size).unwrap_or(1);
+        if let Some(i) = segment(ui, &p, r, "sub_size", &["小", "中", "大", "特大"], sel, true) {
+            settings.sub_size = sizes[i];
+            out.settings_changed = true;
+        }
+        y += ROW_H;
+
+        let r = row(y);
+        label(r, "字幕位置", "", true);
+        let poss = [100u32, 95, 88];
+        let sel = poss.iter().position(|v| *v == settings.sub_pos).unwrap_or(0);
+        if let Some(i) = segment(ui, &p, r, "sub_pos", &["底部", "稍高", "更高"], sel, true) {
+            settings.sub_pos = poss[i];
+            out.settings_changed = true;
+        }
+        y += ROW_H;
+
+        let r = row(y);
+        label(r, "首选字幕语言", "有多条字幕轨时优先选择", true);
+        let langs = ["auto", "zh", "en"];
+        let sel = langs.iter().position(|v| *v == settings.sub_lang).unwrap_or(0);
+        if let Some(i) = segment(ui, &p, r, "sub_lang", &["自动", "中文", "英文"], sel, true) {
+            settings.sub_lang = langs[i].to_string();
+            out.settings_changed = true;
+        }
+        return out;
+    }
+
+    if st.page == Page::Shortcuts {
+        let cmd = if cfg!(target_os = "macos") { "⌘" } else { "Ctrl+" };
+        let keys: Vec<(String, &str)> = vec![
+            ("Space / K".into(), "播放 / 暂停"),
+            ("← / →".into(), "快退 / 快进 5 秒"),
+            (format!("{cmd}← / →"), "快退 / 快进 60 秒"),
+            ("↑ / ↓ / 滚轮".into(), "音量 ±5%"),
+            ("M".into(), "静音"),
+            ("F / Enter".into(), "全屏（或双击画面）"),
+            ("Esc".into(), "退出全屏"),
+            ("Home".into(), "回到开头"),
+            ("[ / ]".into(), "减速 / 加速"),
+            ("Backspace".into(), "恢复 1.0×"),
+            ("C".into(), "切换字幕"),
+            ("N / P".into(), "下一个 / 上一个"),
+            ("L".into(), "播放列表"),
+            (format!("{cmd}O"), "打开文件"),
+            (format!("{cmd}D"), "收藏 / 取消收藏"),
+            (format!("{cmd}S"), "截图到桌面"),
+            (format!("{cmd}K"), "媒体库搜索"),
+            (format!("{cmd},"), "设置"),
+        ];
+        let col_w = (right - left) / 2.0;
+        let per_col = keys.len().div_ceil(2);
+        for (i, (k, what)) in keys.iter().enumerate() {
+            let col = (i / per_col) as f32;
+            let rowi = (i % per_col) as f32;
+            let x = left + col * col_w;
+            let yy = y + 14.0 + rowi * 30.0;
+            let g = p.layout_no_wrap(k.clone(), FontId::monospace(11.0), TEXT);
+            let kr = Rect::from_min_size(pos2(x, yy - g.size().y / 2.0 - 3.0), g.size() + vec2(10.0, 6.0));
+            p.rect_filled(kr, 4.0, Color32::from_white_alpha(12));
+            p.galley(kr.min + vec2(5.0, 3.0), g, TEXT);
+            p.text(pos2(x + 122.0, yy), Align2::LEFT_CENTER, *what, FontId::proportional(12.0), TEXT_2);
         }
         return out;
     }

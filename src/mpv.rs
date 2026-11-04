@@ -244,6 +244,16 @@ impl Mpv {
         }
     }
 
+    /// Sets a property from its string form (as on mpv's command line).
+    pub fn set_property_string(&self, name: &str, value: &str) {
+        let n = cstr(name);
+        let v = cstr(value);
+        let mut p = v.as_ptr();
+        unsafe {
+            (self.api.set_property)(self.handle, n.as_ptr(), FORMAT_STRING, (&raw mut p).cast());
+        }
+    }
+
     pub fn set_flag(&self, name: &str, value: bool) {
         let n = cstr(name);
         let mut v: c_int = value.into();

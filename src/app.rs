@@ -63,6 +63,9 @@ pub struct App {
     scanner: Scanner,
     /// Whether the playing file is favorited; None if it isn't in the library.
     current_fav: Option<bool>,
+    /// Results of background folder scans: (playlist generation, playing file name, files).
+    fill_tx: std::sync::mpsc::Sender<(u64, String, Vec<String>)>,
+    fill_rx: std::sync::mpsc::Receiver<(u64, String, Vec<String>)>,
 }
 
 impl App {
@@ -77,10 +80,14 @@ impl App {
             Err(e) => (None, Some(e)),
         };
         let tracker = Tracker::new();
+        let (fill_tx, fill_rx) = std::sync::mpsc::channel();
         // Pick up new/changed files in watched folders on every start.
         let scanner = Scanner::spawn(cc.egui_ctx.clone());
         scanner.scan();
         let playlist = Playlist::new(tracker.settings.loop_mode, tracker.settings.shuffle);
+        if let Some(p) = &player {
+            p.apply_settings(&tracker.settings);
+        }
         Self {
             render: None,
             video: None,
@@ -109,6 +116,8 @@ impl App {
             library: LibraryView::new(),
             scanner,
             current_fav: None,
+            fill_tx,
+            fill_rx,
         }
     }
 
@@ -320,8 +329,10 @@ impl App {
         }
     }
 
-    /// Replaces the queue with whatever was opened/dropped and starts playing.
-    fn flush_open(&mut self) {
+    /// Replaces the queue with whatever was opened/dropped and starts playing
+    /// right away. The rest of the folder is scanned on a background thread
+    /// and merged into the queue when ready, so opening never waits on disk.
+    fn flush_open(&mut self, ctx: &egui::Context) {
         if self.pending_open.is_empty() {
             return;
         }
@@ -329,6 +340,18 @@ impl App {
         let fill = self.tracker.settings.fill_folder;
         if let Some(i) = self.playlist.set_files(&paths, fill) {
             self.play_index(i);
+        }
+        if let Some((generation, dir, name)) = self.playlist.take_pending_fill() {
+            let tx = self.fill_tx.clone();
+            let ctx = ctx.clone();
+            std::thread::Builder::new()
+                .name("folder-fill".into())
+                .spawn(move || {
+                    let files = playlist::scan_dir(&dir);
+                    let _ = tx.send((generation, name, files));
+                    ctx.request_repaint();
+                })
+                .ok();
         }
     }
 
@@ -412,7 +435,7 @@ impl eframe::App for App {
         let ctx = ui.ctx().clone();
         self.ensure_gl(&ctx, frame);
         self.handle_input(&ctx);
-        self.flush_open();
+        self.flush_open(&ctx);
 
         let full = ctx.content_rect();
         let painter = ui.painter().clone();
@@ -566,6 +589,9 @@ impl eframe::App for App {
             if act.settings_changed && self.tracker.settings != before {
                 self.tracker.save_settings();
                 self.sync_playlist_settings();
+                if let Some(p) = &self.player {
+                    p.apply_settings(&self.tracker.settings);
+                }
             }
             if act.clear_history {
                 if let Some(st) = &self.tracker.store {
@@ -613,6 +639,11 @@ impl eframe::App for App {
                     self.library.mark_dirty();
                 }
                 _ => {}
+            }
+        }
+        while let Ok((generation, name, files)) = self.fill_rx.try_recv() {
+            if self.playlist.merge_folder(generation, &name, files) {
+                self.scroll_to_current = true;
             }
         }
         while let Ok(msg) = self.scanner.rx.try_recv() {
@@ -1260,6 +1291,8 @@ impl App {
             (((p.y - list.top() + self.side_scroll) / ROW_H) + 0.5).floor().clamp(0.0, n as f32) as usize
         });
 
+        // Index column grows with the number of digits (e.g. 20001 items).
+        let idx_w = (n.max(10).to_string().len() as f32 * 7.5 + 14.0).max(30.0);
         for i in 0..n {
             let y = list.top() + i as f32 * ROW_H - self.side_scroll;
             if y + ROW_H < list.top() || y > list.bottom() {
@@ -1287,10 +1320,10 @@ impl App {
             );
             let close_rect = Rect::from_center_size(pos2(right - 20.0, cy), vec2(24.0, 24.0));
             let row_hot = !dragging && (resp.hovered() || ui.rect_contains_pointer(close_rect));
-            let title_w = SIDEBAR_W - 46.0 - if row_hot { 34.0 } else { 14.0 };
+            let title_w = SIDEBAR_W - 16.0 - idx_w - if row_hot { 34.0 } else { 14.0 };
             let title = elide(&lp, &self.playlist.items[i].title, FontId::proportional(12.0), title_w);
             lp.text(
-                pos2(left + 46.0, cy),
+                pos2(left + 16.0 + idx_w, cy),
                 Align2::LEFT_CENTER,
                 title,
                 FontId::proportional(12.0),

@@ -2,7 +2,7 @@
 //! loop/shuffle rules, reordering and folder auto-fill stay under our control.
 
 use std::cmp::Ordering;
-use std::path::Path;
+use std::path::{Path, PathBuf};
 
 pub const MEDIA_EXTS: &[&str] = &[
     "mp4", "mkv", "webm", "mov", "avi", "flv", "wmv", "m4v", "ts", "m2ts", "mpg", "mpeg", "3gp",
@@ -70,6 +70,11 @@ pub struct Playlist {
     /// Play order when shuffling: a permutation of item indices.
     order: Vec<usize>,
     rng: u64,
+    /// Bumped whenever the queue is replaced or edited, so a background
+    /// folder scan that finishes late can tell its result is stale.
+    generation: u64,
+    /// Folder scan requested by the last `set_files`: (generation, dir, file name).
+    pending_fill: Option<(u64, PathBuf, String)>,
 }
 
 pub fn is_media(path: &Path) -> bool {
@@ -79,12 +84,15 @@ pub fn is_media(path: &Path) -> bool {
 }
 
 /// Media files directly inside `dir`, in natural order ("第2讲" before "第10讲").
+/// Uses the directory entry's own file type (no extra stat per file), which
+/// matters on network drives and big folders.
 pub fn scan_dir(dir: &Path) -> Vec<String> {
     let Ok(rd) = std::fs::read_dir(dir) else { return Vec::new() };
     let mut files: Vec<String> = rd
         .flatten()
+        .filter(|e| e.file_type().is_ok_and(|t| t.is_file()))
         .map(|e| e.path())
-        .filter(|p| p.is_file() && is_media(p))
+        .filter(|p| is_media(p))
         .map(|p| p.to_string_lossy().into_owned())
         .collect();
     files.sort_by(|a, b| natural_cmp(file_name(a), file_name(b)));
@@ -137,7 +145,16 @@ impl Playlist {
             .duration_since(std::time::UNIX_EPOCH)
             .map_or(0x9E37_79B9, |d| d.as_nanos() as u64)
             | 1;
-        Self { items: Vec::new(), current: None, loop_mode, shuffle, order: Vec::new(), rng: seed }
+        Self {
+            items: Vec::new(),
+            current: None,
+            loop_mode,
+            shuffle,
+            order: Vec::new(),
+            rng: seed,
+            generation: 0,
+            pending_fill: None,
+        }
     }
 
     pub fn len(&self) -> usize {
@@ -149,36 +166,30 @@ impl Playlist {
     }
 
     /// Replaces the queue with `paths` and returns the index to play first.
-    /// A single file pulls in its folder's other media files when
-    /// `fill_folder` is set; a folder is expanded to its media files.
+    ///
+    /// Never blocks on a folder scan for a single file: the queue starts with
+    /// just that file so playback begins at once, and when `fill_folder` is
+    /// set a scan of its folder is left in [`Self::take_pending_fill`] for the
+    /// caller to run in the background and hand back to [`Self::merge_folder`].
+    /// A folder path is expanded right away (there's nothing to play otherwise).
     pub fn set_files(&mut self, paths: &[String], fill_folder: bool) -> Option<usize> {
+        self.generation += 1;
+        self.pending_fill = None;
         let mut items = Vec::new();
-        let mut start = 0;
-        if let [single] = paths {
-            let p = Path::new(single);
-            if p.is_dir() {
-                items = scan_dir(p);
-            } else if fill_folder && p.is_file() && is_media(p) {
-                if let Some(dir) = p.parent() {
-                    let siblings = scan_dir(dir);
-                    let me = std::fs::canonicalize(p).ok();
-                    if let Some(i) = siblings
-                        .iter()
-                        .position(|s| std::fs::canonicalize(s).ok() == me && me.is_some())
-                    {
-                        start = i;
-                        items = siblings;
-                    }
-                }
+        for p in paths {
+            let path = Path::new(p);
+            if path.is_dir() {
+                items.extend(scan_dir(path));
+            } else {
+                items.push(p.clone());
             }
         }
-        if items.is_empty() {
-            for p in paths {
-                let path = Path::new(p);
-                if path.is_dir() {
-                    items.extend(scan_dir(path));
-                } else {
-                    items.push(p.clone());
+        if let [single] = paths {
+            let p = Path::new(single);
+            if fill_folder && !p.is_dir() && is_media(p) {
+                if let (Some(dir), Some(name)) = (p.parent(), p.file_name()) {
+                    let name = name.to_string_lossy().into_owned();
+                    self.pending_fill = Some((self.generation, dir.to_path_buf(), name));
                 }
             }
         }
@@ -187,9 +198,41 @@ impl Playlist {
             self.current = None;
             return None;
         }
-        self.current = Some(start);
+        self.current = Some(0);
         self.reshuffle();
         self.current
+    }
+
+    /// The folder scan requested by the last [`Self::set_files`], if any:
+    /// (generation, folder, name of the playing file).
+    pub fn take_pending_fill(&mut self) -> Option<(u64, PathBuf, String)> {
+        self.pending_fill.take()
+    }
+
+    /// Adopts a finished folder scan: the queue becomes the folder's media
+    /// files with the playing file selected. Ignored if the queue changed in
+    /// the meantime (another file opened, items reordered/removed).
+    /// Returns true if the queue was updated.
+    pub fn merge_folder(&mut self, generation: u64, playing_name: &str, siblings: Vec<String>) -> bool {
+        if generation != self.generation || self.items.len() != 1 || siblings.len() < 2 {
+            return false;
+        }
+        let same = |s: &str| {
+            let n = Path::new(s).file_name().map(|n| n.to_string_lossy().into_owned()).unwrap_or_default();
+            if cfg!(any(target_os = "windows", target_os = "macos")) {
+                n.to_lowercase() == playing_name.to_lowercase()
+            } else {
+                n == playing_name
+            }
+        };
+        let Some(i) = siblings.iter().position(|s| same(s)) else { return false };
+        // Keep the exact path string mpv is playing for the current item.
+        let current_path = self.items[0].path.clone();
+        self.items = siblings.into_iter().map(Item::new).collect();
+        self.items[i] = Item::new(current_path);
+        self.current = Some(i);
+        self.reshuffle();
+        true
     }
 
     pub fn select(&mut self, i: usize) -> Option<usize> {
@@ -259,6 +302,7 @@ impl Playlist {
         if i >= self.items.len() {
             return false;
         }
+        self.generation += 1;
         self.items.remove(i);
         let removed_current = self.current == Some(i);
         self.current = match self.current {
@@ -278,6 +322,7 @@ impl Playlist {
         if from >= n || to >= n || from == to {
             return;
         }
+        self.generation += 1;
         let item = self.items.remove(from);
         self.items.insert(to, item);
         if let Some(c) = self.current {
@@ -385,6 +430,36 @@ mod tests {
         }
         seen.sort();
         assert_eq!(seen, (0..6).collect::<Vec<_>>());
+    }
+
+    #[test]
+    fn folder_fill_is_deferred_and_merged() {
+        let dir = std::env::temp_dir().join(format!("tp-fill-{}", std::process::id()));
+        let _ = std::fs::remove_dir_all(&dir);
+        std::fs::create_dir_all(&dir).unwrap();
+        for n in ["第1讲.mp4", "第2讲.mp4", "第10讲.mp4", "notes.txt"] {
+            std::fs::write(dir.join(n), b"x").unwrap();
+        }
+        let file = dir.join("第2讲.mp4").to_string_lossy().into_owned();
+        let mut p = Playlist::new(LoopMode::Off, false);
+
+        // Plays immediately with just the opened file.
+        assert_eq!(p.set_files(std::slice::from_ref(&file), true), Some(0));
+        assert_eq!(p.len(), 1);
+        let (generation, folder, name) = p.take_pending_fill().expect("scan requested");
+
+        // Background scan result merges in, keeping the playing file current.
+        assert!(p.merge_folder(generation, &name, scan_dir(&folder)));
+        let titles: Vec<_> = p.items.iter().map(|i| i.title.as_str()).collect();
+        assert_eq!(titles, ["第1讲.mp4", "第2讲.mp4", "第10讲.mp4"]);
+        assert_eq!(p.current, Some(1));
+
+        // A stale result (another file opened since) is ignored.
+        p.set_files(std::slice::from_ref(&file), true);
+        let (g2, ..) = p.take_pending_fill().unwrap();
+        p.set_files(std::slice::from_ref(&file), true);
+        assert!(!p.merge_folder(g2, &name, scan_dir(&folder)));
+        let _ = std::fs::remove_dir_all(&dir);
     }
 
     #[test]

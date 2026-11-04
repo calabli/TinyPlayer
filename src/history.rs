@@ -40,6 +40,19 @@ pub struct Settings {
     pub fill_folder: bool,
     pub loop_mode: LoopMode,
     pub shuffle: bool,
+    // Video
+    pub hwdec: bool,
+    /// Aspect override: "auto", "16:9", "4:3", "2.35:1" or "stretch".
+    pub aspect: String,
+    // Subtitles
+    /// Load subtitle files whose name matches the video.
+    pub sub_auto: bool,
+    /// mpv `sub-font-size` (mpv's default is 38 at 720p scale).
+    pub sub_size: u32,
+    /// mpv `sub-pos`: 100 = bottom edge, smaller = higher.
+    pub sub_pos: u32,
+    /// Preferred subtitle language: "auto", "zh" or "en".
+    pub sub_lang: String,
 }
 
 impl Default for Settings {
@@ -53,6 +66,12 @@ impl Default for Settings {
             fill_folder: true,
             loop_mode: LoopMode::Off,
             shuffle: false,
+            hwdec: true,
+            aspect: "auto".into(),
+            sub_auto: true,
+            sub_size: 46,
+            sub_pos: 100,
+            sub_lang: "auto".into(),
         }
     }
 }
@@ -162,6 +181,12 @@ impl Store {
             fill_folder: flag("fill_folder", d.fill_folder),
             loop_mode: get("loop_mode").and_then(|v| LoopMode::parse(&v)).unwrap_or(d.loop_mode),
             shuffle: flag("shuffle", d.shuffle),
+            hwdec: flag("hwdec", d.hwdec),
+            aspect: get("aspect").unwrap_or(d.aspect),
+            sub_auto: flag("sub_auto", d.sub_auto),
+            sub_size: get("sub_size").and_then(|v| v.parse().ok()).unwrap_or(d.sub_size),
+            sub_pos: get("sub_pos").and_then(|v| v.parse().ok()).unwrap_or(d.sub_pos),
+            sub_lang: get("sub_lang").unwrap_or(d.sub_lang),
         }
     }
 
@@ -181,6 +206,12 @@ impl Store {
             ("fill_folder", b(s.fill_folder)),
             ("loop_mode", s.loop_mode.as_str().to_string()),
             ("shuffle", b(s.shuffle)),
+            ("hwdec", b(s.hwdec)),
+            ("aspect", s.aspect.clone()),
+            ("sub_auto", b(s.sub_auto)),
+            ("sub_size", s.sub_size.to_string()),
+            ("sub_pos", s.sub_pos.to_string()),
+            ("sub_lang", s.sub_lang.clone()),
         ] {
             let _ = self.db.execute(
                 "INSERT INTO settings (k, v) VALUES (?1, ?2) ON CONFLICT(k) DO UPDATE SET v = ?2",
@@ -311,6 +342,12 @@ mod tests {
             fill_folder: false,
             loop_mode: LoopMode::One,
             shuffle: true,
+            hwdec: false,
+            aspect: "4:3".into(),
+            sub_auto: false,
+            sub_size: 60,
+            sub_pos: 90,
+            sub_lang: "en".into(),
         };
         s.save_settings(&custom);
         assert_eq!(s.load_settings(), custom);
