@@ -61,6 +61,8 @@ pub struct App {
     speed_menu: bool,
     library: LibraryView,
     scanner: Scanner,
+    /// Whether the playing file is favorited; None if it isn't in the library.
+    current_fav: Option<bool>,
 }
 
 impl App {
@@ -106,6 +108,7 @@ impl App {
             speed_menu: false,
             library: LibraryView::new(),
             scanner,
+            current_fav: None,
         }
     }
 
@@ -194,6 +197,7 @@ impl App {
         let mut osd: Option<String> = None;
         let mut open_dialog = false;
         let (mut want_next, mut want_prev, mut want_side) = (false, false, false);
+        let mut want_fav = false;
 
         // The settings overlay is modal: only its own shortcuts apply.
         if keys.iter().any(|k| *k == Key::Comma) && cmd {
@@ -225,6 +229,7 @@ impl App {
             }
             match key {
                 Key::O if cmd => open_dialog = true,
+                Key::D if cmd && !s.idle => want_fav = true,
                 Key::Home if !s.idle => {
                     player.seek_to(0.0, true);
                     self.resume_prompt = None;
@@ -310,6 +315,9 @@ impl App {
         if want_side {
             self.toggle_sidebar();
         }
+        if want_fav {
+            self.toggle_favorite(ctx);
+        }
     }
 
     /// Replaces the queue with whatever was opened/dropped and starts playing.
@@ -321,6 +329,25 @@ impl App {
         let fill = self.tracker.settings.fill_folder;
         if let Some(i) = self.playlist.set_files(&paths, fill) {
             self.play_index(i);
+        }
+    }
+
+    /// Queues exactly `paths` (no folder auto-fill) and starts the first.
+    fn play_all(&mut self, paths: &[String]) {
+        if let Some(i) = self.playlist.set_files(paths, false) {
+            self.play_index(i);
+        }
+    }
+
+    /// Ctrl+D / the player's star: favorite the current file.
+    fn toggle_favorite(&mut self, ctx: &egui::Context) {
+        let Some(path) = self.player.as_ref().map(|p| p.state.path.clone()) else { return };
+        match self.library.toggle_favorite_path(&path) {
+            Some(on) => {
+                self.current_fav = Some(on);
+                self.show_osd(ctx, if on { "★ 已收藏" } else { "已取消收藏" });
+            }
+            None => self.show_osd(ctx, "只有媒体库里的视频可以收藏"),
         }
     }
 
@@ -437,6 +464,7 @@ impl eframe::App for App {
         if s.idle && self.library.has_folders() {
             match self.library.show(ui, stage) {
                 LibAction::Play(path) => self.pending_open.push(path),
+                LibAction::PlayAll(paths) => self.play_all(&paths),
                 LibAction::AddFolder => self.add_folder_dialog(),
                 LibAction::OpenFile => self.open_dialog(),
                 LibAction::Settings => self.settings_open = true,
@@ -473,6 +501,12 @@ impl eframe::App for App {
             }
             if alpha > 0.0 {
                 draw_top_bar(&painter, stage, &s, self.tracker.current_play_count(), alpha);
+                if let Some(fav) = self.current_fav {
+                    if fav_button(ui, stage, &s.title, fav, alpha) {
+                        let ctx = ui.ctx().clone();
+                        self.toggle_favorite(&ctx);
+                    }
+                }
                 if back_button(ui, stage, alpha) {
                     // Stopping returns to the library; progress is saved on EndFile.
                     if let Some(p) = &self.player {
@@ -561,6 +595,7 @@ impl eframe::App for App {
             match ev {
                 Event::FileLoaded => {
                     self.resume_prompt = None;
+                    self.current_fav = self.library.is_favorite_path(&player.state.path);
                     match self.tracker.file_loaded(&player.state) {
                         Resume::Resumed(pos) => {
                             player.seek_to(pos, true);
@@ -916,6 +951,21 @@ impl App {
 fn knob(p: &egui::Painter, c: egui::Pos2, r: f32, alpha: f32) {
     p.circle_filled(c, r, Color32::WHITE.gamma_multiply(alpha));
     p.circle_stroke(c, r, Stroke::new(2.0, ACCENT.gamma_multiply(alpha)));
+}
+
+/// Star right after the title (only for files in the library).
+fn fav_button(ui: &mut egui::Ui, stage: Rect, title: &str, fav: bool, alpha: f32) -> bool {
+    let w = ui.painter().layout_no_wrap(title.to_string(), FontId::proportional(13.0), TEXT).size().x;
+    let max_x = stage.right() - 260.0;
+    let x = (stage.left() + 92.0 + w + 18.0).min(max_x);
+    let r = Rect::from_center_size(pos2(x, stage.top() + 22.0), vec2(26.0, 26.0));
+    let resp = ui.interact(r, ui.scope_id().with("player_fav"), Sense::click());
+    let c = if fav || resp.hovered() { ACCENT } else { TEXT_2 };
+    icons::draw(ui.painter(), if fav { Icon::StarFilled } else { Icon::Star }, r.center(), 15.0, c.gamma_multiply(alpha));
+    if resp.hovered() {
+        ui.ctx().set_cursor_icon(CursorIcon::PointingHand);
+    }
+    resp.on_hover_text(if fav { "取消收藏 (Ctrl+D)" } else { "收藏 (Ctrl+D)" }).clicked()
 }
 
 /// "‹ 媒体库" at the top-left of the player. Returns true when clicked.

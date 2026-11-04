@@ -1,7 +1,10 @@
-//! Library home screen: search, nav (views / tags / folders), and a
-//! virtualized thumbnail grid. Shown whenever nothing is playing.
+//! Library home screen, shown whenever nothing is playing:
+//! - top bar: search, 媒体库/文件夹 mode switch, add folder, open file, settings
+//! - nav: views (all / continue / recent / most played), collections, tags, folders
+//! - content: a virtualized thumbnail grid, or a folder browser with breadcrumbs
 
-use std::collections::{HashMap, HashSet};
+use std::collections::{BTreeMap, HashMap, HashSet};
+use std::path::{Path, PathBuf};
 
 use eframe::egui::{
     self, Align2, Color32, CursorIcon, FontId, Rect, Sense, Stroke, StrokeKind, TextureHandle, pos2, vec2,
@@ -9,7 +12,7 @@ use eframe::egui::{
 
 use crate::app::fmt_time;
 use crate::icons::{self, Icon};
-use crate::library::{Folder, Library, Video};
+use crate::library::{Collection, Folder, Library, Video};
 use crate::playlist::natural_cmp;
 use crate::theme::{self, ACCENT, LINE, PANEL, TEXT, TEXT_2, TEXT_3};
 
@@ -27,6 +30,15 @@ enum View {
     All,
     Continue,
     Recent,
+    MostPlayed,
+    /// None = every favorited video.
+    Favorites(Option<i64>),
+}
+
+#[derive(Clone, Copy, PartialEq)]
+enum Mode {
+    Grid,
+    Folders,
 }
 
 #[derive(Clone, Copy, PartialEq)]
@@ -35,31 +47,62 @@ enum Sort {
     Name,
     Duration,
     Played,
+    Plays,
 }
 
 pub enum Action {
     None,
     Play(String),
+    /// Queue these files in order and start with the first.
+    PlayAll(Vec<String>),
     AddFolder,
     OpenFile,
     Settings,
+}
+
+/// What one grid cell shows.
+#[derive(Clone)]
+enum Cell {
+    Video(i64),
+    /// A sub-folder in folder mode: display name and its location.
+    Folder { name: String, loc: FolderLoc },
+}
+
+/// A place in the folder browser: a watched root plus sub-directories.
+#[derive(Clone, PartialEq)]
+struct FolderLoc {
+    root: i64,
+    parts: Vec<String>,
 }
 
 pub struct LibraryView {
     lib: Option<Library>,
     videos: Vec<Video>,
     folders: Vec<Folder>,
+    collections: Vec<Collection>,
     dirty: bool,
     view: View,
+    mode: Mode,
     sort: Sort,
     search: String,
     tags_sel: Vec<String>,
     folder_sel: Option<i64>,
+    /// Folder browser location; None = list of watched roots.
+    folder_loc: Option<FolderLoc>,
     thumbs: HashMap<i64, (String, TextureHandle)>,
     thumb_failed: HashSet<i64>,
     /// (video id, text being typed, focus requested yet)
     tag_edit: Option<(i64, String, bool)>,
     tag_edit_pos: egui::Pos2,
+    /// Collection picker opened from a card's star: (video id, anchor).
+    fav_picker: Option<(i64, egui::Pos2)>,
+    /// True on the frame the picker opened, so the opening click doesn't
+    /// count as a click outside it.
+    fav_picker_fresh: bool,
+    /// New-collection name typed inside the picker (separate from the nav's).
+    fav_new_name: String,
+    /// Name typed for a new collection (nav "+" or the picker).
+    new_collection: Option<String>,
     /// Thumbnail generation progress (done, total).
     pub probing: Option<(usize, usize)>,
 }
@@ -70,16 +113,23 @@ impl LibraryView {
             lib: Library::open(&Library::db_path()).ok(),
             videos: Vec::new(),
             folders: Vec::new(),
+            collections: Vec::new(),
             dirty: true,
             view: View::All,
+            mode: Mode::Grid,
             sort: Sort::Added,
             search: String::new(),
             tags_sel: Vec::new(),
             folder_sel: None,
+            folder_loc: None,
             thumbs: HashMap::new(),
             thumb_failed: HashSet::new(),
             tag_edit: None,
             tag_edit_pos: pos2(0.0, 0.0),
+            fav_picker: None,
+            fav_picker_fresh: false,
+            fav_new_name: String::new(),
+            new_collection: None,
             probing: None,
         }
     }
@@ -99,6 +149,23 @@ impl LibraryView {
         added
     }
 
+    /// Whether the file at `path` is favorited; None if it isn't in the library.
+    pub fn is_favorite_path(&self, path: &str) -> Option<bool> {
+        let lib = self.lib.as_ref()?;
+        let id = lib.video_id_for_path(path)?;
+        Some(lib.is_favorite(id))
+    }
+
+    /// Quick favorite for the player. Returns the new state, or None if the
+    /// file isn't in the library.
+    pub fn toggle_favorite_path(&mut self, path: &str) -> Option<bool> {
+        let lib = self.lib.as_ref()?;
+        let id = lib.video_id_for_path(path)?;
+        let on = lib.toggle_favorite(id);
+        self.dirty = true;
+        Some(on)
+    }
+
     fn reload_if_dirty(&mut self) {
         if !self.dirty {
             return;
@@ -107,6 +174,7 @@ impl LibraryView {
         if let Some(lib) = &self.lib {
             self.videos = lib.videos();
             self.folders = lib.folders();
+            self.collections = lib.collections();
         }
         // Thumbnails may have been regenerated for changed files.
         let current: HashMap<i64, Option<&String>> = self.videos.iter().map(|v| (v.id, v.thumb.as_ref())).collect();
@@ -115,6 +183,18 @@ impl LibraryView {
         if self.folder_sel.is_some_and(|f| !self.folders.iter().any(|x| x.id == f)) {
             self.folder_sel = None;
         }
+        if self.folder_loc.as_ref().is_some_and(|l| !self.folders.iter().any(|x| x.id == l.root)) {
+            self.folder_loc = None;
+        }
+        if let View::Favorites(Some(c)) = self.view {
+            if !self.collections.iter().any(|x| x.id == c) {
+                self.view = View::Favorites(None);
+            }
+        }
+    }
+
+    fn video(&self, id: i64) -> Option<&Video> {
+        self.videos.iter().find(|v| v.id == id)
     }
 
     fn filtered(&self) -> Vec<&Video> {
@@ -127,24 +207,25 @@ impl LibraryView {
                 View::All => true,
                 View::Continue => v.progress().is_some_and(|p| p < FINISHED),
                 View::Recent => v.added_at >= week_ago,
+                View::MostPlayed => v.plays > 0,
+                View::Favorites(None) => !v.collections.is_empty(),
+                View::Favorites(Some(c)) => v.collections.contains(&c),
             })
             .filter(|v| self.folder_sel.is_none_or(|f| v.folder_id == f))
             .filter(|v| self.tags_sel.iter().all(|t| v.tags.iter().any(|vt| vt.eq_ignore_ascii_case(t))))
-            .filter(|v| {
-                if words.is_empty() {
-                    return true;
-                }
-                let hay = format!("{} {} {}", v.title, v.tags.join(" "), v.path).to_lowercase();
-                words.iter().all(|w| hay.contains(w.as_str()))
-            })
+            .filter(|v| matches_search(v, &words))
             .collect();
-        match (self.view, self.sort) {
-            (View::Continue, _) | (_, Sort::Played) => {
-                out.sort_by(|a, b| b.last_played.cmp(&a.last_played).then(b.added_at.cmp(&a.added_at)))
-            }
-            (_, Sort::Added) => out.sort_by(|a, b| b.added_at.cmp(&a.added_at).then(b.id.cmp(&a.id))),
-            (_, Sort::Name) => out.sort_by(|a, b| natural_cmp(&a.title, &b.title)),
-            (_, Sort::Duration) => out.sort_by(|a, b| b.duration.total_cmp(&a.duration)),
+        let sort = match self.view {
+            View::Continue => Sort::Played,
+            View::MostPlayed => Sort::Plays,
+            _ => self.sort,
+        };
+        match sort {
+            Sort::Played => out.sort_by(|a, b| b.last_played.cmp(&a.last_played).then(b.added_at.cmp(&a.added_at))),
+            Sort::Added => out.sort_by(|a, b| b.added_at.cmp(&a.added_at).then(b.id.cmp(&a.id))),
+            Sort::Name => out.sort_by(|a, b| natural_cmp(&a.title, &b.title)),
+            Sort::Duration => out.sort_by(|a, b| b.duration.total_cmp(&a.duration)),
+            Sort::Plays => out.sort_by(|a, b| b.plays.cmp(&a.plays).then(b.last_played.cmp(&a.last_played))),
         }
         out
     }
@@ -155,32 +236,57 @@ impl LibraryView {
         let p = ui.painter_at(rect);
         p.rect_filled(rect, 0.0, theme::BG);
 
-        // ---- Top bar ----
         let top = Rect::from_min_size(rect.min, vec2(rect.width(), TOP_H));
+        if let Some(a) = self.top_bar(ui, &p, top) {
+            action = a;
+        }
+        let nav = Rect::from_min_max(pos2(rect.left(), top.bottom()), pos2(rect.left() + NAV_W, rect.bottom()));
+        self.nav(ui, &p, nav);
+
+        let content = Rect::from_min_max(pos2(nav.right(), top.bottom()), rect.max);
+        let content_action = if self.folders.is_empty() {
+            empty_library(ui, &p, content)
+        } else if self.mode == Mode::Folders {
+            self.folder_browser(ui, &p, content)
+        } else {
+            self.grid_view(ui, &p, content)
+        };
+        if !matches!(content_action, Action::None) {
+            action = content_action;
+        }
+        self.tag_editor(ui);
+        self.favorite_picker(ui);
+        action
+    }
+
+    // ---- Top bar -------------------------------------------------------
+
+    fn top_bar(&mut self, ui: &mut egui::Ui, p: &egui::Painter, top: Rect) -> Option<Action> {
+        let mut action = None;
         p.line_segment([top.left_bottom(), top.right_bottom()], Stroke::new(0.5, LINE));
         p.text(pos2(top.left() + 20.0, top.center().y), Align2::LEFT_CENTER, "TINYPLAYER", FontId::monospace(12.0), ACCENT);
 
-        let search_w = (top.width() - NAV_W - 380.0).clamp(160.0, 420.0);
+        let search_w = (top.width() - NAV_W - 560.0).clamp(160.0, 380.0);
         let search_rect = Rect::from_min_size(pos2(top.left() + NAV_W + 16.0, top.center().y - 15.0), vec2(search_w, 30.0));
         p.rect_filled(search_rect, 15.0, PANEL);
         p.rect_stroke(search_rect, 15.0, Stroke::new(0.5, LINE), StrokeKind::Inside);
-        search_icon(&p, pos2(search_rect.left() + 16.0, search_rect.center().y), TEXT_3);
+        search_icon(p, pos2(search_rect.left() + 16.0, search_rect.center().y), TEXT_3);
         let edit_rect = Rect::from_min_max(search_rect.min + vec2(30.0, 5.0), search_rect.max - vec2(12.0, 5.0));
         let mut search_resp = None;
         ui.scope_builder(egui::UiBuilder::new().max_rect(edit_rect), |ui| {
-            let r = ui.add(
-                egui::TextEdit::singleline(&mut self.search)
-                    .hint_text("搜索标题、标签、文件夹")
-                    .frame(egui::Frame::NONE)
-                    .text_color(TEXT)
-                    .font(FontId::proportional(13.0))
-                    .desired_width(edit_rect.width()),
+            search_resp = Some(
+                ui.add(
+                    egui::TextEdit::singleline(&mut self.search)
+                        .hint_text("搜索标题、标签、文件夹")
+                        .frame(egui::Frame::NONE)
+                        .text_color(TEXT)
+                        .font(FontId::proportional(13.0))
+                        .desired_width(edit_rect.width()),
+                ),
             );
-            search_resp = Some(r);
         });
-        let focus_search = ui.ctx().input(|i| i.modifiers.command && i.key_pressed(egui::Key::K));
         if let Some(r) = &search_resp {
-            if focus_search {
+            if ui.ctx().input(|i| i.modifiers.command && i.key_pressed(egui::Key::K)) {
                 r.request_focus();
             }
             // TextEdit drops focus on Esc itself, so check lost_focus too.
@@ -188,52 +294,150 @@ impl LibraryView {
                 self.search.clear();
                 r.surrender_focus();
             }
+            if r.changed() && !self.search.is_empty() && self.mode == Mode::Folders {
+                // Searching is a grid thing; switch so results are visible.
+                self.mode = Mode::Grid;
+            }
         }
 
-        // Right side of the top bar.
-        let mut rx = top.right() - 20.0;
+        // Mode switch: 媒体库 | 文件夹
+        let seg = Rect::from_min_size(pos2(search_rect.right() + 16.0, top.center().y - 14.0), vec2(132.0, 28.0));
+        p.rect_filled(seg, 14.0, PANEL);
+        for (i, (mode, label)) in [(Mode::Grid, "媒体库"), (Mode::Folders, "文件夹")].into_iter().enumerate() {
+            let r = Rect::from_min_size(seg.min + vec2(2.0 + i as f32 * 64.0, 2.0), vec2(64.0, 24.0));
+            let resp = ui.interact(r, ui.scope_id().with(("mode", i)), Sense::click());
+            let on = self.mode == mode;
+            if on {
+                p.rect_filled(r, 12.0, theme::accent_alpha(36));
+            }
+            let c = if on { ACCENT } else if resp.hovered() { TEXT } else { TEXT_2 };
+            p.text(r.center(), Align2::CENTER_CENTER, label, FontId::proportional(12.0), c);
+            if resp.clicked() {
+                self.mode = mode;
+            }
+        }
+
+        // Right side.
+        let rx = top.right() - 20.0;
         let gear = Rect::from_center_size(pos2(rx - 12.0, top.center().y), vec2(30.0, 30.0));
         let g = ui.interact(gear, ui.scope_id().with("lib_settings"), Sense::click());
-        icons::draw(&p, Icon::Settings, gear.center(), 16.0, if g.hovered() { ACCENT } else { TEXT_2 });
+        icons::draw(p, Icon::Settings, gear.center(), 16.0, if g.hovered() { ACCENT } else { TEXT_2 });
         if g.clicked() {
-            action = Action::Settings;
+            action = Some(Action::Settings);
         }
-        rx -= 40.0;
-        let (open_left, open_clicked) = text_btn(ui, &p, pos2(rx, top.center().y), "lib_open", "打开文件", TEXT_2);
+        let (open_left, open_clicked) = text_btn(ui, p, pos2(rx - 40.0, top.center().y), "lib_open", "打开文件", TEXT_2);
         if open_clicked {
-            action = Action::OpenFile;
+            action = Some(Action::OpenFile);
         }
-        let (add_left, add_clicked) = text_btn(ui, &p, pos2(open_left - 24.0, top.center().y), "lib_add", "+ 添加文件夹", ACCENT);
+        let (add_left, add_clicked) = text_btn(ui, p, pos2(open_left - 24.0, top.center().y), "lib_add", "+ 添加文件夹", ACCENT);
         if add_clicked {
-            action = Action::AddFolder;
+            action = Some(Action::AddFolder);
         }
         if let Some((done, total)) = self.probing {
-            p.text(
-                pos2(add_left - 20.0, top.center().y),
-                Align2::RIGHT_CENTER,
-                format!("生成缩略图 {done}/{total}"),
-                FontId::monospace(11.0),
-                TEXT_3,
-            );
+            if add_left - 20.0 > seg.right() + 140.0 {
+                p.text(pos2(add_left - 20.0, top.center().y), Align2::RIGHT_CENTER, format!("生成缩略图 {done}/{total}"), FontId::monospace(11.0), TEXT_3);
+            }
         }
+        action
+    }
 
-        // ---- Nav ----
-        let nav = Rect::from_min_max(pos2(rect.left(), top.bottom()), pos2(rect.left() + NAV_W, rect.bottom()));
+    // ---- Nav -----------------------------------------------------------
+
+    fn nav(&mut self, ui: &mut egui::Ui, p: &egui::Painter, nav: Rect) {
         p.line_segment([nav.right_top(), nav.right_bottom()], Stroke::new(0.5, LINE));
-        let mut y = nav.top() + 14.0;
+        let np = ui.painter_at(nav);
+        let mut y = nav.top() + 12.0;
+        let grid_mode = self.mode == Mode::Grid;
         let continue_n = self.videos.iter().filter(|v| v.progress().is_some_and(|x| x < FINISHED)).count();
         let week_ago = crate::history::now_secs() - 7 * 24 * 3600;
         let recent_n = self.videos.iter().filter(|v| v.added_at >= week_ago).count();
+        let played_n = self.videos.iter().filter(|v| v.plays > 0).count();
         for (view, label, n) in [
             (View::All, "全部", self.videos.len()),
             (View::Continue, "继续观看", continue_n),
             (View::Recent, "最近添加", recent_n),
+            (View::MostPlayed, "最常播放", played_n),
         ] {
-            let r = Rect::from_min_size(pos2(nav.left(), y), vec2(NAV_W, 32.0));
-            if nav_item(ui, &p, r, ("nav", label), label, Some(n), self.view == view) {
+            let r = Rect::from_min_size(pos2(nav.left(), y), vec2(NAV_W, 30.0));
+            if nav_item(ui, &np, r, ("nav", label), label, Some(n), grid_mode && self.view == view) {
                 self.view = view;
+                self.mode = Mode::Grid;
             }
-            y += 32.0;
+            y += 30.0;
+        }
+
+        // Collections
+        y += 12.0;
+        np.text(pos2(nav.left() + 18.0, y + 8.0), Align2::LEFT_CENTER, "COLLECTIONS", FontId::monospace(10.0), TEXT_3);
+        let plus = Rect::from_center_size(pos2(nav.right() - 20.0, y + 8.0), vec2(22.0, 22.0));
+        let pr = ui.interact(plus, ui.scope_id().with("new_collection"), Sense::click());
+        np.text(plus.center(), Align2::CENTER_CENTER, "+", FontId::proportional(15.0), if pr.hovered() { ACCENT } else { TEXT_3 });
+        if pr.clicked() {
+            self.new_collection = Some(String::new());
+        }
+        y += 22.0;
+        let fav_n = self.videos.iter().filter(|v| !v.collections.is_empty()).count();
+        let r = Rect::from_min_size(pos2(nav.left(), y), vec2(NAV_W, 28.0));
+        if nav_item(ui, &np, r, "fav_all", "全部收藏", Some(fav_n), grid_mode && self.view == View::Favorites(None)) {
+            self.view = View::Favorites(None);
+            self.mode = Mode::Grid;
+        }
+        y += 28.0;
+        let mut delete = None;
+        for c in &self.collections {
+            let r = Rect::from_min_size(pos2(nav.left(), y), vec2(NAV_W, 28.0));
+            let on = grid_mode && self.view == View::Favorites(Some(c.id));
+            if nav_item_indented(ui, &np, r, ("coll", c.id), &c.name, Some(c.count as usize), on, 20.0) {
+                self.view = View::Favorites(Some(c.id));
+                self.mode = Mode::Grid;
+            }
+            icons::draw(&np, Icon::Star, pos2(r.left() + 24.0, r.center().y), 11.0, if on { ACCENT } else { TEXT_3 });
+            ui.interact(r, ui.scope_id().with(("coll", c.id)), Sense::click()).context_menu(|ui| {
+                if ui.button("删除收藏夹（不删除视频）").clicked() {
+                    delete = Some(c.id);
+                    ui.close();
+                }
+            });
+            y += 28.0;
+        }
+        if let (Some(id), Some(lib)) = (delete, &self.lib) {
+            lib.delete_collection(id);
+            self.dirty = true;
+        }
+        // Inline "new collection" field.
+        if let Some(name) = &mut self.new_collection {
+            let r = Rect::from_min_size(pos2(nav.left() + 14.0, y + 2.0), vec2(NAV_W - 28.0, 24.0));
+            np.rect_stroke(r, 4.0, Stroke::new(0.5, ACCENT), StrokeKind::Inside);
+            let mut done = None;
+            ui.scope_builder(egui::UiBuilder::new().max_rect(r.shrink2(vec2(8.0, 3.0))), |ui| {
+                let resp = ui.add(
+                    egui::TextEdit::singleline(name)
+                        .hint_text("收藏夹名称")
+                        .frame(egui::Frame::NONE)
+                        .text_color(TEXT)
+                        .font(FontId::proportional(12.0)),
+                );
+                if !resp.has_focus() && !resp.lost_focus() {
+                    resp.request_focus();
+                }
+                if ui.ctx().input(|i| i.key_pressed(egui::Key::Enter)) {
+                    done = Some(true);
+                } else if ui.ctx().input(|i| i.key_pressed(egui::Key::Escape)) || (resp.lost_focus() && !resp.has_focus()) {
+                    done = Some(false);
+                }
+            });
+            match done {
+                Some(true) => {
+                    if let Some(lib) = &self.lib {
+                        lib.create_collection(name);
+                    }
+                    self.new_collection = None;
+                    self.dirty = true;
+                }
+                Some(false) => self.new_collection = None,
+                None => {}
+            }
+            y += 30.0;
         }
 
         // Tags
@@ -248,22 +452,23 @@ impl LibraryView {
         }
         tag_counts.sort_by(|a, b| b.1.cmp(&a.1).then_with(|| natural_cmp(&a.0, &b.0)));
         if !tag_counts.is_empty() {
-            y += 14.0;
-            p.text(pos2(nav.left() + 18.0, y + 8.0), Align2::LEFT_CENTER, "TAGS", FontId::monospace(10.0), TEXT_3);
+            y += 12.0;
+            np.text(pos2(nav.left() + 18.0, y + 8.0), Align2::LEFT_CENTER, "TAGS", FontId::monospace(10.0), TEXT_3);
             y += 22.0;
-            for (tag, n) in tag_counts.iter().take(12) {
+            for (tag, n) in tag_counts.iter().take(10) {
                 let r = Rect::from_min_size(pos2(nav.left(), y), vec2(NAV_W, 28.0));
                 let on = self.tags_sel.iter().any(|t| t.eq_ignore_ascii_case(tag));
-                if nav_item(ui, &p, r, ("tag", tag.as_str()), &format!("# {tag}"), Some(*n), on) {
+                if nav_item(ui, &np, r, ("tag", tag.as_str()), &format!("# {tag}"), Some(*n), on) {
                     toggle_tag(&mut self.tags_sel, tag);
+                    self.mode = Mode::Grid;
                 }
                 y += 28.0;
             }
         }
 
         // Folders
-        y += 14.0;
-        p.text(pos2(nav.left() + 18.0, y + 8.0), Align2::LEFT_CENTER, "FOLDERS", FontId::monospace(10.0), TEXT_3);
+        y += 12.0;
+        np.text(pos2(nav.left() + 18.0, y + 8.0), Align2::LEFT_CENTER, "FOLDERS", FontId::monospace(10.0), TEXT_3);
         y += 22.0;
         let mut remove_folder = None;
         for f in &self.folders {
@@ -271,21 +476,25 @@ impl LibraryView {
                 break;
             }
             let r = Rect::from_min_size(pos2(nav.left(), y), vec2(NAV_W, 28.0));
-            let name = std::path::Path::new(&f.path)
-                .file_name()
-                .map(|n| n.to_string_lossy().into_owned())
-                .unwrap_or_else(|| f.path.clone());
-            let on = self.folder_sel == Some(f.id);
+            let name = base_name(&f.path);
+            let on = match self.mode {
+                Mode::Grid => self.folder_sel == Some(f.id),
+                Mode::Folders => self.folder_loc.as_ref().is_some_and(|l| l.root == f.id),
+            };
             let hovered = ui.rect_contains_pointer(r);
-            if nav_item(ui, &p, r, ("folder", f.id), &name, if hovered { None } else { Some(f.count as usize) }, on) {
-                self.folder_sel = if on { None } else { Some(f.id) };
+            if nav_item(ui, &np, r, ("folder", f.id), &name, if hovered { None } else { Some(f.count as usize) }, on) {
+                match self.mode {
+                    Mode::Grid => self.folder_sel = if on { None } else { Some(f.id) },
+                    Mode::Folders => self.folder_loc = Some(FolderLoc { root: f.id, parts: Vec::new() }),
+                }
             }
             if hovered {
                 let x = Rect::from_center_size(pos2(r.right() - 18.0, r.center().y), vec2(22.0, 22.0));
                 let xr = ui.interact(x, ui.scope_id().with(("folder_rm", f.id)), Sense::click());
-                icons::draw(&p, Icon::Close, x.center(), 11.0, if xr.hovered() { ACCENT } else { TEXT_3 });
-                xr.clone().on_hover_text(format!("从媒体库移除（不删除文件）\n{}", f.path));
-                if xr.clicked() {
+                icons::draw(&np, Icon::Close, x.center(), 11.0, if xr.hovered() { ACCENT } else { TEXT_3 });
+                let clicked = xr.clicked();
+                xr.on_hover_text(format!("从媒体库移除（不删除文件）\n{}", f.path));
+                if clicked {
                     remove_folder = Some(f.id);
                 }
             }
@@ -295,18 +504,28 @@ impl LibraryView {
             lib.remove_folder(id);
             self.dirty = true;
         }
+    }
 
-        // ---- Content ----
-        let content = Rect::from_min_max(pos2(nav.right(), top.bottom()), rect.max);
-        if self.folders.is_empty() {
-            return match empty_library(ui, &p, content) {
-                Action::None => action,
-                a => a,
-            };
-        }
+    // ---- Grid view -----------------------------------------------------
+
+    fn grid_view(&mut self, ui: &mut egui::Ui, p: &egui::Painter, content: Rect) -> Action {
         let ids: Vec<i64> = self.filtered().iter().map(|v| v.id).collect();
         let header = Rect::from_min_size(content.min + vec2(24.0, 12.0), vec2(content.width() - 48.0, 30.0));
         let mut hx = header.left();
+
+        // Title for collection/most-played views.
+        let title = match self.view {
+            View::Favorites(Some(c)) => self.collections.iter().find(|x| x.id == c).map(|x| x.name.clone()),
+            View::Favorites(None) => Some("全部收藏".to_string()),
+            View::MostPlayed => Some("最常播放".to_string()),
+            _ => None,
+        };
+        if let Some(t) = title {
+            let g = p.layout_no_wrap(t, FontId::proportional(15.0), TEXT);
+            let w = g.size().x;
+            p.galley(pos2(hx, header.center().y - g.size().y / 2.0), g, TEXT);
+            hx += w + 12.0;
+        }
         let mut remove_tag_filter = None;
         for t in &self.tags_sel {
             let g = p.layout_no_wrap(format!("# {t}  ×"), FontId::proportional(12.0), Color32::WHITE);
@@ -319,11 +538,23 @@ impl LibraryView {
             }
             hx = r.right() + 8.0;
         }
-        p.text(pos2(hx, header.center().y), Align2::LEFT_CENTER, format!("{} 个视频", ids.len()), FontId::monospace(11.0), TEXT_3);
-        // Sort (hidden for "继续观看", which is always by last played).
-        if self.view != View::Continue {
+        let total: f64 = ids.iter().filter_map(|id| self.video(*id)).map(|v| v.duration).sum();
+        p.text(
+            pos2(hx, header.center().y),
+            Align2::LEFT_CENTER,
+            format!("{} 个视频 · {}", ids.len(), fmt_time(total)),
+            FontId::monospace(11.0),
+            TEXT_3,
+        );
+        if !matches!(self.view, View::Continue | View::MostPlayed) {
             let mut sx = header.right();
-            for (sort, label) in [(Sort::Duration, "时长"), (Sort::Name, "名称"), (Sort::Played, "最近播放"), (Sort::Added, "最近添加")] {
+            for (sort, label) in [
+                (Sort::Duration, "时长"),
+                (Sort::Name, "名称"),
+                (Sort::Plays, "播放次数"),
+                (Sort::Played, "最近播放"),
+                (Sort::Added, "最近添加"),
+            ] {
                 let g = p.layout_no_wrap(label.into(), FontId::proportional(12.0), TEXT);
                 let r = Rect::from_min_size(pos2(sx - g.size().x - 12.0, header.center().y - 12.0), vec2(g.size().x + 12.0, 24.0));
                 let resp = ui.interact(r, ui.scope_id().with(("sort", label)), Sense::click());
@@ -336,38 +567,206 @@ impl LibraryView {
                 sx = r.left() - 4.0;
             }
         }
-
-        let grid_rect = Rect::from_min_max(pos2(content.left() + 24.0, header.bottom() + 8.0), pos2(content.right() - 12.0, content.bottom()));
-        if ids.is_empty() {
-            p.text(grid_rect.center() - vec2(0.0, 40.0), Align2::CENTER_CENTER, "没有匹配的视频", FontId::proportional(14.0), TEXT_2);
-        } else {
-            let grid_action = self.grid(ui, grid_rect, &ids);
-            if !matches!(grid_action, Action::None) {
-                action = grid_action;
-            }
-        }
         if let Some(t) = remove_tag_filter {
             self.tags_sel.retain(|x| x != &t);
         }
-        self.tag_editor(ui);
+
+        let grid_rect = Rect::from_min_max(pos2(content.left() + 24.0, header.bottom() + 8.0), pos2(content.right() - 12.0, content.bottom()));
+        if ids.is_empty() {
+            let msg = match self.view {
+                View::Favorites(_) => "还没有收藏。悬停视频，点右上角的星标即可收藏",
+                View::MostPlayed => "还没有播放记录",
+                View::Continue => "没有看到一半的视频",
+                _ => "没有匹配的视频",
+            };
+            p.text(grid_rect.center() - vec2(0.0, 40.0), Align2::CENTER_CENTER, msg, FontId::proportional(14.0), TEXT_2);
+            return Action::None;
+        }
+        let ranked = self.view == View::MostPlayed;
+        let cells: Vec<Cell> = ids.into_iter().map(Cell::Video).collect();
+        self.grid(ui, grid_rect, &cells, ranked, "library_grid")
+    }
+
+    // ---- Folder browser ------------------------------------------------
+
+    fn folder_browser(&mut self, ui: &mut egui::Ui, p: &egui::Painter, content: Rect) -> Action {
+        let header = Rect::from_min_size(content.min + vec2(24.0, 12.0), vec2(content.width() - 48.0, 30.0));
+        let cy = header.center().y;
+
+        // Breadcrumb: 全部文件夹 / root / a / b
+        let mut crumbs: Vec<(String, Option<FolderLoc>)> = vec![("全部文件夹".into(), None)];
+        if let Some(loc) = &self.folder_loc {
+            if let Some(root) = self.folders.iter().find(|f| f.id == loc.root) {
+                crumbs.push((base_name(&root.path), Some(FolderLoc { root: loc.root, parts: Vec::new() })));
+                for i in 0..loc.parts.len() {
+                    crumbs.push((loc.parts[i].clone(), Some(FolderLoc { root: loc.root, parts: loc.parts[..=i].to_vec() })));
+                }
+            }
+        }
+        let mut x = header.left();
+        // "Up" arrow.
+        if self.folder_loc.is_some() {
+            let up = Rect::from_center_size(pos2(x + 12.0, cy), vec2(24.0, 24.0));
+            let ur = ui.interact(up, ui.scope_id().with("folder_up"), Sense::click());
+            let c = if ur.hovered() { ACCENT } else { TEXT_2 };
+            let st = Stroke::new(1.6, c);
+            p.line_segment([pos2(up.center().x, cy + 6.0), pos2(up.center().x, cy - 6.0)], st);
+            p.line_segment([pos2(up.center().x - 5.0, cy - 1.0), pos2(up.center().x, cy - 6.0)], st);
+            p.line_segment([pos2(up.center().x + 5.0, cy - 1.0), pos2(up.center().x, cy - 6.0)], st);
+            if ur.clicked() {
+                self.folder_loc = match self.folder_loc.take() {
+                    Some(mut l) if !l.parts.is_empty() => {
+                        l.parts.pop();
+                        Some(l)
+                    }
+                    _ => None,
+                };
+            }
+            x += 32.0;
+        }
+        let n = crumbs.len();
+        let mut goto = None;
+        for (i, (name, loc)) in crumbs.into_iter().enumerate() {
+            let last = i + 1 == n;
+            let g = p.layout_no_wrap(name, FontId::proportional(13.0), TEXT);
+            let r = Rect::from_min_size(pos2(x, cy - g.size().y / 2.0), g.size());
+            let resp = ui.interact(r.expand(3.0), ui.scope_id().with(("crumb", i)), Sense::click());
+            let c = if last { TEXT } else if resp.hovered() { ACCENT } else { TEXT_2 };
+            p.galley(r.min, g, c);
+            if resp.clicked() && !last {
+                goto = Some(loc);
+            }
+            x = r.right() + 8.0;
+            if !last {
+                p.text(pos2(x, cy), Align2::LEFT_CENTER, "/", FontId::proportional(13.0), TEXT_3);
+                x += 14.0;
+            }
+        }
+        if let Some(loc) = goto {
+            self.folder_loc = loc;
+        }
+
+        // Cells: sub-folders first, then videos directly in this folder.
+        let (cells, play_all) = self.folder_cells();
+        let video_n = cells.iter().filter(|c| matches!(c, Cell::Video(_))).count();
+        let folder_n = cells.len() - video_n;
+        let stat = format!("{folder_n} 个文件夹 · {video_n} 个视频");
+        let (pa_left, pa_clicked) = text_btn(ui, p, pos2(header.right(), cy), "play_all", "播放全部", ACCENT);
+        p.text(pos2(pa_left - 20.0, cy), Align2::RIGHT_CENTER, stat, FontId::monospace(11.0), TEXT_3);
+
+        let grid_rect = Rect::from_min_max(pos2(content.left() + 24.0, header.bottom() + 8.0), pos2(content.right() - 12.0, content.bottom()));
+        if cells.is_empty() {
+            p.text(grid_rect.center() - vec2(0.0, 40.0), Align2::CENTER_CENTER, "这个文件夹里没有视频", FontId::proportional(14.0), TEXT_2);
+            return Action::None;
+        }
+        let action = self.grid(ui, grid_rect, &cells, false, "folder_grid");
+        if pa_clicked && !play_all.is_empty() {
+            return Action::PlayAll(play_all);
+        }
         action
     }
 
-    fn grid(&mut self, ui: &mut egui::Ui, rect: Rect, ids: &[i64]) -> Action {
+    /// Cells for the current folder location, plus every video below it
+    /// (recursive, natural order) for "全部播放".
+    fn folder_cells(&self) -> (Vec<Cell>, Vec<String>) {
+        let Some(loc) = &self.folder_loc else {
+            // Top level: one card per watched root.
+            let mut all = Vec::new();
+            let cells = self
+                .folders
+                .iter()
+                .map(|f| {
+                    all.extend(self.videos_under(&FolderLoc { root: f.id, parts: Vec::new() }));
+                    Cell::Folder { name: base_name(&f.path), loc: FolderLoc { root: f.id, parts: Vec::new() } }
+                })
+                .collect();
+            return (cells, all);
+        };
+        let Some(dir) = self.loc_path(loc) else { return (Vec::new(), Vec::new()) };
+        let mut subs: BTreeMap<String, ()> = BTreeMap::new();
+        let mut here: Vec<&Video> = Vec::new();
+        for v in self.videos.iter().filter(|v| v.folder_id == loc.root) {
+            let Ok(rel) = Path::new(&v.path).strip_prefix(&dir) else { continue };
+            let comps: Vec<String> = rel.components().map(|c| c.as_os_str().to_string_lossy().into_owned()).collect();
+            match comps.len() {
+                0 => {}
+                1 => here.push(v),
+                _ => {
+                    subs.insert(comps[0].clone(), ());
+                }
+            }
+        }
+        let mut sub_names: Vec<String> = subs.into_keys().collect();
+        sub_names.sort_by(|a, b| natural_cmp(a, b));
+        here.sort_by(|a, b| natural_cmp(&a.title, &b.title));
+        let mut cells: Vec<Cell> = sub_names
+            .into_iter()
+            .map(|name| {
+                let mut parts = loc.parts.clone();
+                parts.push(name.clone());
+                Cell::Folder { name, loc: FolderLoc { root: loc.root, parts } }
+            })
+            .collect();
+        cells.extend(here.iter().map(|v| Cell::Video(v.id)));
+        (cells, self.videos_under(loc))
+    }
+
+    fn loc_path(&self, loc: &FolderLoc) -> Option<PathBuf> {
+        let root = self.folders.iter().find(|f| f.id == loc.root)?;
+        let mut p = PathBuf::from(&root.path);
+        for part in &loc.parts {
+            p.push(part);
+        }
+        Some(p)
+    }
+
+    /// Paths of all videos under `loc`, recursively, in natural path order.
+    fn videos_under(&self, loc: &FolderLoc) -> Vec<String> {
+        let Some(dir) = self.loc_path(loc) else { return Vec::new() };
+        let mut v: Vec<(String, String)> = self
+            .videos
+            .iter()
+            .filter(|v| v.folder_id == loc.root)
+            .filter_map(|v| {
+                let rel = Path::new(&v.path).strip_prefix(&dir).ok()?;
+                Some((rel.to_string_lossy().into_owned(), v.path.clone()))
+            })
+            .collect();
+        v.sort_by(|a, b| natural_cmp(&a.0, &b.0));
+        v.into_iter().map(|(_, p)| p).collect()
+    }
+
+    fn folder_stats(&self, loc: &FolderLoc) -> (Vec<i64>, usize, f64, usize) {
+        let Some(dir) = self.loc_path(loc) else { return (Vec::new(), 0, 0.0, 0) };
+        let mut inside: Vec<&Video> = self
+            .videos
+            .iter()
+            .filter(|v| v.folder_id == loc.root && Path::new(&v.path).starts_with(&dir))
+            .collect();
+        inside.sort_by(|a, b| natural_cmp(&a.path, &b.path));
+        let total: f64 = inside.iter().map(|v| v.duration).sum();
+        let watched = inside.iter().filter(|v| v.progress().is_some_and(|p| p >= FINISHED)).count();
+        let covers = inside.iter().take(4).map(|v| v.id).collect();
+        (covers, inside.len(), total, watched)
+    }
+
+    // ---- Shared grid ---------------------------------------------------
+
+    fn grid(&mut self, ui: &mut egui::Ui, rect: Rect, cells: &[Cell], ranked: bool, salt: &str) -> Action {
         let mut action = Action::None;
         let width = rect.width() - 12.0;
         let cols = (((width + GAP) / (CARD_MIN_W + GAP)).floor() as usize).max(1);
         let card_w = (width - GAP * (cols as f32 - 1.0)) / cols as f32;
         let thumb_h = card_w * 9.0 / 16.0;
         let card_h = thumb_h + META_H;
-        let rows = ids.len().div_ceil(cols);
+        let rows = cells.len().div_ceil(cols);
         let total_h = rows as f32 * (card_h + GAP);
         let mut loads = 0;
         let mut pending_thumbs = false;
         let mut events: Vec<CardEvent> = Vec::new();
 
         ui.scope_builder(egui::UiBuilder::new().max_rect(rect), |ui| {
-            egui::ScrollArea::vertical().id_salt("library_grid").auto_shrink([false, false]).show_viewport(ui, |ui, vp| {
+            egui::ScrollArea::vertical().id_salt(salt).auto_shrink([false, false]).show_viewport(ui, |ui, vp| {
                 ui.set_min_size(vec2(width, total_h));
                 let origin = ui.max_rect().min;
                 let first = ((vp.top() / (card_h + GAP)).floor().max(0.0)) as usize;
@@ -376,33 +775,36 @@ impl LibraryView {
                 for row in first..last {
                     for col in 0..cols {
                         let i = row * cols + col;
-                        let Some(&id) = ids.get(i) else { break };
-                        let Some(v) = self.videos.iter().find(|v| v.id == id) else { continue };
+                        let Some(cell) = cells.get(i) else { break };
                         let pos = origin + vec2(col as f32 * (card_w + GAP), row as f32 * (card_h + GAP));
                         let card = Rect::from_min_size(pos, vec2(card_w, card_h));
                         let thumb = Rect::from_min_size(pos, vec2(card_w, thumb_h));
-
-                        // Thumbnail texture (decoded lazily).
-                        if !self.thumbs.contains_key(&id) && !self.thumb_failed.contains(&id) {
-                            if let Some(path) = &v.thumb {
-                                if loads < THUMB_LOADS_PER_FRAME {
-                                    loads += 1;
-                                    match load_thumb(ui.ctx(), id, path) {
-                                        Some(t) => {
-                                            self.thumbs.insert(id, (path.clone(), t));
-                                        }
-                                        None => {
-                                            self.thumb_failed.insert(id);
-                                        }
-                                    }
-                                } else {
+                        match cell {
+                            Cell::Video(id) => {
+                                let id = *id;
+                                if self.ensure_thumb(ui.ctx(), id, &mut loads) {
                                     pending_thumbs = true;
                                 }
+                                let Some(v) = self.video(id) else { continue };
+                                let tex = self.thumbs.get(&id).map(|(_, t)| t.id());
+                                let rank = ranked.then_some(i + 1);
+                                if let Some(ev) = draw_card(ui, &p, card, thumb, v, tex, rank) {
+                                    events.push(ev);
+                                }
                             }
-                        }
-                        let tex = self.thumbs.get(&id).map(|(_, t)| t.id());
-                        if let Some(ev) = draw_card(ui, &p, card, thumb, v, tex) {
-                            events.push(ev);
+                            Cell::Folder { name, loc } => {
+                                let (covers, count, total, watched) = self.folder_stats(loc);
+                                for &id in &covers {
+                                    if self.ensure_thumb(ui.ctx(), id, &mut loads) {
+                                        pending_thumbs = true;
+                                    }
+                                }
+                                let texs: Vec<Option<egui::TextureId>> =
+                                    covers.iter().map(|id| self.thumbs.get(id).map(|(_, t)| t.id())).collect();
+                                if let Some(ev) = draw_folder_card(ui, &p, card, thumb, name, loc, &texs, count, total, watched) {
+                                    events.push(ev);
+                                }
+                            }
                         }
                     }
                 }
@@ -415,7 +817,19 @@ impl LibraryView {
         for ev in events {
             match ev {
                 CardEvent::Play(path) => action = Action::Play(path),
-                CardEvent::TagFilter(t) => toggle_tag(&mut self.tags_sel, &t),
+                CardEvent::OpenFolder(loc) => {
+                    self.folder_loc = Some(loc);
+                }
+                CardEvent::PlayFolder(loc) => {
+                    let paths = self.videos_under(&loc);
+                    if !paths.is_empty() {
+                        action = Action::PlayAll(paths);
+                    }
+                }
+                CardEvent::TagFilter(t) => {
+                    toggle_tag(&mut self.tags_sel, &t);
+                    self.mode = Mode::Grid;
+                }
                 CardEvent::EditTags(id, at) => {
                     self.tag_edit = Some((id, String::new(), false));
                     self.tag_edit_pos = at;
@@ -425,6 +839,10 @@ impl LibraryView {
                         lib.remove_tag(id, &t);
                     }
                     self.dirty = true;
+                }
+                CardEvent::Favorite(id, at) => {
+                    self.fav_picker = Some((id, at));
+                    self.fav_picker_fresh = true;
                 }
                 CardEvent::Reveal(path) => reveal_in_file_manager(&path),
                 CardEvent::Remove(id) => {
@@ -438,6 +856,30 @@ impl LibraryView {
         action
     }
 
+    /// Loads the thumbnail texture for `id` if allowed this frame.
+    /// Returns true if a load had to be deferred to a later frame.
+    fn ensure_thumb(&mut self, ctx: &egui::Context, id: i64, loads: &mut usize) -> bool {
+        if self.thumbs.contains_key(&id) || self.thumb_failed.contains(&id) {
+            return false;
+        }
+        let Some(path) = self.video(id).and_then(|v| v.thumb.clone()) else { return false };
+        if *loads >= THUMB_LOADS_PER_FRAME {
+            return true;
+        }
+        *loads += 1;
+        match load_thumb(ctx, id, &path) {
+            Some(t) => {
+                self.thumbs.insert(id, (path, t));
+            }
+            None => {
+                self.thumb_failed.insert(id);
+            }
+        }
+        false
+    }
+
+    // ---- Popups --------------------------------------------------------
+
     /// Small popup for typing a new tag.
     fn tag_editor(&mut self, ui: &mut egui::Ui) {
         let Some((id, mut text, focused)) = self.tag_edit.take() else { return };
@@ -447,30 +889,25 @@ impl LibraryView {
             .order(egui::Order::Foreground)
             .fixed_pos(self.tag_edit_pos)
             .show(ui.ctx(), |ui| {
-                egui::Frame::NONE
-                    .fill(PANEL)
-                    .stroke(Stroke::new(0.5, ACCENT))
-                    .corner_radius(6.0)
-                    .inner_margin(egui::Margin::symmetric(10, 8))
-                    .show(ui, |ui| {
-                        let r = ui.add(
-                            egui::TextEdit::singleline(&mut text)
-                                .hint_text("输入标签，回车添加")
-                                .frame(egui::Frame::NONE)
-                                .text_color(TEXT)
-                                .font(FontId::proportional(13.0))
-                                .desired_width(180.0),
-                        );
-                        if !focused {
-                            r.request_focus();
-                        }
-                        if ui.ctx().input(|i| i.key_pressed(egui::Key::Enter)) {
-                            commit = true;
-                            keep = false;
-                        } else if ui.ctx().input(|i| i.key_pressed(egui::Key::Escape)) || (focused && r.lost_focus()) {
-                            keep = false;
-                        }
-                    });
+                popup_frame().show(ui, |ui| {
+                    let r = ui.add(
+                        egui::TextEdit::singleline(&mut text)
+                            .hint_text("输入标签，回车添加")
+                            .frame(egui::Frame::NONE)
+                            .text_color(TEXT)
+                            .font(FontId::proportional(13.0))
+                            .desired_width(180.0),
+                    );
+                    if !focused {
+                        r.request_focus();
+                    }
+                    if ui.ctx().input(|i| i.key_pressed(egui::Key::Enter)) {
+                        commit = true;
+                        keep = false;
+                    } else if ui.ctx().input(|i| i.key_pressed(egui::Key::Escape)) || (focused && r.lost_focus()) {
+                        keep = false;
+                    }
+                });
             });
         if commit && !text.trim().is_empty() {
             if let Some(lib) = &self.lib {
@@ -482,23 +919,123 @@ impl LibraryView {
             self.tag_edit = Some((id, text, true));
         }
     }
+
+    /// Checklist of collections for one video, opened from its star.
+    fn favorite_picker(&mut self, ui: &mut egui::Ui) {
+        let Some((vid, at)) = self.fav_picker else { return };
+        let Some(v) = self.video(vid) else {
+            self.fav_picker = None;
+            return;
+        };
+        let in_cols = v.collections.clone();
+        let mut toggles: Vec<(i64, bool)> = Vec::new();
+        let mut create: Option<String> = None;
+        let mut close = false;
+        let area = egui::Area::new(ui.scope_id().with("fav_picker"))
+            .order(egui::Order::Foreground)
+            .fixed_pos(at)
+            .show(ui.ctx(), |ui| {
+                popup_frame().show(ui, |ui| {
+                    ui.set_width(190.0);
+                    ui.label(egui::RichText::new("收藏到").size(11.0).color(TEXT_3));
+                    ui.add_space(4.0);
+                    for c in &self.collections {
+                        let on = in_cols.contains(&c.id);
+                        let (r, resp) = ui.allocate_exact_size(vec2(190.0, 26.0), Sense::click());
+                        let p = ui.painter();
+                        if resp.hovered() {
+                            p.rect_filled(r, 4.0, Color32::from_white_alpha(10));
+                        }
+                        let bx = Rect::from_center_size(pos2(r.left() + 12.0, r.center().y), vec2(13.0, 13.0));
+                        if on {
+                            p.rect_filled(bx, 3.0, ACCENT);
+                            p.line_segment([bx.center() + vec2(-3.5, 0.0), bx.center() + vec2(-1.0, 2.5)], Stroke::new(1.6, Color32::WHITE));
+                            p.line_segment([bx.center() + vec2(-1.0, 2.5), bx.center() + vec2(3.5, -2.5)], Stroke::new(1.6, Color32::WHITE));
+                        } else {
+                            p.rect_stroke(bx, 3.0, Stroke::new(1.0, TEXT_3), StrokeKind::Inside);
+                        }
+                        p.text(pos2(r.left() + 28.0, r.center().y), Align2::LEFT_CENTER, &c.name, FontId::proportional(13.0), TEXT);
+                        if resp.clicked() {
+                            toggles.push((c.id, !on));
+                        }
+                    }
+                    ui.add_space(4.0);
+                    ui.separator();
+                    let name = &mut self.fav_new_name;
+                    let r = ui.add(
+                        egui::TextEdit::singleline(name)
+                            .hint_text("+ 新建收藏夹，回车创建")
+                            .frame(egui::Frame::NONE)
+                            .text_color(TEXT)
+                            .font(FontId::proportional(12.0))
+                            .desired_width(190.0),
+                    );
+                    if r.has_focus() && ui.ctx().input(|i| i.key_pressed(egui::Key::Enter)) && !name.trim().is_empty() {
+                        create = Some(name.clone());
+                    }
+                });
+            });
+        // Close on Esc or a click outside the popup.
+        let fresh = std::mem::take(&mut self.fav_picker_fresh);
+        let outside = !fresh
+            && ui.ctx().input(|i| i.pointer.any_click())
+            && ui.ctx().input(|i| i.pointer.interact_pos()).is_some_and(|p| !area.response.rect.contains(p));
+        if ui.ctx().input(|i| i.key_pressed(egui::Key::Escape)) || (outside && toggles.is_empty()) {
+            close = true;
+        }
+        if let Some(lib) = &self.lib {
+            for (cid, on) in toggles {
+                lib.set_in_collection(cid, vid, on);
+                self.dirty = true;
+            }
+            if let Some(name) = create {
+                if let Some(cid) = lib.create_collection(&name) {
+                    lib.set_in_collection(cid, vid, true);
+                }
+                self.fav_new_name.clear();
+                self.dirty = true;
+            }
+        }
+        if close {
+            self.fav_picker = None;
+            self.fav_new_name.clear();
+        }
+    }
 }
 
 enum CardEvent {
     Play(String),
+    OpenFolder(FolderLoc),
+    PlayFolder(FolderLoc),
     TagFilter(String),
     EditTags(i64, egui::Pos2),
     RemoveTag(i64, String),
+    Favorite(i64, egui::Pos2),
     Reveal(String),
     Remove(i64),
 }
 
-fn draw_card(ui: &mut egui::Ui, p: &egui::Painter, card: Rect, thumb: Rect, v: &Video, tex: Option<egui::TextureId>) -> Option<CardEvent> {
+fn matches_search(v: &Video, words: &[String]) -> bool {
+    if words.is_empty() {
+        return true;
+    }
+    let hay = format!("{} {} {}", v.title, v.tags.join(" "), v.path).to_lowercase();
+    words.iter().all(|w| hay.contains(w.as_str()))
+}
+
+fn draw_card(
+    ui: &mut egui::Ui,
+    p: &egui::Painter,
+    card: Rect,
+    thumb: Rect,
+    v: &Video,
+    tex: Option<egui::TextureId>,
+    rank: Option<usize>,
+) -> Option<CardEvent> {
     let mut ev = None;
     let resp = ui.interact(thumb, ui.scope_id().with(("card", v.id)), Sense::click());
-    let hovered = resp.hovered();
+    let hovered = resp.hovered() || ui.rect_contains_pointer(thumb);
 
-    // Thumbnail or placeholder.
     match tex {
         Some(t) => {
             p.image(t, thumb, Rect::from_min_max(pos2(0.0, 0.0), pos2(1.0, 1.0)), Color32::WHITE);
@@ -515,20 +1052,31 @@ fn draw_card(ui: &mut egui::Ui, p: &egui::Painter, card: Rect, thumb: Rect, v: &
         ui.ctx().set_cursor_icon(CursorIcon::PointingHand);
     }
 
-    // Resolution badge, top-left.
-    let res = match v.height.max(v.width.min(v.height)) {
-        h if h >= 2160 => "4K".to_string(),
-        h if h >= 1440 => "2K".to_string(),
-        h if h >= 1080 => "1080P".to_string(),
-        h if h >= 720 => "720P".to_string(),
-        h if h > 0 => format!("{h}P"),
-        _ => String::new(),
+    // Top-left: rank (most played) or resolution.
+    let (badge, badge_bg) = match rank {
+        Some(r) => (format!("#{r}"), if r <= 3 { ACCENT } else { theme::scrim(190) }),
+        None => (resolution_label(v.width, v.height), theme::scrim(190)),
     };
-    if !res.is_empty() && v.width > 0 {
-        let g = p.layout_no_wrap(res, FontId::monospace(9.0), TEXT);
+    if !badge.is_empty() {
+        let font = FontId::monospace(if rank.is_some() { 11.0 } else { 9.0 });
+        let g = p.layout_no_wrap(badge, font, TEXT);
         let r = Rect::from_min_size(thumb.min + vec2(6.0, 6.0), g.size() + vec2(8.0, 4.0));
-        p.rect_filled(r, 3.0, theme::scrim(190));
-        p.galley(r.min + vec2(4.0, 2.0), g, TEXT);
+        p.rect_filled(r, 3.0, badge_bg);
+        p.galley(r.min + vec2(4.0, 2.0), g, Color32::WHITE);
+    }
+
+    // Top-right: favorite star (always shown once favorited).
+    let fav = !v.collections.is_empty();
+    let star = Rect::from_center_size(pos2(thumb.right() - 18.0, thumb.top() + 18.0), vec2(26.0, 26.0));
+    if fav || hovered {
+        let sr = ui.interact(star, ui.scope_id().with(("star", v.id)), Sense::click());
+        p.circle_filled(star.center(), 13.0, theme::scrim(if sr.hovered() { 230 } else { 170 }));
+        let icon = if fav { Icon::StarFilled } else { Icon::Star };
+        icons::draw(p, icon, star.center(), 14.0, if fav || sr.hovered() { ACCENT } else { TEXT });
+        sr.clone().on_hover_text(if fav { "已收藏 · 点击管理收藏夹" } else { "收藏" });
+        if sr.clicked() {
+            ev = Some(CardEvent::Favorite(v.id, pos2(star.right() - 190.0, star.bottom() + 6.0)));
+        }
     }
 
     let progress = v.progress();
@@ -549,11 +1097,12 @@ fn draw_card(ui: &mut egui::Ui, p: &egui::Painter, card: Rect, thumb: Rect, v: &
     // Title + plays.
     let ty = thumb.bottom() + 15.0;
     let plays = if v.plays > 0 { format!("▶ {}", v.plays) } else { String::new() };
-    let plays_w = if plays.is_empty() { 0.0 } else { p.layout_no_wrap(plays.clone(), FontId::monospace(10.0), TEXT).size().x + 8.0 };
+    let plays_font = FontId::monospace(if rank.is_some() { 11.0 } else { 10.0 });
+    let plays_w = if plays.is_empty() { 0.0 } else { p.layout_no_wrap(plays.clone(), plays_font.clone(), TEXT).size().x + 8.0 };
     let title = elide(p, &v.title, FontId::proportional(13.0), card.width() - plays_w);
     p.text(pos2(card.left(), ty), Align2::LEFT_CENTER, title, FontId::proportional(13.0), if finished { TEXT_2 } else { TEXT });
     if !plays.is_empty() {
-        p.text(pos2(card.right(), ty), Align2::RIGHT_CENTER, plays, FontId::monospace(10.0), TEXT_3);
+        p.text(pos2(card.right(), ty), Align2::RIGHT_CENTER, plays, plays_font, if rank.is_some() { ACCENT } else { TEXT_3 });
     }
 
     // Tags + "+ 标签".
@@ -580,12 +1129,16 @@ fn draw_card(ui: &mut egui::Ui, p: &egui::Painter, card: Rect, thumb: Rect, v: &
         ev = Some(CardEvent::EditTags(v.id, pos2(card.left(), cy + 12.0)));
     }
 
-    if resp.clicked() {
+    if resp.clicked() && ev.is_none() {
         ev = Some(CardEvent::Play(v.path.clone()));
     }
     resp.context_menu(|ui| {
         if ui.button("播放").clicked() {
             ev = Some(CardEvent::Play(v.path.clone()));
+            ui.close();
+        }
+        if ui.button(if fav { "管理收藏夹…" } else { "收藏到…" }).clicked() {
+            ev = Some(CardEvent::Favorite(v.id, pos2(thumb.left() + 8.0, thumb.top() + 8.0)));
             ui.close();
         }
         if ui.button("添加标签…").clicked() {
@@ -616,19 +1169,97 @@ fn draw_card(ui: &mut egui::Ui, p: &egui::Painter, card: Rect, thumb: Rect, v: &
     ev
 }
 
+#[allow(clippy::too_many_arguments)]
+fn draw_folder_card(
+    ui: &mut egui::Ui,
+    p: &egui::Painter,
+    card: Rect,
+    thumb: Rect,
+    name: &str,
+    loc: &FolderLoc,
+    covers: &[Option<egui::TextureId>],
+    count: usize,
+    total: f64,
+    watched: usize,
+) -> Option<CardEvent> {
+    let mut ev = None;
+    let id = (loc.root, loc.parts.join("/"));
+    let resp = ui.interact(thumb, ui.scope_id().with(("folder_card", &id)), Sense::click());
+    let hovered = resp.hovered();
+
+    // 2×2 mosaic of the first videos inside.
+    p.rect_filled(thumb, 6.0, theme::BG);
+    let (w, h) = ((thumb.width() - 1.0) / 2.0, (thumb.height() - 1.0) / 2.0);
+    for i in 0..4 {
+        let cell = Rect::from_min_size(thumb.min + vec2((i % 2) as f32 * (w + 1.0), (i / 2) as f32 * (h + 1.0)), vec2(w, h));
+        match covers.get(i).copied().flatten() {
+            Some(t) => {
+                p.image(t, cell, Rect::from_min_max(pos2(0.0, 0.0), pos2(1.0, 1.0)), Color32::WHITE);
+            }
+            None => {
+                p.rect_filled(cell, 0.0, PANEL);
+            }
+        }
+    }
+    let bg = Rect::from_min_size(thumb.right_bottom() - vec2(64.0, 26.0), vec2(56.0, 18.0));
+    p.rect_filled(bg, 3.0, theme::scrim(210));
+    icons::draw(p, Icon::Folder, pos2(bg.left() + 13.0, bg.center().y), 11.0, TEXT);
+    p.text(pos2(bg.right() - 6.0, bg.center().y), Align2::RIGHT_CENTER, count.to_string(), FontId::monospace(10.0), TEXT);
+    if count > 0 && watched > 0 {
+        let f = watched as f32 / count as f32;
+        let y = thumb.bottom() - 1.5;
+        p.line_segment([pos2(thumb.left(), y), pos2(thumb.right(), y)], Stroke::new(3.0, Color32::from_white_alpha(50)));
+        p.line_segment([pos2(thumb.left(), y), pos2(thumb.left() + f * thumb.width(), y)], Stroke::new(3.0, ACCENT));
+    }
+    if hovered {
+        p.rect_stroke(thumb, 6.0, Stroke::new(1.5, ACCENT), StrokeKind::Inside);
+        ui.ctx().set_cursor_icon(CursorIcon::PointingHand);
+    }
+
+    let ty = thumb.bottom() + 15.0;
+    p.text(pos2(card.left(), ty), Align2::LEFT_CENTER, elide(p, name, FontId::proportional(13.0), card.width()), FontId::proportional(13.0), TEXT);
+    let mut meta = fmt_time(total);
+    if count > 0 && watched > 0 {
+        meta.push_str(&format!(" · 看完 {watched}/{count}"));
+    }
+    p.text(pos2(card.left(), thumb.bottom() + 36.0), Align2::LEFT_CENTER, meta, FontId::monospace(10.0), TEXT_3);
+
+    if resp.clicked() {
+        ev = Some(CardEvent::OpenFolder(loc.clone()));
+    }
+    resp.context_menu(|ui| {
+        if ui.button("打开").clicked() {
+            ev = Some(CardEvent::OpenFolder(loc.clone()));
+            ui.close();
+        }
+        if ui.button("播放全部").clicked() {
+            ev = Some(CardEvent::PlayFolder(loc.clone()));
+            ui.close();
+        }
+    });
+    ev
+}
+
+fn resolution_label(w: i64, h: i64) -> String {
+    if w <= 0 || h <= 0 {
+        return String::new();
+    }
+    match h.min(w) {
+        x if x >= 2160 => "4K".into(),
+        x if x >= 1440 => "2K".into(),
+        x if x >= 1080 => "1080P".into(),
+        x if x >= 720 => "720P".into(),
+        x => format!("{x}P"),
+    }
+}
+
 fn empty_library(ui: &mut egui::Ui, p: &egui::Painter, content: Rect) -> Action {
     let c = content.center() - vec2(0.0, 30.0);
     let frame = Rect::from_center_size(c - vec2(0.0, 30.0), vec2(240.0, 120.0));
     icons::corner_brackets(p, frame, 12.0, Stroke::new(1.0, theme::accent_alpha(200)));
-    icons::draw(p, Icon::List, frame.center() - vec2(0.0, 14.0), 26.0, ACCENT);
+    icons::draw(p, Icon::Folder, frame.center() - vec2(0.0, 14.0), 26.0, ACCENT);
     p.text(frame.center() + vec2(0.0, 24.0), Align2::CENTER_CENTER, "建立你的媒体库", FontId::proportional(14.0), TEXT);
-    p.text(
-        pos2(c.x, frame.bottom() + 22.0),
-        Align2::CENTER_CENTER,
-        "添加视频所在的文件夹，自动生成缩略图，支持标签与搜索",
-        FontId::proportional(12.0),
-        TEXT_2,
-    );
+    p.text(pos2(c.x, frame.bottom() + 22.0), Align2::CENTER_CENTER, "添加视频所在的文件夹，自动生成缩略图，支持标签与搜索", FontId::proportional(12.0), TEXT_2);
     let mut action = Action::None;
     let y = frame.bottom() + 60.0;
     if text_btn(ui, p, pos2(c.x - 14.0, y), "empty_add", "+ 添加文件夹", ACCENT).1 {
@@ -644,8 +1275,15 @@ fn empty_library(ui: &mut egui::Ui, p: &egui::Painter, content: Rect) -> Action 
 
 // ---- Small widgets ---------------------------------------------------------
 
-/// Right-aligned text button ending at `right_center`.
-/// Returns (left edge, clicked).
+fn popup_frame() -> egui::Frame {
+    egui::Frame::NONE
+        .fill(PANEL)
+        .stroke(Stroke::new(0.5, ACCENT))
+        .corner_radius(6.0)
+        .inner_margin(egui::Margin::symmetric(10, 8))
+}
+
+/// Right-aligned text button ending at `right_center`. Returns (left edge, clicked).
 fn text_btn(ui: &mut egui::Ui, p: &egui::Painter, right_center: egui::Pos2, id: &str, text: &str, color: Color32) -> (f32, bool) {
     let g = p.layout_no_wrap(text.to_string(), FontId::proportional(13.0), color);
     let r = Rect::from_min_size(pos2(right_center.x - g.size().x, right_center.y - g.size().y / 2.0), g.size());
@@ -658,7 +1296,29 @@ fn text_btn(ui: &mut egui::Ui, p: &egui::Painter, right_center: egui::Pos2, id: 
     (r.left(), resp.clicked())
 }
 
-fn nav_item(ui: &mut egui::Ui, p: &egui::Painter, r: Rect, id: impl std::hash::Hash + std::fmt::Debug, label: &str, count: Option<usize>, on: bool) -> bool {
+fn nav_item(
+    ui: &mut egui::Ui,
+    p: &egui::Painter,
+    r: Rect,
+    id: impl std::hash::Hash + std::fmt::Debug,
+    label: &str,
+    count: Option<usize>,
+    on: bool,
+) -> bool {
+    nav_item_indented(ui, p, r, id, label, count, on, 0.0)
+}
+
+#[allow(clippy::too_many_arguments)]
+fn nav_item_indented(
+    ui: &mut egui::Ui,
+    p: &egui::Painter,
+    r: Rect,
+    id: impl std::hash::Hash + std::fmt::Debug,
+    label: &str,
+    count: Option<usize>,
+    on: bool,
+    indent: f32,
+) -> bool {
     let resp = ui.interact(r, ui.scope_id().with(id), Sense::click());
     if on {
         p.rect_filled(r, 0.0, theme::accent_alpha(14));
@@ -666,8 +1326,8 @@ fn nav_item(ui: &mut egui::Ui, p: &egui::Painter, r: Rect, id: impl std::hash::H
     } else if resp.hovered() {
         p.rect_filled(r, 0.0, Color32::from_white_alpha(6));
     }
-    let text = elide(p, label, FontId::proportional(13.0), r.width() - 70.0);
-    p.text(pos2(r.left() + 18.0, r.center().y), Align2::LEFT_CENTER, text, FontId::proportional(13.0), if on || resp.hovered() { TEXT } else { TEXT_2 });
+    let text = elide(p, label, FontId::proportional(13.0), r.width() - 70.0 - indent);
+    p.text(pos2(r.left() + 18.0 + indent, r.center().y), Align2::LEFT_CENTER, text, FontId::proportional(13.0), if on || resp.hovered() { TEXT } else { TEXT_2 });
     if let Some(n) = count {
         p.text(pos2(r.right() - 16.0, r.center().y), Align2::RIGHT_CENTER, n.to_string(), FontId::monospace(10.0), TEXT_3);
     }
@@ -683,6 +1343,10 @@ fn toggle_tag(sel: &mut Vec<String>, tag: &str) {
     } else {
         sel.push(tag.to_string());
     }
+}
+
+fn base_name(path: &str) -> String {
+    Path::new(path).file_name().map(|n| n.to_string_lossy().into_owned()).unwrap_or_else(|| path.to_string())
 }
 
 fn search_icon(p: &egui::Painter, c: egui::Pos2, color: Color32) {
@@ -730,7 +1394,7 @@ fn reveal_in_file_manager(path: &str) {
     }
     #[cfg(not(any(target_os = "windows", target_os = "macos")))]
     {
-        if let Some(dir) = std::path::Path::new(path).parent() {
+        if let Some(dir) = Path::new(path).parent() {
             let _ = std::process::Command::new("xdg-open").arg(dir).spawn();
         }
     }

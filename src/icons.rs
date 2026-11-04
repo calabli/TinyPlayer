@@ -20,6 +20,9 @@ pub enum Icon {
     RepeatOne,
     Close,
     Stop,
+    Star,
+    StarFilled,
+    Folder,
 }
 
 /// Draws `icon` centered at `c`, fitting in a `s`×`s` box.
@@ -134,6 +137,36 @@ pub fn draw(p: &Painter, icon: Icon, c: Pos2, s: f32, color: Color32) {
             if icon == Icon::RepeatOne {
                 p.text(c, eframe::egui::Align2::CENTER_CENTER, "1", eframe::egui::FontId::monospace(s * 0.5), color);
             }
+        }
+        Icon::Star | Icon::StarFilled => {
+            // Five-point star: alternate outer/inner radius.
+            let pts: Vec<Pos2> = (0..10)
+                .map(|i| {
+                    let r = if i % 2 == 0 { h * 0.95 } else { h * 0.42 };
+                    let a = -std::f32::consts::FRAC_PI_2 + i as f32 * std::f32::consts::PI / 5.0;
+                    pos2(c.x + r * a.cos(), c.y + r * a.sin() + h * 0.06)
+                })
+                .collect();
+            if icon == Icon::StarFilled {
+                // Non-convex: fill the inner pentagon plus five tip triangles.
+                let inner: Vec<Pos2> = pts.iter().skip(1).step_by(2).copied().collect();
+                p.add(Shape::convex_polygon(inner.clone(), color, Stroke::NONE));
+                for k in 0..5 {
+                    let tip = pts[k * 2];
+                    let a = inner[(k + 4) % 5];
+                    let b = inner[k];
+                    p.add(Shape::convex_polygon(vec![tip, b, a], color, Stroke::NONE));
+                }
+            } else {
+                p.add(Shape::closed_line(pts, Stroke::new(stroke.width * 0.9, color)));
+            }
+        }
+        Icon::Folder => {
+            let r = eframe::egui::Rect::from_center_size(c + vec2(0.0, h * 0.08), vec2(h * 1.7, h * 1.2));
+            p.rect_stroke(r, 2.0, stroke, eframe::egui::StrokeKind::Middle);
+            p.line_segment([pos2(r.left(), r.top()), pos2(r.left(), r.top() - h * 0.2)], stroke);
+            p.line_segment([pos2(r.left(), r.top() - h * 0.2), pos2(r.left() + h * 0.6, r.top() - h * 0.2)], stroke);
+            p.line_segment([pos2(r.left() + h * 0.6, r.top() - h * 0.2), pos2(r.left() + h * 0.8, r.top())], stroke);
         }
         Icon::Stop => {
             let r = eframe::egui::Rect::from_center_size(c, vec2(h * 1.1, h * 1.1));

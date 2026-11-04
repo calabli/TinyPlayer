@@ -19,6 +19,13 @@ pub struct Folder {
 }
 
 #[derive(Clone, Debug)]
+pub struct Collection {
+    pub id: i64,
+    pub name: String,
+    pub count: i64,
+}
+
+#[derive(Clone, Debug)]
 pub struct Video {
     pub id: i64,
     pub path: String,
@@ -34,6 +41,8 @@ pub struct Video {
     pub last_played: Option<i64>,
     pub plays: i64,
     pub tags: Vec<String>,
+    /// Ids of the collections (favorites lists) this video is in.
+    pub collections: Vec<i64>,
 }
 
 impl Video {
@@ -76,6 +85,18 @@ pub const SCHEMA: &str = "
     CREATE TABLE IF NOT EXISTS tags (
         id   INTEGER PRIMARY KEY,
         name TEXT NOT NULL UNIQUE COLLATE NOCASE
+    );
+    CREATE TABLE IF NOT EXISTS collections (
+        id         INTEGER PRIMARY KEY,
+        name       TEXT NOT NULL,
+        sort_order INTEGER NOT NULL DEFAULT 0,
+        created_at INTEGER NOT NULL
+    );
+    CREATE TABLE IF NOT EXISTS collection_items (
+        collection_id INTEGER NOT NULL,
+        video_id      INTEGER NOT NULL,
+        added_at      INTEGER NOT NULL,
+        PRIMARY KEY (collection_id, video_id)
     );
     CREATE TABLE IF NOT EXISTS video_tags (
         video_id INTEGER NOT NULL,
@@ -231,6 +252,7 @@ impl Library {
 
     pub fn remove_video(&self, id: i64) {
         let _ = self.db.execute("DELETE FROM video_tags WHERE video_id = ?1", [id]);
+        let _ = self.db.execute("DELETE FROM collection_items WHERE video_id = ?1", [id]);
         let _ = self.db.execute("DELETE FROM videos WHERE id = ?1", [id]);
     }
 
@@ -241,7 +263,8 @@ impl Library {
                     h.position, h.updated_at,
                     (SELECT COUNT(*) FROM play_events p WHERE p.key = v.key),
                     (SELECT GROUP_CONCAT(t.name, char(31)) FROM video_tags vt JOIN tags t ON t.id = vt.tag_id
-                      WHERE vt.video_id = v.id)
+                      WHERE vt.video_id = v.id),
+                    (SELECT GROUP_CONCAT(ci.collection_id) FROM collection_items ci WHERE ci.video_id = v.id)
              FROM videos v LEFT JOIN history h ON h.key = v.key
              WHERE v.missing = 0",
         ) else {
@@ -265,10 +288,98 @@ impl Library {
                 tags: tags
                     .map(|t| t.split('\u{1f}').map(str::to_string).collect())
                     .unwrap_or_default(),
+                collections: r
+                    .get::<_, Option<String>>(13)?
+                    .map(|c| c.split(',').filter_map(|x| x.parse().ok()).collect())
+                    .unwrap_or_default(),
             })
         })
         .map(|it| it.flatten().collect())
         .unwrap_or_default()
+    }
+
+    /// Library id for a file path, if the file is in the library.
+    pub fn video_id_for_path(&self, path: &str) -> Option<i64> {
+        let canon = std::fs::canonicalize(path).ok().map(|p| display_path(&p));
+        let p = canon.as_deref().unwrap_or(path);
+        self.db.query_row("SELECT id FROM videos WHERE path = ?1 AND missing = 0", [p], |r| r.get(0)).ok()
+    }
+
+    // ---- Collections (favorites) ----
+
+    /// All collections; creates "默认收藏" the first time so there's always one.
+    pub fn collections(&self) -> Vec<Collection> {
+        let n: i64 = self.db.query_row("SELECT COUNT(*) FROM collections", [], |r| r.get(0)).unwrap_or(0);
+        if n == 0 {
+            self.create_collection("默认收藏");
+        }
+        let Ok(mut stmt) = self.db.prepare(
+            "SELECT c.id, c.name,
+                    (SELECT COUNT(*) FROM collection_items ci JOIN videos v ON v.id = ci.video_id
+                      WHERE ci.collection_id = c.id AND v.missing = 0)
+             FROM collections c ORDER BY c.sort_order, c.id",
+        ) else {
+            return Vec::new();
+        };
+        stmt.query_map([], |r| Ok(Collection { id: r.get(0)?, name: r.get(1)?, count: r.get(2)? }))
+            .map(|it| it.flatten().collect())
+            .unwrap_or_default()
+    }
+
+    pub fn create_collection(&self, name: &str) -> Option<i64> {
+        let name = name.trim();
+        if name.is_empty() {
+            return None;
+        }
+        self.db
+            .execute(
+                "INSERT INTO collections (name, sort_order, created_at)
+                 VALUES (?1, (SELECT COALESCE(MAX(sort_order), 0) + 1 FROM collections), ?2)",
+                params![name, now_secs()],
+            )
+            .ok()?;
+        Some(self.db.last_insert_rowid())
+    }
+
+    /// Deletes a collection (the videos stay in the library).
+    pub fn delete_collection(&self, id: i64) {
+        let _ = self.db.execute("DELETE FROM collection_items WHERE collection_id = ?1", [id]);
+        let _ = self.db.execute("DELETE FROM collections WHERE id = ?1", [id]);
+    }
+
+    pub fn set_in_collection(&self, collection_id: i64, video_id: i64, on: bool) {
+        if on {
+            let _ = self.db.execute(
+                "INSERT OR IGNORE INTO collection_items (collection_id, video_id, added_at) VALUES (?1, ?2, ?3)",
+                params![collection_id, video_id, now_secs()],
+            );
+        } else {
+            let _ = self.db.execute(
+                "DELETE FROM collection_items WHERE collection_id = ?1 AND video_id = ?2",
+                params![collection_id, video_id],
+            );
+        }
+    }
+
+    pub fn is_favorite(&self, video_id: i64) -> bool {
+        self.db
+            .query_row("SELECT 1 FROM collection_items WHERE video_id = ?1 LIMIT 1", [video_id], |_| Ok(()))
+            .is_ok()
+    }
+
+    /// Quick favorite (player star / Ctrl+D): adds to the first collection,
+    /// or removes from every collection if already favorited.
+    /// Returns the new state.
+    pub fn toggle_favorite(&self, video_id: i64) -> bool {
+        if self.is_favorite(video_id) {
+            let _ = self.db.execute("DELETE FROM collection_items WHERE video_id = ?1", [video_id]);
+            false
+        } else if let Some(first) = self.collections().first() {
+            self.set_in_collection(first.id, video_id, true);
+            true
+        } else {
+            false
+        }
     }
 
     // ---- Tags ----
@@ -337,6 +448,18 @@ mod tests {
         assert_eq!(tags, ["Rust", "课程"]);
         lib.remove_tag(v.id, "Rust");
         assert_eq!(lib.videos()[0].tags, ["课程"]);
+
+        // Collections: a default one exists, quick-favorite toggles it.
+        let cols = lib.collections();
+        assert_eq!(cols[0].name, "默认收藏");
+        assert!(lib.toggle_favorite(v.id));
+        assert_eq!(lib.videos()[0].collections, [cols[0].id]);
+        let watch = lib.create_collection("想看").unwrap();
+        lib.set_in_collection(watch, v.id, true);
+        assert_eq!(lib.collections().iter().map(|c| c.count).collect::<Vec<_>>(), [1, 1]);
+        assert!(!lib.toggle_favorite(v.id), "toggling again removes from all");
+        assert!(lib.videos()[0].collections.is_empty());
+        assert_eq!(lib.video_id_for_path(&canon.to_string_lossy()), Some(v.id));
 
         lib.mark_missing(fid, &Default::default());
         assert!(lib.videos().is_empty(), "missing files are hidden");
