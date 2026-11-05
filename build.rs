@@ -1,9 +1,26 @@
-//! Copies the bundled libmpv shared library next to the built executable,
-//! so `cargo run` works without any manual setup.
+//! Build steps:
+//! - embed the exe icon on Windows (assets/app.rc → assets/icon.ico)
+//! - copy the bundled libmpv next to the built executable, so `cargo run`
+//!   works without any manual setup
 
 use std::path::PathBuf;
 
 fn main() {
+    embed_icon();
+    copy_libmpv();
+}
+
+fn embed_icon() {
+    println!("cargo:rerun-if-changed=assets/app.rc");
+    println!("cargo:rerun-if-changed=assets/icon.ico");
+    if std::env::var("CARGO_CFG_TARGET_OS").as_deref() == Ok("windows") {
+        if let Err(e) = embed_resource::compile("assets/app.rc", embed_resource::NONE).manifest_optional() {
+            println!("cargo:warning=couldn't embed the exe icon: {e}");
+        }
+    }
+}
+
+fn copy_libmpv() {
     let (dir, file) = match std::env::var("CARGO_CFG_TARGET_OS").as_deref() {
         Ok("windows") => ("windows", "libmpv-2.dll"),
         Ok("macos") => ("macos", "libmpv.2.dylib"),

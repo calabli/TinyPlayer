@@ -47,6 +47,12 @@ libmpv 体积较大，没有提交到 git。
 | Ctrl/⌘ + K | 媒体库搜索 |
 | L | 打开 / 收起播放列表 |
 
+## 桌面集成
+
+- **单实例**：TinyPlayer 已在运行时，再打开视频（双击、拖到 exe 上、命令行）会交给已有窗口播放并把它切到前台，不会再开一个窗口。实现方式是本机回环端口通信，端口由数据目录推算，所以设置了不同 `TINYPLAYER_DATA_DIR` 的实例（测试、便携版）互不干扰
+- **图标**：`python scripts/make-icon.py` 只用标准库生成 `assets/` 下的图标；Windows 构建时嵌入 exe，窗口左上角也使用它；macOS 打包脚本会转成 `.icns`
+- **字幕避让**：控制栏显示时字幕自动上移到进度条上方，隐藏后回到底部
+
 ## 快捷设置面板
 
 播放时点控制栏的设置按钮，在画面右下角弹出：
@@ -119,6 +125,7 @@ src/
   playlist.rs 播放队列：同目录扫描、自然排序、循环与随机
   settings_panel.rs  完整设置窗口（播放 / 画面 / 字幕 / 播放记录 / 快捷键）
   quick_panel.rs     播放时的快捷设置面板（字幕 / 声音 / 画面 / 色彩）
+  single_instance.rs 单实例：把后续打开的文件转交给已运行的窗口
   mpv.rs      libmpv 运行时加载的 FFI 封装 + OpenGL 渲染上下文
   video.rs    mpv 渲染目标（FBO → egui 纹理）
   icons.rs    矢量图标（不依赖图标字体或图片）

@@ -1,0 +1,2 @@
+// Windows resources: the exe icon (shown in Explorer, the taskbar and Alt+Tab).
+1 ICON "icon.ico"

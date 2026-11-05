@@ -68,10 +68,13 @@ pub struct App {
     fill_tx: std::sync::mpsc::Sender<(u64, String, Vec<String>)>,
     fill_rx: std::sync::mpsc::Receiver<(u64, String, Vec<String>)>,
     quick: QuickPanel,
+    /// Current mpv sub-margin-y (raised while the control bar shows).
+    sub_margin: i32,
+    instance_rx: Option<std::sync::mpsc::Receiver<Vec<String>>>,
 }
 
 impl App {
-    pub fn new(cc: &eframe::CreationContext<'_>, files: Vec<String>) -> Self {
+    pub fn new(cc: &eframe::CreationContext<'_>, files: Vec<String>, listener: Option<std::net::TcpListener>) -> Self {
         theme::apply(&cc.egui_ctx);
         let (player, error) = match Player::new() {
             Ok(p) => {
@@ -81,6 +84,13 @@ impl App {
             }
             Err(e) => (None, Some(e)),
         };
+        // Files handed over by later launches (single instance).
+        let instance_rx = listener.map(|l| {
+            let (tx, rx) = std::sync::mpsc::channel();
+            let ctx = cc.egui_ctx.clone();
+            crate::single_instance::serve(l, tx, move || ctx.request_repaint());
+            rx
+        });
         let tracker = Tracker::new();
         let (fill_tx, fill_rx) = std::sync::mpsc::channel();
         // Pick up new/changed files in watched folders on every start.
@@ -121,6 +131,8 @@ impl App {
             fill_tx,
             fill_rx,
             quick: QuickPanel::default(),
+            sub_margin: 22,
+            instance_rx,
         }
     }
 
@@ -520,6 +532,15 @@ impl eframe::App for App {
                 || self.speed_menu
                 || self.quick.open;
             let alpha = ctx.animate_bool_with_time(ui.scope_id().with("chrome"), visible, 0.15);
+            // Lift subtitles above the control bar while it's showing.
+            // sub-margin-y is in mpv's 720-line script units; 22 is mpv's default.
+            let margin = if visible { 22 + (BAR_H / stage.height().max(1.0) * 720.0).round() as i32 } else { 22 };
+            if margin != self.sub_margin {
+                if let Some(p) = &self.player {
+                    p.mpv.set_property_string("sub-margin-y", &margin.to_string());
+                }
+                self.sub_margin = margin;
+            }
             if !visible && surface.hovered() {
                 ctx.set_cursor_icon(CursorIcon::None);
             }
@@ -671,6 +692,13 @@ impl eframe::App for App {
                     self.library.mark_dirty();
                 }
                 _ => {}
+            }
+        }
+        if let Some(rx) = &self.instance_rx {
+            while let Ok(files) = rx.try_recv() {
+                self.pending_open.extend(files);
+                ctx.send_viewport_cmd(ViewportCommand::Minimized(false));
+                ctx.send_viewport_cmd(ViewportCommand::Focus);
             }
         }
         while let Ok((generation, name, files)) = self.fill_rx.try_recv() {

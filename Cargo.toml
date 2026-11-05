@@ -17,3 +17,7 @@ lto = true
 codegen-units = 1
 panic = "abort"
 strip = true
+
+[build-dependencies]
+# Embeds the exe icon on Windows; a no-op on other platforms.
+embed-resource = "3.0.12"

@@ -248,10 +248,13 @@ impl Player {
             let lang = get("lang").unwrap_or_default();
             let title = get("title").unwrap_or_default();
             let external = get("external").as_deref() == Some("yes");
-            let mut label = match (title.is_empty(), lang.is_empty()) {
-                (false, _) => title,
-                (true, false) => language_name(&lang),
-                (true, true) => format!("轨道 {id}"),
+            // External files get a title like "en.srt"; prefer the language.
+            let mut label = if !lang.is_empty() && (external || title.is_empty()) {
+                language_name(&lang)
+            } else if !title.is_empty() {
+                title
+            } else {
+                format!("轨道 {id}")
             };
             if external {
                 label.push_str("（外挂）");

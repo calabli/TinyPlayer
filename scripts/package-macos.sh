@@ -53,6 +53,7 @@ cat > "$APP/Contents/Info.plist" <<PLIST
     <key>CFBundleDisplayName</key><string>TinyPlayer</string>
     <key>CFBundleIdentifier</key><string>app.tinyplayer.TinyPlayer</string>
     <key>CFBundleExecutable</key><string>TinyPlayer</string>
+    <key>CFBundleIconFile</key><string>TinyPlayer</string>
     <key>CFBundlePackageType</key><string>APPL</string>
     <key>CFBundleShortVersionString</key><string>$VERSION</string>
     <key>CFBundleVersion</key><string>$VERSION</string>
@@ -77,6 +78,17 @@ cat > "$APP/Contents/Info.plist" <<PLIST
 PLIST
 
 cp README.md THIRD_PARTY.md "$APP/Contents/Resources/"
+
+# App icon: build an .icns from assets/icon-512.png (scripts/make-icon.py).
+ICONSET=dist/TinyPlayer.iconset
+rm -rf "$ICONSET"; mkdir -p "$ICONSET"
+for s in 16 32 128 256; do
+    sips -z $s $s assets/icon-512.png --out "$ICONSET/icon_${s}x${s}.png" >/dev/null
+    sips -z $((s * 2)) $((s * 2)) assets/icon-512.png --out "$ICONSET/icon_${s}x${s}@2x.png" >/dev/null
+done
+cp assets/icon-512.png "$ICONSET/icon_512x512.png"
+iconutil -c icns "$ICONSET" -o "$APP/Contents/Resources/TinyPlayer.icns"
+rm -rf "$ICONSET"
 
 echo "Signing"
 if [ -n "${SIGN_IDENTITY:-}" ]; then
