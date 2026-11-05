@@ -19,6 +19,35 @@ mod video;
 
 use eframe::egui;
 
+
+/// Window position/size in points, remembered across runs.
+#[derive(Clone, Copy, Debug)]
+pub struct WindowPlace {
+    pub x: f32,
+    pub y: f32,
+    pub w: f32,
+    pub h: f32,
+    pub maximized: bool,
+}
+
+impl WindowPlace {
+    pub fn from_rects(outer: egui::Rect, inner: egui::Rect, maximized: bool) -> Self {
+        Self { x: outer.min.x, y: outer.min.y, w: inner.width(), h: inner.height(), maximized }
+    }
+
+    pub fn encode(&self) -> String {
+        format!("{:.0},{:.0},{:.0},{:.0},{}", self.x, self.y, self.w, self.h, u8::from(self.maximized))
+    }
+
+    fn decode(s: &str) -> Option<Self> {
+        let v: Vec<&str> = s.split(',').collect();
+        let f = |i: usize| v.get(i)?.parse::<f32>().ok();
+        let place = Self { x: f(0)?, y: f(1)?, w: f(2)?, h: f(3)?, maximized: v.get(4) == Some(&"1") };
+        // Ignore nonsense (e.g. a window parked off-screen by a removed monitor).
+        (place.w >= 480.0 && place.h >= 300.0 && place.x > -2000.0 && place.y > -200.0).then_some(place)
+    }
+}
+
 fn main() -> eframe::Result {
     // Files passed on the command line (e.g. from "Open with" / file association).
     let files: Vec<String> = std::env::args().skip(1).filter(|a| !a.starts_with('-')).collect();
@@ -29,18 +58,28 @@ fn main() -> eframe::Result {
         single_instance::Role::Primary(l) => l,
     };
 
+    let place = history::Store::open_default()
+        .ok()
+        .and_then(|s| s.get_value("window"))
+        .and_then(|v| WindowPlace::decode(&v));
+
+    let viewport_place = |vp: egui::ViewportBuilder| match place {
+        Some(p) => vp.with_position([p.x, p.y]).with_maximized(p.maximized),
+        None => vp,
+    };
     let options = eframe::NativeOptions {
-        viewport: egui::ViewportBuilder::default()
+        viewport: viewport_place(egui::ViewportBuilder::default()
             .with_title("TinyPlayer")
-            .with_inner_size([1100.0, 640.0])
+            .with_inner_size(place.map_or([1100.0, 640.0], |p| [p.w, p.h]))
             .with_min_inner_size([480.0, 300.0])
             .with_drag_and_drop(true)
             .with_icon(egui::IconData {
                 rgba: include_bytes!("../assets/icon-128.rgba").to_vec(),
                 width: 128,
                 height: 128,
-            }),
+            })),
         renderer: eframe::Renderer::Glow,
+        centered: place.is_none(),
         multisampling: 0,
         depth_buffer: 0,
         stencil_buffer: 0,

@@ -34,7 +34,14 @@ pub enum Role {
 }
 
 pub fn acquire(files: &[String]) -> Role {
-    if let Ok(mut s) = TcpStream::connect_timeout(&addr().into(), Duration::from_millis(300)) {
+    // Try to become the primary instance first: binding is instant, whereas
+    // connecting to a port nobody listens on can stall on Windows until the
+    // timeout (this used to add ~300 ms to every cold start).
+    if let Ok(listener) = TcpListener::bind(addr()) {
+        return Role::Primary(Some(listener));
+    }
+    // The port is taken — most likely by a running TinyPlayer.
+    if let Ok(mut s) = TcpStream::connect_timeout(&addr().into(), Duration::from_millis(500)) {
         let _ = s.set_write_timeout(Some(Duration::from_secs(2)));
         let mut msg = String::from(MAGIC);
         for f in files {
@@ -52,8 +59,9 @@ pub fn acquire(files: &[String]) -> Role {
             }
         }
     }
-    // Nobody listening (or they didn't answer): we're the primary instance.
-    Role::Primary(TcpListener::bind(addr()).ok())
+    // Something else holds the port (or the other instance didn't answer):
+    // run normally, just without single-instance support.
+    Role::Primary(None)
 }
 
 /// Accepts file lists from later instances on a background thread and sends

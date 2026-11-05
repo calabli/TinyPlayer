@@ -64,7 +64,9 @@ impl Player {
             ("config", "no"),
             ("volume", &DEFAULT_VOLUME.to_string()),
             ("volume-max", "150"),
-            ("cache", "yes"),
+            // mpv's default: cache network streams, read local files directly
+            // (forcing the cache on local files only cost memory).
+            ("cache", "auto"),
             ("demuxer-max-bytes", "50MiB"),
             ("demuxer-max-back-bytes", "20MiB"),
             ("sub-auto", "fuzzy"),

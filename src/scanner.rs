@@ -100,6 +100,9 @@ fn worker(cmds: Receiver<Cmd>, out: Sender<Msg>, ctx: egui::Context) {
             }
             send(Msg::Changed);
         }
+        // The probing mpv instance holds a decoder and buffers (tens of MB);
+        // release it when idle and create a fresh one for the next batch.
+        prober = None;
         send(Msg::Idle);
     }
 }

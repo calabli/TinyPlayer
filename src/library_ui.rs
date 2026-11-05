@@ -24,6 +24,9 @@ const META_H: f32 = 54.0;
 /// Thumbnails decoded per frame, so scrolling a big library stays smooth.
 const THUMB_LOADS_PER_FRAME: usize = 4;
 const FINISHED: f32 = 0.95;
+/// Thumbnail textures kept in memory (~0.5 MB each at 480 px). The least
+/// recently shown ones are dropped beyond this and reloaded on demand.
+const MAX_THUMBS: usize = 160;
 
 #[derive(Clone, Copy, PartialEq)]
 enum View {
@@ -89,7 +92,9 @@ pub struct LibraryView {
     folder_sel: Option<i64>,
     /// Folder browser location; None = list of watched roots.
     folder_loc: Option<FolderLoc>,
-    thumbs: HashMap<i64, (String, TextureHandle)>,
+    /// id -> (thumbnail path, texture, frame it was last drawn)
+    thumbs: HashMap<i64, (String, TextureHandle, u64)>,
+    frame: u64,
     thumb_failed: HashSet<i64>,
     /// (video id, text being typed, focus requested yet)
     tag_edit: Option<(i64, String, bool)>,
@@ -123,6 +128,7 @@ impl LibraryView {
             folder_sel: None,
             folder_loc: None,
             thumbs: HashMap::new(),
+            frame: 0,
             thumb_failed: HashSet::new(),
             tag_edit: None,
             tag_edit_pos: pos2(0.0, 0.0),
@@ -178,7 +184,7 @@ impl LibraryView {
         }
         // Thumbnails may have been regenerated for changed files.
         let current: HashMap<i64, Option<&String>> = self.videos.iter().map(|v| (v.id, v.thumb.as_ref())).collect();
-        self.thumbs.retain(|id, (path, _)| current.get(id).copied().flatten() == Some(&*path));
+        self.thumbs.retain(|id, (path, _, _)| current.get(id).copied().flatten() == Some(&*path));
         self.thumb_failed.retain(|id| current.contains_key(id));
         if self.folder_sel.is_some_and(|f| !self.folders.iter().any(|x| x.id == f)) {
             self.folder_sel = None;
@@ -785,8 +791,8 @@ impl LibraryView {
                                 if self.ensure_thumb(ui.ctx(), id, &mut loads) {
                                     pending_thumbs = true;
                                 }
+                                let tex = self.use_thumb(id);
                                 let Some(v) = self.video(id) else { continue };
-                                let tex = self.thumbs.get(&id).map(|(_, t)| t.id());
                                 let rank = ranked.then_some(i + 1);
                                 if let Some(ev) = draw_card(ui, &p, card, thumb, v, tex, rank) {
                                     events.push(ev);
@@ -800,7 +806,7 @@ impl LibraryView {
                                     }
                                 }
                                 let texs: Vec<Option<egui::TextureId>> =
-                                    covers.iter().map(|id| self.thumbs.get(id).map(|(_, t)| t.id())).collect();
+                                    covers.iter().map(|id| self.use_thumb(*id)).collect();
                                 if let Some(ev) = draw_folder_card(ui, &p, card, thumb, name, loc, &texs, count, total, watched) {
                                     events.push(ev);
                                 }
@@ -813,6 +819,7 @@ impl LibraryView {
         if pending_thumbs {
             ui.ctx().request_repaint();
         }
+        self.evict_thumbs();
 
         for ev in events {
             match ev {
@@ -856,6 +863,34 @@ impl LibraryView {
         action
     }
 
+    /// Texture for `id` if loaded, marking it as used this frame.
+    fn use_thumb(&mut self, id: i64) -> Option<egui::TextureId> {
+        let frame = self.frame;
+        self.thumbs.get_mut(&id).map(|(_, t, used)| {
+            *used = frame;
+            t.id()
+        })
+    }
+
+    /// Drops the least recently drawn textures beyond [`MAX_THUMBS`].
+    /// Never drops one drawn this frame.
+    fn evict_thumbs(&mut self) {
+        self.frame += 1;
+        if self.thumbs.len() <= MAX_THUMBS {
+            return;
+        }
+        let mut by_age: Vec<(u64, i64)> = self.thumbs.iter().map(|(id, (_, _, used))| (*used, *id)).collect();
+        by_age.sort_unstable();
+        let excess = self.thumbs.len() - MAX_THUMBS;
+        let current = self.frame - 1;
+        for (used, id) in by_age.into_iter().take(excess) {
+            if used >= current {
+                break;
+            }
+            self.thumbs.remove(&id);
+        }
+    }
+
     /// Loads the thumbnail texture for `id` if allowed this frame.
     /// Returns true if a load had to be deferred to a later frame.
     fn ensure_thumb(&mut self, ctx: &egui::Context, id: i64, loads: &mut usize) -> bool {
@@ -869,7 +904,7 @@ impl LibraryView {
         *loads += 1;
         match load_thumb(ctx, id, &path) {
             Some(t) => {
-                self.thumbs.insert(id, (path, t));
+                self.thumbs.insert(id, (path, t, self.frame));
             }
             None => {
                 self.thumb_failed.insert(id);

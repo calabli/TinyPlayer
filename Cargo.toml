@@ -8,6 +8,7 @@ description = "A fast, small, cross-platform video player built on libmpv"
 eframe = { version = "0.37.0", default-features = false, features = ["glow", "default_fonts"] }
 image = { version = "0.25.10", default-features = false, features = ["jpeg"] }
 libloading = "0.9.0"
+memmap2 = "0.9.12"
 rfd = "0.17.2"
 rusqlite = { version = "0.41.1", features = ["bundled"] }
 

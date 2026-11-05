@@ -54,9 +54,12 @@ fn install_fonts(ctx: &egui::Context) {
 
     let mut fonts = FontDefinitions::default();
     for (path, index) in candidates {
-        if let Ok(bytes) = std::fs::read(path) {
-            let mut data = FontData::from_owned(bytes);
-            data.index = *index;
+        // Memory-map instead of reading: CJK fonts are ~20 MB, and only the
+        // glyph pages actually used get loaded (and they're shared, not private).
+        let Ok(file) = std::fs::File::open(path) else { continue };
+        // SAFETY: system font files aren't modified while we run.
+        if let Ok(map) = unsafe { memmap2::Mmap::map(&file) } {
+            let data = FontData::from_blob(Arc::new(map), *index);
             fonts.font_data.insert("cjk".into(), Arc::new(data));
             for family in [FontFamily::Proportional, FontFamily::Monospace] {
                 fonts.families.entry(family).or_default().push("cjk".into());

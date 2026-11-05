@@ -225,6 +225,18 @@ impl Store {
         }
     }
 
+    /// Free-form key/value (e.g. the window placement).
+    pub fn get_value(&self, k: &str) -> Option<String> {
+        self.db.query_row("SELECT v FROM settings WHERE k = ?1", [k], |r| r.get(0)).optional().ok().flatten()
+    }
+
+    pub fn set_value(&self, k: &str, v: &str) {
+        let _ = self.db.execute(
+            "INSERT INTO settings (k, v) VALUES (?1, ?2) ON CONFLICT(k) DO UPDATE SET v = ?2",
+            params![k, v],
+        );
+    }
+
     // ---- Resume positions ----
 
     pub fn position(&self, key: &str) -> Option<Entry> {

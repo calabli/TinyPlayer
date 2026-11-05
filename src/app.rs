@@ -71,6 +71,8 @@ pub struct App {
     /// Current mpv sub-margin-y (raised while the control bar shows).
     sub_margin: i32,
     instance_rx: Option<std::sync::mpsc::Receiver<Vec<String>>>,
+    /// Last normal (not fullscreen) window placement, saved on exit.
+    window_place: Option<crate::WindowPlace>,
 }
 
 impl App {
@@ -133,6 +135,7 @@ impl App {
             quick: QuickPanel::default(),
             sub_margin: 22,
             instance_rx,
+            window_place: None,
         }
     }
 
@@ -453,6 +456,22 @@ impl eframe::App for App {
         self.flush_open(&ctx);
 
         let full = ctx.content_rect();
+        // Remember where the window is (skip fullscreen/minimized states).
+        ctx.input(|i| {
+            let vp = i.viewport();
+            if vp.fullscreen != Some(true) && vp.minimized != Some(true) {
+                if let (Some(outer), Some(inner)) = (vp.outer_rect, vp.inner_rect) {
+                    let maximized = vp.maximized == Some(true);
+                    let prev = self.window_place;
+                    self.window_place = Some(if maximized {
+                        // Keep the restored size from before maximizing.
+                        crate::WindowPlace { maximized: true, ..prev.unwrap_or(crate::WindowPlace::from_rects(outer, inner, true)) }
+                    } else {
+                        crate::WindowPlace::from_rects(outer, inner, false)
+                    });
+                }
+            }
+        });
         let painter = ui.painter().clone();
         painter.rect_filled(full, 0.0, Color32::BLACK);
         // The playlist sidebar floats over the video (the video never resizes);
@@ -728,6 +747,9 @@ impl eframe::App for App {
     }
 
     fn on_exit(&mut self, gl: Option<&glow::Context>) {
+        if let (Some(place), Some(store)) = (self.window_place, &self.tracker.store) {
+            store.set_value("window", &place.encode());
+        }
         self.scanner.quit();
         self.tracker.shutdown();
         if let (Some(v), Some(gl)) = (self.video.take(), gl) {
