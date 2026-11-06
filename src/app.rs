@@ -9,9 +9,11 @@ use eframe::egui::{
 use eframe::glow;
 
 use crate::ab_loop::AbLoop;
+use crate::crop_detect::CropDetect;
 use crate::history::Entry;
 use crate::hover_thumbs::HoverThumbs;
 use crate::icons::{self, Icon};
+use crate::i18n::{tf, tr};
 use crate::keep_awake::{KeepAwake, hold_for};
 use crate::library_ui::{Action as LibAction, LibraryView};
 use crate::marks::{self, Marks};
@@ -19,12 +21,13 @@ use crate::media_keys::{Cmd as MediaCmd, MediaKeys};
 use crate::scanner::{Msg as ScanMsg, Scanner};
 use crate::mpv::{Event, RenderContext};
 use crate::player::Player;
-use crate::quick_panel::QuickPanel;
+use crate::quick_panel::{Crop, QuickPanel};
 use crate::playlist::{self, LoopMode, Playlist};
 use crate::session::{Resume, Tracker};
 use crate::settings_panel::{self, PanelState};
-use crate::theme::{self, ACCENT, LINE, TEXT, TEXT_2, TEXT_3};
+use crate::theme::{self, ACCENT, TEXT, TEXT_2, TEXT_3};
 use crate::video::VideoTarget;
+use crate::view::{self, View, ZOOM_STEP};
 
 const HIDE_AFTER: f64 = 2.0;
 const OSD_SECS: f64 = 1.5;
@@ -40,6 +43,8 @@ const BOOKMARK_COLOR: Color32 = Color32::from_rgb(0xFF, 0x8A, 0x65);
 const HOVER_THUMB_W: f32 = 200.0;
 const PIP_MAX_SIDE: f32 = 400.0;
 const PIP_MARGIN: f32 = 24.0;
+/// How often interpolation re-checks the display's refresh rate.
+const REFRESH_CHECK_SECS: f64 = 2.0;
 const NORMAL_MIN_SIZE: [f32; 2] = [480.0, 300.0];
 const PIP_MIN_SIZE: [f32; 2] = [200.0, 120.0];
 
@@ -91,6 +96,9 @@ pub struct App {
     window_place: Option<crate::WindowPlace>,
     ab: AbLoop,
     marks: Marks,
+    view: View,
+    crop_detect: CropDetect,
+    last_refresh_check: f64,
     always_on_top: bool,
     pip: bool,
     /// Where the window goes back to when leaving picture-in-picture.
@@ -102,7 +110,6 @@ pub struct App {
 
 impl App {
     pub fn new(cc: &eframe::CreationContext<'_>, files: Vec<String>, listener: Option<std::net::TcpListener>) -> Self {
-        theme::apply(&cc.egui_ctx);
         let (player, error) = match Player::new() {
             Ok(p) => {
                 let ctx = cc.egui_ctx.clone();
@@ -119,6 +126,10 @@ impl App {
             rx
         });
         let tracker = Tracker::new();
+        crate::i18n::set_language(&tracker.settings.language);
+        let system = cc.egui_ctx.input(|i| i.raw.system_theme);
+        let light = theme::wants_light(&tracker.settings.theme, system);
+        theme::apply(&cc.egui_ctx, light);
         let (fill_tx, fill_rx) = std::sync::mpsc::channel();
         // Pick up new/changed files in watched folders on every start.
         let scanner = Scanner::spawn(cc.egui_ctx.clone());
@@ -166,6 +177,9 @@ impl App {
             window_place: None,
             ab: AbLoop::default(),
             marks: Marks::default(),
+            view: View::default(),
+            crop_detect: CropDetect::new(),
+            last_refresh_check: 0.0,
             always_on_top: false,
             pip: false,
             pip_restore: None,
@@ -205,6 +219,15 @@ impl App {
         self.osd = Some((text.into(), now, OSD_SECS));
     }
 
+    /// Follows the setting, and the OS while the setting says "system".
+    fn sync_theme(&mut self, ctx: &egui::Context) {
+        let system = ctx.input(|i| i.raw.system_theme);
+        let light = theme::wants_light(&self.tracker.settings.theme, system);
+        if light != theme::is_light() {
+            theme::set_light(ctx, light);
+        }
+    }
+
     fn apply_window_level(&self, ctx: &egui::Context) {
         let on_top = self.always_on_top || self.pip;
         let level = if on_top { egui::WindowLevel::AlwaysOnTop } else { egui::WindowLevel::Normal };
@@ -214,14 +237,14 @@ impl App {
     fn toggle_on_top(&mut self, ctx: &egui::Context) {
         self.always_on_top = !self.always_on_top;
         self.apply_window_level(ctx);
-        self.show_osd(ctx, if self.always_on_top { "窗口置顶  开" } else { "窗口置顶  关" });
+        self.show_osd(ctx, if self.always_on_top { tr("窗口置顶  开") } else { tr("窗口置顶  关") });
     }
 
     /// Shrinks the window to a borderless, always-on-top video in the corner
     /// of the screen, or puts it back where it was.
     fn toggle_pip(&mut self, ctx: &egui::Context) {
         if ctx.input(|i| i.viewport().fullscreen.unwrap_or(false)) {
-            self.show_osd(ctx, "请先退出全屏");
+            self.show_osd(ctx, tr("请先退出全屏"));
             return;
         }
         self.pip = !self.pip;
@@ -263,22 +286,69 @@ impl App {
         }
         let text = match (self.ab.a, self.ab.b) {
             (Some(a), None) => format!("A  {}", fmt_time(a)),
-            (Some(a), Some(b)) => format!("A-B 循环  {} – {}", fmt_time(a), fmt_time(b)),
-            _ => "A-B 循环  已清除".to_string(),
+            (Some(a), Some(b)) => tf("A-B 循环  {} – {}", &[&fmt_time(a), &fmt_time(b)]),
+            _ => tr("A-B 循环  已清除").to_string(),
         };
         self.show_osd(ctx, text);
+    }
+
+    fn apply_view(&mut self, ctx: &egui::Context, osd: bool) {
+        if let Some(p) = &self.player {
+            p.set_view(self.view);
+        }
+        if osd {
+            self.show_osd(ctx, tf("缩放  {}%", &[&self.view.percent()]));
+        }
+    }
+
+    fn apply_crop(&mut self, ctx: &egui::Context) {
+        let Some(p) = &self.player else { return };
+        match self.quick.crop {
+            Crop::Off => p.set_crop(None),
+            Crop::Ratio(r) => {
+                let area = view::crop_to_ratio(p.state.width, p.state.height, r);
+                p.set_crop(area.as_deref());
+                if area.is_none() {
+                    self.show_osd(ctx, tr("画面已经是这个比例"));
+                }
+            }
+            Crop::Auto if p.state.path.contains("://") => self.show_osd(ctx, tr("只有本地文件可以去黑边")),
+            Crop::Auto => {
+                self.crop_detect.start(ctx, p.state.path.clone());
+                self.show_osd(ctx, tr("正在检测黑边…"));
+            }
+        }
+    }
+
+    fn on_crop_detected(&mut self, ctx: &egui::Context, path: &str, area: Option<crate::crop_detect::Area>) {
+        let Some(p) = &self.player else { return };
+        // The viewer may have moved on while the detector ran.
+        if path != p.state.path || self.quick.crop != Crop::Auto {
+            return;
+        }
+        let frame = (p.state.width, p.state.height);
+        match area.and_then(|a| view::crop_from_detected(frame, a)) {
+            Some(crop) => {
+                p.set_crop(Some(&crop));
+                self.show_osd(ctx, tr("已去除黑边"));
+            }
+            None => {
+                self.quick.crop = Crop::Off;
+                self.show_osd(ctx, tr("没有检测到黑边"));
+            }
+        }
     }
 
     fn jump_chapter(&mut self, ctx: &egui::Context, forward: bool) {
         let Some(player) = &self.player else { return };
         if self.marks.chapters.is_empty() {
-            self.show_osd(ctx, "这个文件没有章节");
+            self.show_osd(ctx, tr("这个文件没有章节"));
             return;
         }
         let pos = player.state.position;
         let target = if forward { self.marks.next_chapter(pos) } else { self.marks.prev_chapter(pos) };
         let Some(i) = target else {
-            self.show_osd(ctx, if forward { "已是最后一章" } else { "已是第一章" });
+            self.show_osd(ctx, if forward { tr("已是最后一章") } else { tr("已是第一章") });
             return;
         };
         let chapter = &self.marks.chapters[i];
@@ -291,22 +361,22 @@ impl App {
         let Some(player) = &self.player else { return };
         let (pos, path) = (player.state.position, player.state.path.clone());
         let Some(key) = self.marks.key.clone() else {
-            self.show_osd(ctx, "只有本地文件可以添加书签");
+            self.show_osd(ctx, tr("只有本地文件可以添加书签"));
             return;
         };
         if self.tracker.incognito {
-            self.show_osd(ctx, "无痕模式下不保存书签");
+            self.show_osd(ctx, tr("无痕模式下不保存书签"));
             return;
         }
         if self.marks.has_bookmark_near(pos) {
-            self.show_osd(ctx, "这里已有书签");
+            self.show_osd(ctx, tr("这里已有书签"));
             return;
         }
         let Some(store) = &self.tracker.store else { return };
         let label = self.marks.chapter_at(pos).map_or("", |i| self.marks.chapters[i].title.as_str());
         store.add_bookmark(&key, &path, pos, label);
         self.marks.bookmarks = store.bookmarks(&key);
-        self.show_osd(ctx, format!("已添加书签  {}", fmt_time(pos)));
+        self.show_osd(ctx, tf("已添加书签  {}", &[&fmt_time(pos)]));
     }
 
     /// Opens the sidebar on the playlist or the marks, or closes it if it's
@@ -336,8 +406,8 @@ impl App {
 
     fn open_dialog(&mut self) {
         if let Some(files) = rfd::FileDialog::new()
-            .add_filter("媒体文件", playlist::MEDIA_EXTS)
-            .add_filter("所有文件", &["*"])
+            .add_filter(tr("媒体文件"), playlist::MEDIA_EXTS)
+            .add_filter(tr("所有文件"), &["*"])
             .pick_files()
         {
             self.pending_open
@@ -346,7 +416,7 @@ impl App {
     }
 
     fn add_folder_dialog(&mut self) {
-        if let Some(dir) = rfd::FileDialog::new().set_title("添加到媒体库").pick_folder() {
+        if let Some(dir) = rfd::FileDialog::new().set_title(tr("添加到媒体库")).pick_folder() {
             if self.library.add_folder(&dir.to_string_lossy()) {
                 self.scanner.scan();
             }
@@ -392,6 +462,8 @@ impl App {
         let mut want_fav = false;
         let (mut want_ab, mut want_on_top, mut want_pip) = (false, false, false);
         let (mut want_bookmark, mut want_marks) = (false, false);
+        let mut want_zoom: Option<f64> = None;
+        let mut want_view_reset = false;
         let mut want_chapter: Option<bool> = None;
 
         // The settings overlay is modal: only its own shortcuts apply.
@@ -463,15 +535,19 @@ impl App {
                 Key::Escape if fullscreen => {
                     ctx.send_viewport_cmd(ViewportCommand::Fullscreen(false));
                 }
-                Key::OpenBracket | Key::CloseBracket => {
-                    let sp = player.step_speed(if key == Key::OpenBracket { -1 } else { 1 });
+                Key::OpenBracket | Key::CloseBracket | Key::OpenCurlyBracket | Key::CloseCurlyBracket => {
+                    let dir = if matches!(key, Key::OpenBracket | Key::OpenCurlyBracket) { -1 } else { 1 };
+                    let sp = if shift { player.nudge_speed(dir) } else { player.step_speed(dir) };
                     osd = Some(format!("SPEED  {}", fmt_speed(sp)));
                 }
                 Key::Comma | Key::Period if !cmd && !s.idle => {
                     let forward = key == Key::Period;
                     player.frame_step(forward);
-                    osd = Some(if forward { "下一帧".into() } else { "上一帧".into() });
+                    osd = Some(if forward { tr("下一帧").into() } else { tr("上一帧").into() });
                 }
+                Key::Equals | Key::Plus if !cmd && !s.idle => want_zoom = Some(ZOOM_STEP),
+                Key::Minus if !cmd && !s.idle => want_zoom = Some(-ZOOM_STEP),
+                Key::Num0 if !cmd && !s.idle => want_view_reset = true,
                 Key::B if cmd && !s.idle => want_bookmark = true,
                 Key::B if !s.idle => want_ab = true,
                 Key::G if !cmd && !s.idle && !self.pip => want_marks = true,
@@ -501,6 +577,8 @@ impl App {
             && ctx.input(|i| i.pointer.hover_pos()).is_some_and(|p| self.side_rect.contains(p));
         if over_side {
             self.side_scroll -= scroll;
+        } else if scroll != 0.0 && !s.idle && cmd {
+            want_zoom = Some(scroll.signum() as f64 * ZOOM_STEP);
         } else if scroll != 0.0 && !s.idle {
             let v = s.volume + scroll.signum() as f64 * 5.0;
             player.set_volume(v);
@@ -536,6 +614,14 @@ impl App {
         }
         if want_ab {
             self.press_ab(ctx);
+        }
+        if let Some(d) = want_zoom {
+            self.view.zoom_by(d);
+            self.apply_view(ctx, true);
+        }
+        if want_view_reset {
+            self.view = View::default();
+            self.apply_view(ctx, true);
         }
         if want_on_top {
             self.toggle_on_top(ctx);
@@ -584,9 +670,9 @@ impl App {
         match self.library.toggle_favorite_path(&path) {
             Some(on) => {
                 self.current_fav = Some(on);
-                self.show_osd(ctx, if on { "★ 已收藏" } else { "已取消收藏" });
+                self.show_osd(ctx, if on { tr("★ 已收藏") } else { tr("已取消收藏") });
             }
-            None => self.show_osd(ctx, "只有媒体库里的视频可以收藏"),
+            None => self.show_osd(ctx, tr("只有媒体库里的视频可以收藏")),
         }
     }
 
@@ -649,6 +735,7 @@ impl App {
 impl eframe::App for App {
     fn ui(&mut self, ui: &mut egui::Ui, frame: &mut eframe::Frame) {
         let ctx = ui.ctx().clone();
+        self.sync_theme(&ctx);
         self.ensure_gl(&ctx, frame);
         self.handle_input(&ctx);
         self.flush_open(&ctx);
@@ -671,7 +758,8 @@ impl eframe::App for App {
             }
         });
         let painter = ui.painter().clone();
-        painter.rect_filled(full, 0.0, Color32::BLACK);
+        let playing = self.player.as_ref().is_some_and(|p| !p.state.idle);
+        painter.rect_filled(full, 0.0, if playing { Color32::BLACK } else { theme::bg() });
         // The playlist sidebar floats over the video (the video never resizes);
         // only the chrome (bars, OSD, prompts) moves aside to stay visible.
         let side_t = ctx.animate_bool_with_time(ui.scope_id().with("sidebar"), self.sidebar_open, 0.18);
@@ -697,10 +785,23 @@ impl eframe::App for App {
 
         // ---- Video ----
         // In picture-in-picture there's no title bar, so the video drags the window.
-        let sense = if self.pip { Sense::click_and_drag() } else { Sense::click() };
+        // A zoomed picture is dragged around instead.
+        let draggable = self.pip || self.view.zoomed();
+        let sense = if draggable { Sense::click_and_drag() } else { Sense::click() };
         let surface = ui.interact(full, ui.scope_id().with("surface"), sense);
         if self.pip && surface.drag_started() {
             ctx.send_viewport_cmd(ViewportCommand::StartDrag);
+        } else if !self.pip && self.view.zoomed() {
+            if surface.dragged() {
+                let fit = view::fit_size((s.width as f64, s.height as f64), (full.width() as f64, full.height() as f64));
+                let d = surface.drag_delta();
+                let scale = self.view.scale();
+                self.view.pan_by(d.x as f64 / (fit.0 * scale), d.y as f64 / (fit.1 * scale));
+                self.apply_view(&ctx, false);
+            }
+            if surface.hovered() {
+                ctx.set_cursor_icon(if surface.dragged() { CursorIcon::Grabbing } else { CursorIcon::Grab });
+            }
         }
         if !s.idle {
             if let (Some(video), Some(render), Some(gl)) = (&mut self.video, &self.render, frame.gl()) {
@@ -799,15 +900,15 @@ impl eframe::App for App {
 
             if self.quick.open {
                 if let Some(player) = &self.player {
-                    let act = self.quick.show(ui, stage, BAR_H, player, &mut self.tracker.settings);
+                    let act = self.quick.show(ui, stage, BAR_H, player, &mut self.tracker.settings, self.view);
                     if act.settings_changed {
                         self.tracker.save_settings();
                         player.apply_settings(&self.tracker.settings);
                     }
                     if act.load_subtitle {
                         if let Some(file) = rfd::FileDialog::new()
-                            .set_title("加载字幕文件")
-                            .add_filter("字幕", &["srt", "ass", "ssa", "vtt", "sub", "sup", "idx"])
+                            .set_title(tr("加载字幕文件"))
+                            .add_filter(tr("字幕"), &["srt", "ass", "ssa", "vtt", "sub", "sup", "idx"])
                             .pick_file()
                         {
                             let f = file.to_string_lossy().into_owned();
@@ -817,6 +918,17 @@ impl eframe::App for App {
                     }
                     if act.more_settings {
                         self.settings_open = true;
+                    }
+                    if act.crop_changed {
+                        self.apply_crop(&ctx);
+                    }
+                    if let Some(d) = act.zoom {
+                        self.view.zoom_by(d);
+                        self.apply_view(&ctx, false);
+                    }
+                    if act.view_reset {
+                        self.view = View::default();
+                        self.apply_view(&ctx, false);
                     }
                 }
             }
@@ -853,7 +965,7 @@ impl eframe::App for App {
             let r = full.shrink(12.0);
             painter.rect_filled(full, 0.0, theme::scrim(150));
             icons::corner_brackets(&painter, r, 24.0, Stroke::new(1.5, ACCENT));
-            painter.text(full.center(), Align2::CENTER_CENTER, "松开以播放", FontId::proportional(16.0), TEXT);
+            painter.text(full.center(), Align2::CENTER_CENTER, tr("松开以播放"), FontId::proportional(16.0), TEXT);
         }
 
         if self.settings_open {
@@ -869,6 +981,7 @@ impl eframe::App for App {
             );
             if act.settings_changed && self.tracker.settings != before {
                 self.tracker.save_settings();
+                crate::i18n::set_language(&self.tracker.settings.language);
                 self.sync_playlist_settings();
                 if let Some(p) = &self.player {
                     p.apply_settings(&self.tracker.settings);
@@ -905,6 +1018,10 @@ impl eframe::App for App {
                     self.current_fav = self.library.is_favorite_path(&player.state.path);
                     self.ab = AbLoop::default();
                     player.set_ab_loop(self.ab);
+                    self.view = View::default();
+                    player.set_view(self.view);
+                    self.quick.crop = Crop::Off;
+                    player.set_crop(None);
                     let key = crate::history::file_key(&player.state.path);
                     let bookmarks = match (&key, &self.tracker.store) {
                         (Some(k), Some(st)) => st.bookmarks(k),
@@ -914,7 +1031,7 @@ impl eframe::App for App {
                     match self.tracker.file_loaded(&player.state) {
                         Resume::Resumed(pos) => {
                             player.seek_to(pos, true);
-                            let msg = format!("已从 {} 继续 · Home 从头", fmt_time(pos));
+                            let msg = tf("已从 {} 继续 · Home 从头", &[&fmt_time(pos)]);
                             self.osd = Some((msg, now, 3.5));
                         }
                         Resume::Ask(pos) => self.resume_prompt = Some((pos, now)),
@@ -950,6 +1067,10 @@ impl eframe::App for App {
             }
         }
         self.hover_thumbs.receive(ctx);
+        if now - self.last_refresh_check > REFRESH_CHECK_SECS {
+            self.last_refresh_check = now;
+            player.sync_refresh();
+        }
         self.tracker.tick(&player.state);
         let st = &player.state;
         self.keep_awake.set(hold_for(!st.idle && !st.paused && !st.eof, st.width > 0));
@@ -966,6 +1087,9 @@ impl eframe::App for App {
         if idle && self.recent_dirty {
             self.recent = self.tracker.recent(5);
             self.recent_dirty = false;
+        }
+        while let Ok((path, area)) = self.crop_detect.rx.try_recv() {
+            self.on_crop_detected(ctx, &path, area);
         }
         let media: Vec<MediaCmd> = self.media_keys.as_ref().map_or(Vec::new(), |k| k.rx.try_iter().collect());
         for cmd in media {
@@ -1015,6 +1139,8 @@ impl App {
         let mut open_settings = false;
         let mut toggle_list = false;
         let mut want_pip = false;
+
+        let full_top = chrome.top();
 
         // ---- Seek line ----
         let line_y = bar.top() + 3.0;
@@ -1195,7 +1321,7 @@ impl App {
         let presp = ui.interact(pill, ui.scope_id().with("speed"), Sense::click());
         let pc = if presp.hovered() || self.speed_menu { ACCENT } else { TEXT_2 };
         painter.rect_stroke(pill, 12.0, Stroke::new(1.0, a(pc)), StrokeKind::Inside);
-        let label = if (s.speed - 1.0).abs() < 0.01 { "倍速".to_string() } else { fmt_speed(s.speed) };
+        let label = if (s.speed - 1.0).abs() < 0.01 { tr("倍速").to_string() } else { fmt_speed(s.speed) };
         painter.text(pill.center(), Align2::CENTER_CENTER, label, FontId::proportional(12.0), a(if presp.hovered() { ACCENT } else { TEXT }));
         if presp.hovered() {
             ctx.set_cursor_icon(CursorIcon::PointingHand);
@@ -1204,10 +1330,11 @@ impl App {
             self.speed_menu = !self.speed_menu;
         }
 
-        rx -= 48.0;
-        let cc = Rect::from_center_size(pos2(rx, cy), vec2(34.0, 34.0));
+        // Room for the English label, which is wider than the pill's gap.
+        rx -= 60.0;
+        let cc = Rect::from_center_size(pos2(rx, cy), vec2(52.0, 34.0));
         let ccresp = ui.interact(cc, ui.scope_id().with("cc"), Sense::click());
-        painter.text(cc.center(), Align2::CENTER_CENTER, "字幕", FontId::proportional(12.0), a(if ccresp.hovered() { ACCENT } else { TEXT }));
+        painter.text(cc.center(), Align2::CENTER_CENTER, tr("字幕"), FontId::proportional(12.0), a(if ccresp.hovered() { ACCENT } else { TEXT }));
         if ccresp.clicked() {
             player.cycle_subtitles();
             osd = Some("SUBTITLE  NEXT".into());
@@ -1215,8 +1342,9 @@ impl App {
 
         // Speed menu, opening upward from the pill.
         if self.speed_menu {
-            let item_h = 30.0;
             let speeds: Vec<f64> = crate::player::SPEEDS.iter().rev().copied().collect();
+            // Fits the menu above the pill on short windows.
+            let item_h = ((pill.top() - full_top - 24.0) / speeds.len() as f32).clamp(16.0, 26.0);
             let menu = Rect::from_min_size(
                 pos2(pill.center().x - 36.0, pill.top() - 10.0 - item_h * speeds.len() as f32 - 8.0),
                 vec2(72.0, item_h * speeds.len() as f32 + 8.0),
@@ -1307,11 +1435,11 @@ impl App {
         let p = ui.painter().clone();
         let a = ((RESUME_PROMPT_SECS - age) / 0.3).min(1.0) as f32;
 
-        let msg = format!("上次看到 {}", fmt_time(pos));
+        let msg = tf("上次看到 {}", &[&fmt_time(pos)]);
         let font = FontId::proportional(12.0);
         let mg = p.layout_no_wrap(msg, FontId::monospace(12.0), TEXT.gamma_multiply(a));
-        let rg = p.layout_no_wrap("继续播放 Enter".into(), font.clone(), ACCENT);
-        let sg = p.layout_no_wrap("从头开始".into(), font.clone(), TEXT_2);
+        let rg = p.layout_no_wrap(tr("继续播放 Enter").into(), font.clone(), ACCENT);
+        let sg = p.layout_no_wrap(tr("从头开始").into(), font.clone(), TEXT_2);
         let h = 34.0;
         let w = 14.0 + mg.size().x + 18.0 + rg.size().x + 16.0 + sg.size().x + 14.0;
         let rect = Rect::from_min_size(pos2(full.left() + 16.0, full.bottom() - BAR_H - 24.0 - h), vec2(w, h));
@@ -1326,13 +1454,13 @@ impl App {
         let resume_r = Rect::from_min_size(pos2(x, cy - 12.0), vec2(rg.size().x, 24.0));
         let rr = ui.interact(resume_r, ui.scope_id().with("resume_yes"), Sense::click());
         let rc = if rr.hovered() { TEXT } else { ACCENT };
-        p.text(pos2(x, cy), Align2::LEFT_CENTER, "继续播放 Enter", font.clone(), rc.gamma_multiply(a));
+        p.text(pos2(x, cy), Align2::LEFT_CENTER, tr("继续播放 Enter"), font.clone(), rc.gamma_multiply(a));
         x += rg.size().x + 16.0;
 
         let start_r = Rect::from_min_size(pos2(x, cy - 12.0), vec2(sg.size().x, 24.0));
         let sr = ui.interact(start_r, ui.scope_id().with("resume_no"), Sense::click());
         let sc = if sr.hovered() { TEXT } else { TEXT_2 };
-        p.text(pos2(x, cy), Align2::LEFT_CENTER, "从头开始", font, sc.gamma_multiply(a));
+        p.text(pos2(x, cy), Align2::LEFT_CENTER, tr("从头开始"), font, sc.gamma_multiply(a));
 
         if rr.hovered() || sr.hovered() {
             ui.ctx().set_cursor_icon(CursorIcon::PointingHand);
@@ -1379,7 +1507,7 @@ fn fav_button(ui: &mut egui::Ui, stage: Rect, title: &str, fav: bool, alpha: f32
     if resp.hovered() {
         ui.ctx().set_cursor_icon(CursorIcon::PointingHand);
     }
-    resp.on_hover_text(if fav { "取消收藏 (Ctrl+D)" } else { "收藏 (Ctrl+D)" }).clicked()
+    resp.on_hover_text(if fav { tr("取消收藏 (Ctrl+D)") } else { tr("收藏 (Ctrl+D)") }).clicked()
 }
 
 /// "‹ 媒体库" at the top-left of the player. Returns true when clicked.
@@ -1397,7 +1525,7 @@ fn back_button(ui: &mut egui::Ui, stage: Rect, alpha: f32) -> bool {
     let st = Stroke::new(1.8, c.gamma_multiply(alpha));
     p.line_segment([pos2(x + 4.0, cy - 6.0), pos2(x - 2.0, cy)], st);
     p.line_segment([pos2(x - 2.0, cy), pos2(x + 4.0, cy + 6.0)], st);
-    p.text(pos2(x + 12.0, cy), Align2::LEFT_CENTER, "媒体库", FontId::proportional(13.0), c.gamma_multiply(alpha));
+    p.text(pos2(x + 12.0, cy), Align2::LEFT_CENTER, tr("媒体库"), FontId::proportional(13.0), c.gamma_multiply(alpha));
     resp.clicked()
 }
 
@@ -1459,16 +1587,16 @@ fn draw_empty_state(ui: &mut egui::Ui, full: Rect, recent: &[Entry]) -> EmptyAct
     let frame = Rect::from_center_size(c - vec2(0.0, 24.0), vec2(220.0, 112.0));
     icons::corner_brackets(&p, frame, 11.0, Stroke::new(1.0, theme::accent_alpha(200)));
     icons::draw(&p, Icon::Drop, frame.center() - vec2(0.0, 14.0), 24.0, ACCENT);
-    p.text(frame.center() + vec2(0.0, 22.0), Align2::CENTER_CENTER, "拖入媒体文件", FontId::proportional(13.0), TEXT);
+    p.text(frame.center() + vec2(0.0, 22.0), Align2::CENTER_CENTER, tr("拖入媒体文件"), FontId::proportional(13.0), theme::text());
 
     let open_rect = Rect::from_center_size(pos2(c.x - 84.0, frame.bottom() + 26.0), vec2(150.0, 28.0));
     let resp = ui.interact(open_rect, ui.scope_id().with("open"), Sense::click());
-    let color = if resp.hovered() { ACCENT } else { TEXT_2 };
+    let color = if resp.hovered() { ACCENT } else { theme::text_2() };
     if resp.hovered() {
         ui.ctx().set_cursor_icon(CursorIcon::PointingHand);
     }
     let shortcut = format!("{}O", theme::CMD);
-    p.text(open_rect.center(), Align2::CENTER_CENTER, format!("打开文件  {shortcut}"), FontId::monospace(11.0), color);
+    p.text(open_rect.center(), Align2::CENTER_CENTER, tf("打开文件  {}", &[&shortcut]), FontId::monospace(11.0), color);
 
     let lib_rect = Rect::from_center_size(pos2(c.x + 84.0, frame.bottom() + 26.0), vec2(150.0, 28.0));
     let lresp = ui.interact(lib_rect, ui.scope_id().with("add_folder"), Sense::click());
@@ -1478,17 +1606,17 @@ fn draw_empty_state(ui: &mut egui::Ui, full: Rect, recent: &[Entry]) -> EmptyAct
     p.text(
         lib_rect.center(),
         Align2::CENTER_CENTER,
-        "+ 建立媒体库",
+        tr("+ 建立媒体库"),
         FontId::proportional(12.0),
-        if lresp.hovered() { TEXT } else { ACCENT },
+        if lresp.hovered() { theme::text() } else { ACCENT },
     );
 
     p.text(
         pos2(c.x, frame.bottom() + 64.0),
         Align2::CENTER_CENTER,
-        "Space 播放/暂停 · ←/→ 快退/快进 · ↑/↓ 音量 · F 全屏",
+        tr("Space 播放/暂停 · ←/→ 快退/快进 · ↑/↓ 音量 · F 全屏"),
         FontId::monospace(10.0),
-        TEXT_3,
+        theme::text_3(),
     );
 
     let mut action = if resp.clicked() {
@@ -1502,7 +1630,7 @@ fn draw_empty_state(ui: &mut egui::Ui, full: Rect, recent: &[Entry]) -> EmptyAct
     // Settings link, top-right corner.
     let gear = Rect::from_center_size(pos2(full.right() - 24.0, full.top() + 24.0), vec2(30.0, 30.0));
     let gresp = ui.interact(gear, ui.scope_id().with("empty_settings"), Sense::click());
-    icons::draw(&p, Icon::Settings, gear.center(), 15.0, if gresp.hovered() { ACCENT } else { TEXT_2 });
+    icons::draw(&p, Icon::Settings, gear.center(), 15.0, if gresp.hovered() { ACCENT } else { theme::text_2() });
     if gresp.clicked() {
         action = EmptyAction::Settings;
     }
@@ -1511,7 +1639,7 @@ fn draw_empty_state(ui: &mut egui::Ui, full: Rect, recent: &[Entry]) -> EmptyAct
     if !recent.is_empty() {
         let w = 360.0f32.min(full.width() - 40.0);
         let mut y = frame.bottom() + 100.0;
-        p.text(pos2(c.x - w / 2.0, y), Align2::LEFT_CENTER, "CONTINUE", FontId::monospace(10.0), TEXT_3);
+        p.text(pos2(c.x - w / 2.0, y), Align2::LEFT_CENTER, "CONTINUE", FontId::monospace(10.0), theme::text_3());
         y += 22.0;
         for (i, e) in recent.iter().enumerate() {
             let row = Rect::from_min_size(pos2(c.x - w / 2.0, y - 12.0), vec2(w, 24.0));
@@ -1523,15 +1651,15 @@ fn draw_empty_state(ui: &mut egui::Ui, full: Rect, recent: &[Entry]) -> EmptyAct
                 ui.ctx().set_cursor_icon(CursorIcon::PointingHand);
             }
             let time = format!("{} / {}", fmt_time(e.position), fmt_time(e.duration));
-            let tg = p.layout_no_wrap(time, FontId::monospace(11.0), if hovered { ACCENT } else { TEXT_3 });
+            let tg = p.layout_no_wrap(time, FontId::monospace(11.0), if hovered { ACCENT } else { theme::text_3() });
             let title_w = w - tg.size().x - 28.0;
             let title = elide(&p, &e.title, FontId::proportional(12.0), title_w);
-            p.text(pos2(row.left() + 10.0, y), Align2::LEFT_CENTER, title, FontId::proportional(12.0), if hovered { TEXT } else { TEXT_2 });
-            p.galley(pos2(row.right() - tg.size().x - 6.0, y - tg.size().y / 2.0), tg, TEXT);
+            p.text(pos2(row.left() + 10.0, y), Align2::LEFT_CENTER, title, FontId::proportional(12.0), if hovered { theme::text() } else { theme::text_2() });
+            p.galley(pos2(row.right() - tg.size().x - 6.0, y - tg.size().y / 2.0), tg, theme::text());
             // Thin progress line under each entry.
             let frac = if e.duration > 0.0 { (e.position / e.duration).clamp(0.0, 1.0) as f32 } else { 0.0 };
             let ly = row.bottom() - 1.0;
-            p.line_segment([pos2(row.left() + 10.0, ly), pos2(row.right() - 6.0, ly)], Stroke::new(1.0, LINE));
+            p.line_segment([pos2(row.left() + 10.0, ly), pos2(row.right() - 6.0, ly)], Stroke::new(1.0, theme::line()));
             p.line_segment(
                 [pos2(row.left() + 10.0, ly), pos2(row.left() + 10.0 + frac * (row.width() - 16.0), ly)],
                 Stroke::new(1.0, theme::accent_alpha(160)),
@@ -1563,8 +1691,8 @@ fn elide(p: &egui::Painter, text: &str, font: FontId, max_w: f32) -> String {
 
 fn draw_error(p: &egui::Painter, full: Rect, err: &str) {
     let c = full.center();
-    p.text(c - vec2(0.0, 14.0), Align2::CENTER_CENTER, "播放内核加载失败", FontId::proportional(15.0), TEXT);
-    p.text(c + vec2(0.0, 12.0), Align2::CENTER_CENTER, err, FontId::monospace(11.0), TEXT_2);
+    p.text(c - vec2(0.0, 14.0), Align2::CENTER_CENTER, tr("播放内核加载失败"), FontId::proportional(15.0), theme::text());
+    p.text(c + vec2(0.0, 12.0), Align2::CENTER_CENTER, err, FontId::monospace(11.0), theme::text_2());
 }
 
 pub fn fmt_time(secs: f64) -> String {
@@ -1685,8 +1813,8 @@ impl App {
         let lp = ui.painter_at(list.intersect(side));
 
         if n == 0 {
-            lp.text(list.center() - vec2(0.0, 10.0), Align2::CENTER_CENTER, "列表为空", FontId::proportional(13.0), TEXT_2.gamma_multiply(a));
-            lp.text(list.center() + vec2(0.0, 12.0), Align2::CENTER_CENTER, "拖入文件或文件夹即可播放", FontId::proportional(11.0), TEXT_3.gamma_multiply(a));
+            lp.text(list.center() - vec2(0.0, 10.0), Align2::CENTER_CENTER, tr("列表为空"), FontId::proportional(13.0), TEXT_2.gamma_multiply(a));
+            lp.text(list.center() + vec2(0.0, 12.0), Align2::CENTER_CENTER, tr("拖入文件或文件夹即可播放"), FontId::proportional(11.0), TEXT_3.gamma_multiply(a));
         }
 
         let pointer = ctx.input(|i| i.pointer.hover_pos());
@@ -1769,7 +1897,7 @@ impl App {
         p.text(
             pos2(left + 16.0, side.bottom() - 17.0),
             Align2::LEFT_CENTER,
-            "拖动排序 · L 收起",
+            tr("拖动排序 · L 收起"),
             FontId::proportional(10.0),
             TEXT_3.gamma_multiply(a),
         );
@@ -1825,7 +1953,7 @@ impl App {
         let rows = self.marks.rows();
         self.side_scroll = self.side_scroll.clamp(0.0, (rows.len() as f32 * ROW_H - list.height()).max(0.0));
         if rows.is_empty() {
-            lp.text(list.center() - vec2(0.0, 10.0), Align2::CENTER_CENTER, "没有章节或书签", FontId::proportional(13.0), TEXT_2.gamma_multiply(a));
+            lp.text(list.center() - vec2(0.0, 10.0), Align2::CENTER_CENTER, tr("没有章节或书签"), FontId::proportional(13.0), TEXT_2.gamma_multiply(a));
         }
         let pos = self.player.as_ref().map_or(0.0, |pl| pl.state.position);
         let current = marks::current_row(&rows, pos);
@@ -1875,7 +2003,7 @@ impl App {
                 seek = Some(row.time);
             }
         }
-        let hint = format!("{}B 添加书签 · G 收起", theme::CMD);
+        let hint = tf("{}B 添加书签 · G 收起", &[&theme::CMD]);
         p.text(pos2(left + 16.0, side.bottom() - 17.0), Align2::LEFT_CENTER, hint, FontId::proportional(10.0), TEXT_3.gamma_multiply(a));
 
         if let (Some(t), Some(pl)) = (seek, &self.player) {

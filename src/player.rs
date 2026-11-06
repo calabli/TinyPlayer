@@ -1,11 +1,32 @@
 //! Playback state and commands, on top of [`crate::mpv::Mpv`].
 
 use crate::mpv::{Event, Format, Mpv, PropValue};
+use crate::i18n::{tf, tr};
 
 /// Startup volume (percent). mpv defaults to 100, which is loud on most setups.
 pub const DEFAULT_VOLUME: f64 = 60.0;
 
-pub const SPEEDS: [f64; 6] = [0.5, 0.75, 1.0, 1.25, 1.5, 2.0];
+pub const SPEEDS: [f64; 11] = [0.25, 0.5, 0.75, 1.0, 1.25, 1.5, 1.75, 2.0, 2.5, 3.0, 4.0];
+pub const FINE_SPEED_STEP: f64 = 0.05;
+
+/// The next preset above (`dir` > 0) or below `cur`, even if `cur` was set
+/// between presets by the fine control.
+fn next_speed(cur: f64, dir: i32) -> f64 {
+    let found = if dir > 0 {
+        SPEEDS.iter().find(|s| **s > cur + 0.001)
+    } else {
+        SPEEDS.iter().rev().find(|s| **s < cur - 0.001)
+    };
+    found.copied().unwrap_or(cur)
+}
+
+/// `cur` plus `steps` fine steps, on a clean multiple of the step and within
+/// the presets' range.
+fn fine_speed(cur: f64, steps: i32) -> f64 {
+    let target = cur + steps as f64 * FINE_SPEED_STEP;
+    let snapped = (target / FINE_SPEED_STEP).round() * FINE_SPEED_STEP;
+    snapped.clamp(SPEEDS[0], SPEEDS[SPEEDS.len() - 1])
+}
 
 #[derive(Default, Clone)]
 pub struct State {
@@ -52,11 +73,11 @@ fn sub_font_name(choice: &str) -> &'static str {
 
 fn language_name(code: &str) -> String {
     match code.to_lowercase().as_str() {
-        "chi" | "zho" | "zh" | "chs" | "sc" | "zh-hans" | "zh-cn" => "中文".into(),
-        "cht" | "tc" | "zh-hant" | "zh-tw" | "zh-hk" => "繁体中文".into(),
-        "eng" | "en" => "英文".into(),
-        "jpn" | "ja" => "日文".into(),
-        "kor" | "ko" => "韩文".into(),
+        "chi" | "zho" | "zh" | "chs" | "sc" | "zh-hans" | "zh-cn" => tr("中文").into(),
+        "cht" | "tc" | "zh-hant" | "zh-tw" | "zh-hk" => tr("繁体中文").into(),
+        "eng" | "en" => tr("英文").into(),
+        "jpn" | "ja" => tr("日文").into(),
+        "kor" | "ko" => tr("韩文").into(),
         other => other.to_string(),
     }
 }
@@ -64,6 +85,11 @@ fn language_name(code: &str) -> String {
 pub struct Player {
     pub mpv: Mpv,
     pub state: State,
+    /// The `af` value last set. Setting it restarts the audio filters, which
+    /// is audible, so unrelated settings changes mustn't touch it.
+    audio_filter: std::cell::RefCell<String>,
+    /// Interpolation as last applied, for the same reason.
+    interpolation: std::cell::Cell<bool>,
 }
 
 impl Player {
@@ -113,6 +139,8 @@ impl Player {
         Ok(Self {
             mpv,
             state: State { idle: true, volume: DEFAULT_VOLUME, speed: 1.0, ..Default::default() },
+            audio_filter: Default::default(),
+            interpolation: Default::default(),
         })
     }
 
@@ -206,11 +234,14 @@ impl Player {
 
     /// Steps through [`SPEEDS`]; `dir` is +1 or -1.
     pub fn step_speed(&self, dir: i32) -> f64 {
-        let cur = SPEEDS
-            .iter()
-            .position(|s| (s - self.state.speed).abs() < 0.01)
-            .unwrap_or(2) as i32;
-        let next = SPEEDS[(cur + dir).clamp(0, SPEEDS.len() as i32 - 1) as usize];
+        let next = next_speed(self.state.speed, dir);
+        self.set_speed(next);
+        next
+    }
+
+    /// Nudges the speed by [`FINE_SPEED_STEP`]; `dir` is +1 or -1.
+    pub fn nudge_speed(&self, dir: i32) -> f64 {
+        let next = fine_speed(self.state.speed, dir);
         self.set_speed(next);
         next
     }
@@ -254,6 +285,8 @@ impl Player {
         m.set_property_string("deband", if s.enhance { "yes" } else { "no" });
         m.set_property_string("scale", if s.enhance { "ewa_lanczossharp" } else { "lanczos" });
         m.set_property_string("cscale", if s.enhance { "ewa_lanczossharp" } else { "bilinear" });
+        m.set_property_string("tone-mapping", &s.tone_mapping);
+        self.set_interpolation(s.interpolation);
         m.set_property_string("sub-auto", if s.sub_auto { "fuzzy" } else { "no" });
         m.set_property_string("sub-font-size", &s.sub_size.to_string());
         m.set_property_string("sub-pos", &s.sub_pos.to_string());
@@ -268,6 +301,57 @@ impl Player {
             _ => "",
         };
         m.set_property_string("slang", slang);
+        let af = crate::audio_fx::filter_graph(s.audio_norm, &s.eq, s.audio_channel);
+        if af != *self.audio_filter.borrow() {
+            m.set_property_string("af", &af);
+            *self.audio_filter.borrow_mut() = af;
+        }
+    }
+
+    /// The render API doesn't tell mpv the display's refresh rate, and without
+    /// one `interpolation=yes` silently does nothing. 60 is a starting point;
+    /// `sync_refresh` corrects it from mpv's own measurement.
+    fn set_interpolation(&self, on: bool) {
+        if on == self.interpolation.replace(on) {
+            return;
+        }
+        let m = &self.mpv;
+        m.set_property_string("display-fps-override", if on { "60" } else { "0" });
+        m.set_property_string("tscale", "oversample");
+        m.set_property_string("video-sync", if on { "display-resample" } else { "audio" });
+        m.set_property_string("interpolation", if on { "yes" } else { "no" });
+    }
+
+    /// Keeps interpolation on the rate of the display the window is on. A
+    /// wrong rate makes frames miss their slot steadily, so this is needed
+    /// after the window moves to another monitor too.
+    pub fn sync_refresh(&self) {
+        if !self.interpolation.get() {
+            return;
+        }
+        let measured = self.mpv.get_string("estimated-display-fps").and_then(|v| v.parse::<f64>().ok());
+        let current = self.mpv.get_string("display-fps-override").and_then(|v| v.parse::<f64>().ok());
+        if let (Some(measured), Some(current)) = (measured, current) {
+            let rate = crate::view::nearest_refresh(measured);
+            if rate != current {
+                self.mpv.set_double("display-fps-override", rate);
+            }
+        }
+    }
+
+    pub fn set_view(&self, v: crate::view::View) {
+        self.mpv.set_double("video-zoom", v.zoom);
+        self.mpv.set_double("video-pan-x", v.pan_x);
+        self.mpv.set_double("video-pan-y", v.pan_y);
+    }
+
+    /// `area` is in mpv's `WxH+X+Y` form; None shows the whole frame.
+    pub fn set_crop(&self, area: Option<&str>) {
+        self.mpv.set_property_string("video-crop", area.unwrap_or(""));
+    }
+
+    pub fn is_hdr(&self) -> bool {
+        matches!(self.mpv.get_string("video-params/gamma").as_deref(), Some("pq" | "hlg"))
     }
 
     /// Tracks of one kind ("video", "audio" or "sub") from mpv's track list.
@@ -290,10 +374,10 @@ impl Player {
             } else if !title.is_empty() {
                 title
             } else {
-                format!("轨道 {id}")
+                tf("轨道 {}", &[&id])
             };
             if external {
-                label.push_str("（外挂）");
+                label.push_str(tr("（外挂）"));
             }
             let selected = get("selected").as_deref() == Some("yes");
             let secondary = selected && get("main-selection").as_deref() == Some("1");
@@ -310,7 +394,7 @@ impl Player {
             .filter_map(|i| {
                 let time = m.get_string(&format!("chapter-list/{i}/time"))?.parse().ok()?;
                 let title = m.get_string(&format!("chapter-list/{i}/title")).filter(|t| !t.is_empty());
-                Some(crate::marks::Chapter { time, title: title.unwrap_or_else(|| format!("第 {} 章", i + 1)) })
+                Some(crate::marks::Chapter { time, title: title.unwrap_or_else(|| tf("第 {} 章", &[&(i + 1)])) })
             })
             .collect()
     }
@@ -321,5 +405,32 @@ impl Player {
 
     pub fn screenshot(&self) {
         let _ = self.mpv.command(&["screenshot", "video"]);
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn presets_step_and_stop_at_the_ends() {
+        assert_eq!(next_speed(1.0, 1), 1.25);
+        assert_eq!(next_speed(1.0, -1), 0.75);
+        assert_eq!(next_speed(4.0, 1), 4.0);
+        assert_eq!(next_speed(0.25, -1), 0.25);
+    }
+
+    #[test]
+    fn presets_step_from_a_fine_speed_to_the_neighbor() {
+        assert_eq!(next_speed(1.1, 1), 1.25);
+        assert_eq!(next_speed(1.1, -1), 1.0);
+    }
+
+    #[test]
+    fn fine_steps_stay_clean_and_in_range() {
+        assert!((fine_speed(1.0, 1) - 1.05).abs() < 1e-9);
+        assert!((fine_speed(1.05, -1) - 1.0).abs() < 1e-9);
+        assert_eq!(fine_speed(4.0, 1), 4.0);
+        assert_eq!(fine_speed(0.25, -1), 0.25);
     }
 }

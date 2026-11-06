@@ -2,8 +2,12 @@
 
 mod ab_loop;
 mod app;
+mod audio_fx;
+mod crop_detect;
 mod history;
 mod hover_thumbs;
+mod i18n;
+mod i18n_en;
 mod icons;
 mod keep_awake;
 mod library;
@@ -21,6 +25,7 @@ mod settings_panel;
 mod single_instance;
 mod theme;
 mod video;
+mod view;
 
 use eframe::egui;
 

@@ -10,6 +10,7 @@ use std::time::{SystemTime, UNIX_EPOCH};
 
 use rusqlite::{Connection, OptionalExtension, params};
 
+use crate::audio_fx::{self, Channel, Gains};
 use crate::playlist::LoopMode;
 
 /// A play counts once the viewer has watched this long (or 10% of the file,
@@ -46,6 +47,10 @@ pub struct Settings {
     pub aspect: String,
     /// 画质增强: debanding + sharper scaling (more GPU work).
     pub enhance: bool,
+    /// mpv `tone-mapping`: how HDR video is fitted to the display.
+    pub tone_mapping: String,
+    /// Smooths motion by blending frames; redraws at the display's rate.
+    pub interpolation: bool,
     // Subtitles
     /// Load subtitle files whose name matches the video.
     pub sub_auto: bool,
@@ -64,6 +69,16 @@ pub struct Settings {
     pub sub_shadow: bool,
     /// Apply the style above to ASS subtitles too, replacing their own.
     pub sub_ass_force: bool,
+    // Audio
+    pub audio_norm: bool,
+    pub eq: Gains,
+    /// For this run only: a saved left/right choice would look like a fault.
+    pub audio_channel: Channel,
+    // Interface
+    /// "dark", "light" or "system".
+    pub theme: String,
+    /// "zh" or "en".
+    pub language: String,
 }
 
 impl Default for Settings {
@@ -80,6 +95,8 @@ impl Default for Settings {
             hwdec: true,
             aspect: "auto".into(),
             enhance: false,
+            tone_mapping: "auto".into(),
+            interpolation: false,
             sub_auto: true,
             sub_size: 46,
             sub_pos: 100,
@@ -89,6 +106,11 @@ impl Default for Settings {
             sub_outline: 2,
             sub_shadow: false,
             sub_ass_force: false,
+            audio_norm: false,
+            eq: audio_fx::FLAT,
+            audio_channel: Channel::Stereo,
+            theme: "dark".into(),
+            language: "zh".into(),
         }
     }
 }
@@ -218,6 +240,8 @@ impl Store {
             hwdec: flag("hwdec", d.hwdec),
             aspect: get("aspect").unwrap_or(d.aspect),
             enhance: flag("enhance", d.enhance),
+            tone_mapping: get("tone_mapping").unwrap_or(d.tone_mapping),
+            interpolation: flag("interpolation", d.interpolation),
             sub_auto: flag("sub_auto", d.sub_auto),
             sub_size: get("sub_size").and_then(|v| v.parse().ok()).unwrap_or(d.sub_size),
             sub_pos: get("sub_pos").and_then(|v| v.parse().ok()).unwrap_or(d.sub_pos),
@@ -227,6 +251,11 @@ impl Store {
             sub_outline: get("sub_outline").and_then(|v| v.parse().ok()).unwrap_or(d.sub_outline),
             sub_shadow: flag("sub_shadow", d.sub_shadow),
             sub_ass_force: flag("sub_ass_force", d.sub_ass_force),
+            audio_norm: flag("audio_norm", d.audio_norm),
+            eq: get("eq").map_or(d.eq, |v| audio_fx::parse_gains(&v)),
+            audio_channel: d.audio_channel,
+            theme: get("theme").unwrap_or(d.theme),
+            language: get("language").unwrap_or(d.language),
         }
     }
 
@@ -249,6 +278,8 @@ impl Store {
             ("hwdec", b(s.hwdec)),
             ("aspect", s.aspect.clone()),
             ("enhance", b(s.enhance)),
+            ("tone_mapping", s.tone_mapping.clone()),
+            ("interpolation", b(s.interpolation)),
             ("sub_auto", b(s.sub_auto)),
             ("sub_size", s.sub_size.to_string()),
             ("sub_pos", s.sub_pos.to_string()),
@@ -258,6 +289,10 @@ impl Store {
             ("sub_outline", s.sub_outline.to_string()),
             ("sub_shadow", b(s.sub_shadow)),
             ("sub_ass_force", b(s.sub_ass_force)),
+            ("audio_norm", b(s.audio_norm)),
+            ("eq", audio_fx::encode_gains(&s.eq)),
+            ("theme", s.theme.clone()),
+            ("language", s.language.clone()),
         ] {
             let _ = self.db.execute(
                 "INSERT INTO settings (k, v) VALUES (?1, ?2) ON CONFLICT(k) DO UPDATE SET v = ?2",
@@ -424,6 +459,8 @@ mod tests {
             hwdec: false,
             aspect: "4:3".into(),
             enhance: true,
+            tone_mapping: "hable".into(),
+            interpolation: true,
             sub_auto: false,
             sub_size: 60,
             sub_pos: 90,
@@ -433,6 +470,11 @@ mod tests {
             sub_outline: 4,
             sub_shadow: true,
             sub_ass_force: true,
+            audio_norm: true,
+            eq: audio_fx::PRESETS[1].1,
+            audio_channel: Channel::Stereo,
+            theme: "light".into(),
+            language: "en".into(),
         };
         s.save_settings(&custom);
         assert_eq!(s.load_settings(), custom);

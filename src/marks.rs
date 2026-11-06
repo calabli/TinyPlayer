@@ -2,6 +2,7 @@
 //! bookmarks.
 
 use crate::history::Bookmark;
+use crate::i18n::tr;
 
 /// Going back this soon after a chapter starts means the previous chapter;
 /// later than this, it means the start of the current one.
@@ -63,7 +64,7 @@ impl Marks {
         let chapters = self.chapters.iter().map(|c| Row { time: c.time, title: c.title.clone(), bookmark: None });
         let bookmarks = self.bookmarks.iter().map(|b| Row {
             time: b.time,
-            title: if b.label.is_empty() { "书签".to_string() } else { b.label.clone() },
+            title: if b.label.is_empty() { tr("书签").to_string() } else { b.label.clone() },
             bookmark: Some(b.id),
         });
         let mut rows: Vec<Row> = chapters.chain(bookmarks).collect();

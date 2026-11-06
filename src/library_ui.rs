@@ -11,10 +11,11 @@ use eframe::egui::{
 };
 
 use crate::app::fmt_time;
+use crate::i18n::{tf, tr};
 use crate::icons::{self, Icon};
 use crate::library::{Collection, Folder, Library, Video};
 use crate::playlist::natural_cmp;
-use crate::theme::{self, ACCENT, LINE, PANEL, TEXT, TEXT_2, TEXT_3};
+use crate::theme::{self, ACCENT, TEXT};
 
 const TOP_H: f32 = 56.0;
 const NAV_W: f32 = 188.0;
@@ -240,7 +241,7 @@ impl LibraryView {
         self.reload_if_dirty();
         let mut action = Action::None;
         let p = ui.painter_at(rect);
-        p.rect_filled(rect, 0.0, theme::BG);
+        p.rect_filled(rect, 0.0, theme::bg());
 
         let top = Rect::from_min_size(rect.min, vec2(rect.width(), TOP_H));
         if let Some(a) = self.top_bar(ui, &p, top) {
@@ -269,23 +270,23 @@ impl LibraryView {
 
     fn top_bar(&mut self, ui: &mut egui::Ui, p: &egui::Painter, top: Rect) -> Option<Action> {
         let mut action = None;
-        p.line_segment([top.left_bottom(), top.right_bottom()], Stroke::new(0.5, LINE));
+        p.line_segment([top.left_bottom(), top.right_bottom()], Stroke::new(0.5, theme::line()));
         p.text(pos2(top.left() + 20.0, top.center().y), Align2::LEFT_CENTER, "TINYPLAYER", FontId::monospace(12.0), ACCENT);
 
         let search_w = (top.width() - NAV_W - 560.0).clamp(160.0, 380.0);
         let search_rect = Rect::from_min_size(pos2(top.left() + NAV_W + 16.0, top.center().y - 15.0), vec2(search_w, 30.0));
-        p.rect_filled(search_rect, 15.0, PANEL);
-        p.rect_stroke(search_rect, 15.0, Stroke::new(0.5, LINE), StrokeKind::Inside);
-        search_icon(p, pos2(search_rect.left() + 16.0, search_rect.center().y), TEXT_3);
+        p.rect_filled(search_rect, 15.0, theme::panel());
+        p.rect_stroke(search_rect, 15.0, Stroke::new(0.5, theme::line()), StrokeKind::Inside);
+        search_icon(p, pos2(search_rect.left() + 16.0, search_rect.center().y), theme::text_3());
         let edit_rect = Rect::from_min_max(search_rect.min + vec2(30.0, 5.0), search_rect.max - vec2(12.0, 5.0));
         let mut search_resp = None;
         ui.scope_builder(egui::UiBuilder::new().max_rect(edit_rect), |ui| {
             search_resp = Some(
                 ui.add(
                     egui::TextEdit::singleline(&mut self.search)
-                        .hint_text("搜索标题、标签、文件夹")
+                        .hint_text(tr("搜索标题、标签、文件夹"))
                         .frame(egui::Frame::NONE)
-                        .text_color(TEXT)
+                        .text_color(theme::text())
                         .font(FontId::proportional(13.0))
                         .desired_width(edit_rect.width()),
                 ),
@@ -308,15 +309,15 @@ impl LibraryView {
 
         // Mode switch: 媒体库 | 文件夹
         let seg = Rect::from_min_size(pos2(search_rect.right() + 16.0, top.center().y - 14.0), vec2(132.0, 28.0));
-        p.rect_filled(seg, 14.0, PANEL);
-        for (i, (mode, label)) in [(Mode::Grid, "媒体库"), (Mode::Folders, "文件夹")].into_iter().enumerate() {
+        p.rect_filled(seg, 14.0, theme::panel());
+        for (i, (mode, label)) in [(Mode::Grid, tr("媒体库")), (Mode::Folders, tr("文件夹"))].into_iter().enumerate() {
             let r = Rect::from_min_size(seg.min + vec2(2.0 + i as f32 * 64.0, 2.0), vec2(64.0, 24.0));
             let resp = ui.interact(r, ui.scope_id().with(("mode", i)), Sense::click());
             let on = self.mode == mode;
             if on {
                 p.rect_filled(r, 12.0, theme::accent_alpha(36));
             }
-            let c = if on { ACCENT } else if resp.hovered() { TEXT } else { TEXT_2 };
+            let c = if on { ACCENT } else if resp.hovered() { theme::text() } else { theme::text_2() };
             p.text(r.center(), Align2::CENTER_CENTER, label, FontId::proportional(12.0), c);
             if resp.clicked() {
                 self.mode = mode;
@@ -327,21 +328,21 @@ impl LibraryView {
         let rx = top.right() - 20.0;
         let gear = Rect::from_center_size(pos2(rx - 12.0, top.center().y), vec2(30.0, 30.0));
         let g = ui.interact(gear, ui.scope_id().with("lib_settings"), Sense::click());
-        icons::draw(p, Icon::Settings, gear.center(), 16.0, if g.hovered() { ACCENT } else { TEXT_2 });
+        icons::draw(p, Icon::Settings, gear.center(), 16.0, if g.hovered() { ACCENT } else { theme::text_2() });
         if g.clicked() {
             action = Some(Action::Settings);
         }
-        let (open_left, open_clicked) = text_btn(ui, p, pos2(rx - 40.0, top.center().y), "lib_open", "打开文件", TEXT_2);
+        let (open_left, open_clicked) = text_btn(ui, p, pos2(rx - 40.0, top.center().y), "lib_open", tr("打开文件"), theme::text_2());
         if open_clicked {
             action = Some(Action::OpenFile);
         }
-        let (add_left, add_clicked) = text_btn(ui, p, pos2(open_left - 24.0, top.center().y), "lib_add", "+ 添加文件夹", ACCENT);
+        let (add_left, add_clicked) = text_btn(ui, p, pos2(open_left - 24.0, top.center().y), "lib_add", tr("+ 添加文件夹"), ACCENT);
         if add_clicked {
             action = Some(Action::AddFolder);
         }
         if let Some((done, total)) = self.probing {
             if add_left - 20.0 > seg.right() + 140.0 {
-                p.text(pos2(add_left - 20.0, top.center().y), Align2::RIGHT_CENTER, format!("生成缩略图 {done}/{total}"), FontId::monospace(11.0), TEXT_3);
+                p.text(pos2(add_left - 20.0, top.center().y), Align2::RIGHT_CENTER, tf("生成缩略图 {}/{}", &[&done, &total]), FontId::monospace(11.0), theme::text_3());
             }
         }
         action
@@ -350,7 +351,7 @@ impl LibraryView {
     // ---- Nav -----------------------------------------------------------
 
     fn nav(&mut self, ui: &mut egui::Ui, p: &egui::Painter, nav: Rect) {
-        p.line_segment([nav.right_top(), nav.right_bottom()], Stroke::new(0.5, LINE));
+        p.line_segment([nav.right_top(), nav.right_bottom()], Stroke::new(0.5, theme::line()));
         let np = ui.painter_at(nav);
         let mut y = nav.top() + 12.0;
         let grid_mode = self.mode == Mode::Grid;
@@ -359,10 +360,10 @@ impl LibraryView {
         let recent_n = self.videos.iter().filter(|v| v.added_at >= week_ago).count();
         let played_n = self.videos.iter().filter(|v| v.plays > 0).count();
         for (view, label, n) in [
-            (View::All, "全部", self.videos.len()),
-            (View::Continue, "继续观看", continue_n),
-            (View::Recent, "最近添加", recent_n),
-            (View::MostPlayed, "最常播放", played_n),
+            (View::All, tr("全部"), self.videos.len()),
+            (View::Continue, tr("继续观看"), continue_n),
+            (View::Recent, tr("最近添加"), recent_n),
+            (View::MostPlayed, tr("最常播放"), played_n),
         ] {
             let r = Rect::from_min_size(pos2(nav.left(), y), vec2(NAV_W, 30.0));
             if nav_item(ui, &np, r, ("nav", label), label, Some(n), grid_mode && self.view == view) {
@@ -374,17 +375,17 @@ impl LibraryView {
 
         // Collections
         y += 12.0;
-        np.text(pos2(nav.left() + 18.0, y + 8.0), Align2::LEFT_CENTER, "COLLECTIONS", FontId::monospace(10.0), TEXT_3);
+        np.text(pos2(nav.left() + 18.0, y + 8.0), Align2::LEFT_CENTER, "COLLECTIONS", FontId::monospace(10.0), theme::text_3());
         let plus = Rect::from_center_size(pos2(nav.right() - 20.0, y + 8.0), vec2(22.0, 22.0));
         let pr = ui.interact(plus, ui.scope_id().with("new_collection"), Sense::click());
-        np.text(plus.center(), Align2::CENTER_CENTER, "+", FontId::proportional(15.0), if pr.hovered() { ACCENT } else { TEXT_3 });
+        np.text(plus.center(), Align2::CENTER_CENTER, "+", FontId::proportional(15.0), if pr.hovered() { ACCENT } else { theme::text_3() });
         if pr.clicked() {
             self.new_collection = Some(String::new());
         }
         y += 22.0;
         let fav_n = self.videos.iter().filter(|v| !v.collections.is_empty()).count();
         let r = Rect::from_min_size(pos2(nav.left(), y), vec2(NAV_W, 28.0));
-        if nav_item(ui, &np, r, "fav_all", "全部收藏", Some(fav_n), grid_mode && self.view == View::Favorites(None)) {
+        if nav_item(ui, &np, r, "fav_all", tr("全部收藏"), Some(fav_n), grid_mode && self.view == View::Favorites(None)) {
             self.view = View::Favorites(None);
             self.mode = Mode::Grid;
         }
@@ -393,13 +394,13 @@ impl LibraryView {
         for c in &self.collections {
             let r = Rect::from_min_size(pos2(nav.left(), y), vec2(NAV_W, 28.0));
             let on = grid_mode && self.view == View::Favorites(Some(c.id));
-            if nav_item_indented(ui, &np, r, ("coll", c.id), &c.name, Some(c.count as usize), on, 20.0) {
+            if nav_item_indented(ui, &np, r, ("coll", c.id), tr(&c.name), Some(c.count as usize), on, 20.0) {
                 self.view = View::Favorites(Some(c.id));
                 self.mode = Mode::Grid;
             }
-            icons::draw(&np, Icon::Star, pos2(r.left() + 24.0, r.center().y), 11.0, if on { ACCENT } else { TEXT_3 });
+            icons::draw(&np, Icon::Star, pos2(r.left() + 24.0, r.center().y), 11.0, if on { ACCENT } else { theme::text_3() });
             ui.interact(r, ui.scope_id().with(("coll", c.id)), Sense::click()).context_menu(|ui| {
-                if ui.button("删除收藏夹（不删除视频）").clicked() {
+                if ui.button(tr("删除收藏夹（不删除视频）")).clicked() {
                     delete = Some(c.id);
                     ui.close();
                 }
@@ -418,9 +419,9 @@ impl LibraryView {
             ui.scope_builder(egui::UiBuilder::new().max_rect(r.shrink2(vec2(8.0, 3.0))), |ui| {
                 let resp = ui.add(
                     egui::TextEdit::singleline(name)
-                        .hint_text("收藏夹名称")
+                        .hint_text(tr("收藏夹名称"))
                         .frame(egui::Frame::NONE)
-                        .text_color(TEXT)
+                        .text_color(theme::text())
                         .font(FontId::proportional(12.0)),
                 );
                 if !resp.has_focus() && !resp.lost_focus() {
@@ -459,7 +460,7 @@ impl LibraryView {
         tag_counts.sort_by(|a, b| b.1.cmp(&a.1).then_with(|| natural_cmp(&a.0, &b.0)));
         if !tag_counts.is_empty() {
             y += 12.0;
-            np.text(pos2(nav.left() + 18.0, y + 8.0), Align2::LEFT_CENTER, "TAGS", FontId::monospace(10.0), TEXT_3);
+            np.text(pos2(nav.left() + 18.0, y + 8.0), Align2::LEFT_CENTER, "TAGS", FontId::monospace(10.0), theme::text_3());
             y += 22.0;
             for (tag, n) in tag_counts.iter().take(10) {
                 let r = Rect::from_min_size(pos2(nav.left(), y), vec2(NAV_W, 28.0));
@@ -474,7 +475,7 @@ impl LibraryView {
 
         // Folders
         y += 12.0;
-        np.text(pos2(nav.left() + 18.0, y + 8.0), Align2::LEFT_CENTER, "FOLDERS", FontId::monospace(10.0), TEXT_3);
+        np.text(pos2(nav.left() + 18.0, y + 8.0), Align2::LEFT_CENTER, "FOLDERS", FontId::monospace(10.0), theme::text_3());
         y += 22.0;
         let mut remove_folder = None;
         for f in &self.folders {
@@ -497,9 +498,9 @@ impl LibraryView {
             if hovered {
                 let x = Rect::from_center_size(pos2(r.right() - 18.0, r.center().y), vec2(22.0, 22.0));
                 let xr = ui.interact(x, ui.scope_id().with(("folder_rm", f.id)), Sense::click());
-                icons::draw(&np, Icon::Close, x.center(), 11.0, if xr.hovered() { ACCENT } else { TEXT_3 });
+                icons::draw(&np, Icon::Close, x.center(), 11.0, if xr.hovered() { ACCENT } else { theme::text_3() });
                 let clicked = xr.clicked();
-                xr.on_hover_text(format!("从媒体库移除（不删除文件）\n{}", f.path));
+                xr.on_hover_text(format!("{}\n{}", tr("从媒体库移除（不删除文件）"), f.path));
                 if clicked {
                     remove_folder = Some(f.id);
                 }
@@ -521,15 +522,15 @@ impl LibraryView {
 
         // Title for collection/most-played views.
         let title = match self.view {
-            View::Favorites(Some(c)) => self.collections.iter().find(|x| x.id == c).map(|x| x.name.clone()),
-            View::Favorites(None) => Some("全部收藏".to_string()),
-            View::MostPlayed => Some("最常播放".to_string()),
+            View::Favorites(Some(c)) => self.collections.iter().find(|x| x.id == c).map(|x| tr(&x.name).to_string()),
+            View::Favorites(None) => Some(tr("全部收藏").to_string()),
+            View::MostPlayed => Some(tr("最常播放").to_string()),
             _ => None,
         };
         if let Some(t) = title {
-            let g = p.layout_no_wrap(t, FontId::proportional(15.0), TEXT);
+            let g = p.layout_no_wrap(t, FontId::proportional(15.0), theme::text());
             let w = g.size().x;
-            p.galley(pos2(hx, header.center().y - g.size().y / 2.0), g, TEXT);
+            p.galley(pos2(hx, header.center().y - g.size().y / 2.0), g, theme::text());
             hx += w + 12.0;
         }
         let mut remove_tag_filter = None;
@@ -548,24 +549,24 @@ impl LibraryView {
         p.text(
             pos2(hx, header.center().y),
             Align2::LEFT_CENTER,
-            format!("{} 个视频 · {}", ids.len(), fmt_time(total)),
+            tf("{} 个视频 · {}", &[&ids.len(), &fmt_time(total)]),
             FontId::monospace(11.0),
-            TEXT_3,
+            theme::text_3(),
         );
         if !matches!(self.view, View::Continue | View::MostPlayed) {
             let mut sx = header.right();
             for (sort, label) in [
-                (Sort::Duration, "时长"),
-                (Sort::Name, "名称"),
-                (Sort::Plays, "播放次数"),
-                (Sort::Played, "最近播放"),
-                (Sort::Added, "最近添加"),
+                (Sort::Duration, tr("时长")),
+                (Sort::Name, tr("名称")),
+                (Sort::Plays, tr("播放次数")),
+                (Sort::Played, tr("最近播放")),
+                (Sort::Added, tr("最近添加")),
             ] {
-                let g = p.layout_no_wrap(label.into(), FontId::proportional(12.0), TEXT);
+                let g = p.layout_no_wrap(label.into(), FontId::proportional(12.0), theme::text());
                 let r = Rect::from_min_size(pos2(sx - g.size().x - 12.0, header.center().y - 12.0), vec2(g.size().x + 12.0, 24.0));
                 let resp = ui.interact(r, ui.scope_id().with(("sort", label)), Sense::click());
                 let on = self.sort == sort;
-                let c = if on { ACCENT } else if resp.hovered() { TEXT } else { TEXT_2 };
+                let c = if on { ACCENT } else if resp.hovered() { theme::text() } else { theme::text_2() };
                 p.text(r.center(), Align2::CENTER_CENTER, label, FontId::proportional(12.0), c);
                 if resp.clicked() {
                     self.sort = sort;
@@ -580,12 +581,12 @@ impl LibraryView {
         let grid_rect = Rect::from_min_max(pos2(content.left() + 24.0, header.bottom() + 8.0), pos2(content.right() - 12.0, content.bottom()));
         if ids.is_empty() {
             let msg = match self.view {
-                View::Favorites(_) => "还没有收藏。悬停视频，点右上角的星标即可收藏",
-                View::MostPlayed => "还没有播放记录",
-                View::Continue => "没有看到一半的视频",
-                _ => "没有匹配的视频",
+                View::Favorites(_) => tr("还没有收藏。悬停视频，点右上角的星标即可收藏"),
+                View::MostPlayed => tr("还没有播放记录"),
+                View::Continue => tr("没有看到一半的视频"),
+                _ => tr("没有匹配的视频"),
             };
-            p.text(grid_rect.center() - vec2(0.0, 40.0), Align2::CENTER_CENTER, msg, FontId::proportional(14.0), TEXT_2);
+            p.text(grid_rect.center() - vec2(0.0, 40.0), Align2::CENTER_CENTER, msg, FontId::proportional(14.0), theme::text_2());
             return Action::None;
         }
         let ranked = self.view == View::MostPlayed;
@@ -600,7 +601,7 @@ impl LibraryView {
         let cy = header.center().y;
 
         // Breadcrumb: 全部文件夹 / root / a / b
-        let mut crumbs: Vec<(String, Option<FolderLoc>)> = vec![("全部文件夹".into(), None)];
+        let mut crumbs: Vec<(String, Option<FolderLoc>)> = vec![(tr("全部文件夹").into(), None)];
         if let Some(loc) = &self.folder_loc {
             if let Some(root) = self.folders.iter().find(|f| f.id == loc.root) {
                 crumbs.push((base_name(&root.path), Some(FolderLoc { root: loc.root, parts: Vec::new() })));
@@ -614,7 +615,7 @@ impl LibraryView {
         if self.folder_loc.is_some() {
             let up = Rect::from_center_size(pos2(x + 12.0, cy), vec2(24.0, 24.0));
             let ur = ui.interact(up, ui.scope_id().with("folder_up"), Sense::click());
-            let c = if ur.hovered() { ACCENT } else { TEXT_2 };
+            let c = if ur.hovered() { ACCENT } else { theme::text_2() };
             let st = Stroke::new(1.6, c);
             p.line_segment([pos2(up.center().x, cy + 6.0), pos2(up.center().x, cy - 6.0)], st);
             p.line_segment([pos2(up.center().x - 5.0, cy - 1.0), pos2(up.center().x, cy - 6.0)], st);
@@ -634,17 +635,17 @@ impl LibraryView {
         let mut goto = None;
         for (i, (name, loc)) in crumbs.into_iter().enumerate() {
             let last = i + 1 == n;
-            let g = p.layout_no_wrap(name, FontId::proportional(13.0), TEXT);
+            let g = p.layout_no_wrap(name, FontId::proportional(13.0), theme::text());
             let r = Rect::from_min_size(pos2(x, cy - g.size().y / 2.0), g.size());
             let resp = ui.interact(r.expand(3.0), ui.scope_id().with(("crumb", i)), Sense::click());
-            let c = if last { TEXT } else if resp.hovered() { ACCENT } else { TEXT_2 };
+            let c = if last { theme::text() } else if resp.hovered() { ACCENT } else { theme::text_2() };
             p.galley(r.min, g, c);
             if resp.clicked() && !last {
                 goto = Some(loc);
             }
             x = r.right() + 8.0;
             if !last {
-                p.text(pos2(x, cy), Align2::LEFT_CENTER, "/", FontId::proportional(13.0), TEXT_3);
+                p.text(pos2(x, cy), Align2::LEFT_CENTER, "/", FontId::proportional(13.0), theme::text_3());
                 x += 14.0;
             }
         }
@@ -656,13 +657,13 @@ impl LibraryView {
         let (cells, play_all) = self.folder_cells();
         let video_n = cells.iter().filter(|c| matches!(c, Cell::Video(_))).count();
         let folder_n = cells.len() - video_n;
-        let stat = format!("{folder_n} 个文件夹 · {video_n} 个视频");
-        let (pa_left, pa_clicked) = text_btn(ui, p, pos2(header.right(), cy), "play_all", "播放全部", ACCENT);
-        p.text(pos2(pa_left - 20.0, cy), Align2::RIGHT_CENTER, stat, FontId::monospace(11.0), TEXT_3);
+        let stat = tf("{} 个文件夹 · {} 个视频", &[&folder_n, &video_n]);
+        let (pa_left, pa_clicked) = text_btn(ui, p, pos2(header.right(), cy), "play_all", tr("播放全部"), ACCENT);
+        p.text(pos2(pa_left - 20.0, cy), Align2::RIGHT_CENTER, stat, FontId::monospace(11.0), theme::text_3());
 
         let grid_rect = Rect::from_min_max(pos2(content.left() + 24.0, header.bottom() + 8.0), pos2(content.right() - 12.0, content.bottom()));
         if cells.is_empty() {
-            p.text(grid_rect.center() - vec2(0.0, 40.0), Align2::CENTER_CENTER, "这个文件夹里没有视频", FontId::proportional(14.0), TEXT_2);
+            p.text(grid_rect.center() - vec2(0.0, 40.0), Align2::CENTER_CENTER, tr("这个文件夹里没有视频"), FontId::proportional(14.0), theme::text_2());
             return Action::None;
         }
         let action = self.grid(ui, grid_rect, &cells, false, "folder_grid");
@@ -927,9 +928,9 @@ impl LibraryView {
                 popup_frame().show(ui, |ui| {
                     let r = ui.add(
                         egui::TextEdit::singleline(&mut text)
-                            .hint_text("输入标签，回车添加")
+                            .hint_text(tr("输入标签，回车添加"))
                             .frame(egui::Frame::NONE)
-                            .text_color(TEXT)
+                            .text_color(theme::text())
                             .font(FontId::proportional(13.0))
                             .desired_width(180.0),
                     );
@@ -972,14 +973,14 @@ impl LibraryView {
             .show(ui.ctx(), |ui| {
                 popup_frame().show(ui, |ui| {
                     ui.set_width(190.0);
-                    ui.label(egui::RichText::new("收藏到").size(11.0).color(TEXT_3));
+                    ui.label(egui::RichText::new(tr("收藏到")).size(11.0).color(theme::text_3()));
                     ui.add_space(4.0);
                     for c in &self.collections {
                         let on = in_cols.contains(&c.id);
                         let (r, resp) = ui.allocate_exact_size(vec2(190.0, 26.0), Sense::click());
                         let p = ui.painter();
                         if resp.hovered() {
-                            p.rect_filled(r, 4.0, Color32::from_white_alpha(10));
+                            p.rect_filled(r, 4.0, theme::tint(10));
                         }
                         let bx = Rect::from_center_size(pos2(r.left() + 12.0, r.center().y), vec2(13.0, 13.0));
                         if on {
@@ -987,9 +988,9 @@ impl LibraryView {
                             p.line_segment([bx.center() + vec2(-3.5, 0.0), bx.center() + vec2(-1.0, 2.5)], Stroke::new(1.6, Color32::WHITE));
                             p.line_segment([bx.center() + vec2(-1.0, 2.5), bx.center() + vec2(3.5, -2.5)], Stroke::new(1.6, Color32::WHITE));
                         } else {
-                            p.rect_stroke(bx, 3.0, Stroke::new(1.0, TEXT_3), StrokeKind::Inside);
+                            p.rect_stroke(bx, 3.0, Stroke::new(1.0, theme::text_3()), StrokeKind::Inside);
                         }
-                        p.text(pos2(r.left() + 28.0, r.center().y), Align2::LEFT_CENTER, &c.name, FontId::proportional(13.0), TEXT);
+                        p.text(pos2(r.left() + 28.0, r.center().y), Align2::LEFT_CENTER, tr(&c.name), FontId::proportional(13.0), theme::text());
                         if resp.clicked() {
                             toggles.push((c.id, !on));
                         }
@@ -999,9 +1000,9 @@ impl LibraryView {
                     let name = &mut self.fav_new_name;
                     let r = ui.add(
                         egui::TextEdit::singleline(name)
-                            .hint_text("+ 新建收藏夹，回车创建")
+                            .hint_text(tr("+ 新建收藏夹，回车创建"))
                             .frame(egui::Frame::NONE)
-                            .text_color(TEXT)
+                            .text_color(theme::text())
                             .font(FontId::proportional(12.0))
                             .desired_width(190.0),
                     );
@@ -1077,8 +1078,8 @@ fn draw_card(
         }
         None => {
             p.rect_filled(thumb, 6.0, placeholder_color(v.id));
-            let label = if v.duration > 0.0 { "" } else { "生成中…" };
-            p.text(thumb.center(), Align2::CENTER_CENTER, label, FontId::proportional(11.0), TEXT_3);
+            let label = if v.duration > 0.0 { "" } else { tr("生成中…") };
+            p.text(thumb.center(), Align2::CENTER_CENTER, label, FontId::proportional(11.0), theme::text_3());
         }
     }
     if hovered {
@@ -1108,7 +1109,7 @@ fn draw_card(
         p.circle_filled(star.center(), 13.0, theme::scrim(if sr.hovered() { 230 } else { 170 }));
         let icon = if fav { Icon::StarFilled } else { Icon::Star };
         icons::draw(p, icon, star.center(), 14.0, if fav || sr.hovered() { ACCENT } else { TEXT });
-        sr.clone().on_hover_text(if fav { "已收藏 · 点击管理收藏夹" } else { "收藏" });
+        sr.clone().on_hover_text(if fav { tr("已收藏 · 点击管理收藏夹") } else { tr("收藏") });
         if sr.clicked() {
             ev = Some(CardEvent::Favorite(v.id, pos2(star.right() - 190.0, star.bottom() + 6.0)));
         }
@@ -1116,7 +1117,7 @@ fn draw_card(
 
     let progress = v.progress();
     let finished = progress.is_some_and(|x| x >= FINISHED);
-    let badge = if finished { "已看完".to_string() } else if v.duration > 0.0 { fmt_time(v.duration) } else { String::new() };
+    let badge = if finished { tr("已看完").to_string() } else if v.duration > 0.0 { fmt_time(v.duration) } else { String::new() };
     if !badge.is_empty() {
         let g = p.layout_no_wrap(badge, FontId::monospace(10.0), TEXT);
         let r = Rect::from_min_size(thumb.right_bottom() - g.size() - vec2(12.0, 10.0), g.size() + vec2(8.0, 4.0));
@@ -1133,25 +1134,25 @@ fn draw_card(
     let ty = thumb.bottom() + 15.0;
     let plays = if v.plays > 0 { format!("▶ {}", v.plays) } else { String::new() };
     let plays_font = FontId::monospace(if rank.is_some() { 11.0 } else { 10.0 });
-    let plays_w = if plays.is_empty() { 0.0 } else { p.layout_no_wrap(plays.clone(), plays_font.clone(), TEXT).size().x + 8.0 };
+    let plays_w = if plays.is_empty() { 0.0 } else { p.layout_no_wrap(plays.clone(), plays_font.clone(), theme::text()).size().x + 8.0 };
     let title = elide(p, &v.title, FontId::proportional(13.0), card.width() - plays_w);
-    p.text(pos2(card.left(), ty), Align2::LEFT_CENTER, title, FontId::proportional(13.0), if finished { TEXT_2 } else { TEXT });
+    p.text(pos2(card.left(), ty), Align2::LEFT_CENTER, title, FontId::proportional(13.0), if finished { theme::text_2() } else { theme::text() });
     if !plays.is_empty() {
-        p.text(pos2(card.right(), ty), Align2::RIGHT_CENTER, plays, plays_font, if rank.is_some() { ACCENT } else { TEXT_3 });
+        p.text(pos2(card.right(), ty), Align2::RIGHT_CENTER, plays, plays_font, if rank.is_some() { ACCENT } else { theme::text_3() });
     }
 
     // Tags + "+ 标签".
     let mut x = card.left();
     let cy = thumb.bottom() + 38.0;
     for t in &v.tags {
-        let g = p.layout_no_wrap(format!("#{t}"), FontId::proportional(11.0), TEXT_2);
+        let g = p.layout_no_wrap(format!("#{t}"), FontId::proportional(11.0), theme::text_2());
         let r = Rect::from_min_size(pos2(x, cy - 9.0), g.size() + vec2(10.0, 4.0));
         if r.right() > card.right() - 44.0 {
             break;
         }
         let tr = ui.interact(r, ui.scope_id().with(("card_tag", v.id, t.as_str())), Sense::click());
-        p.rect_filled(r, 3.0, if tr.hovered() { theme::accent_alpha(40) } else { Color32::from_white_alpha(14) });
-        p.galley(r.min + vec2(5.0, 2.0), g, if tr.hovered() { ACCENT } else { TEXT_2 });
+        p.rect_filled(r, 3.0, if tr.hovered() { theme::accent_alpha(40) } else { theme::tint(14) });
+        p.galley(r.min + vec2(5.0, 2.0), g, if tr.hovered() { ACCENT } else { theme::text_2() });
         if tr.clicked() {
             ev = Some(CardEvent::TagFilter(t.clone()));
         }
@@ -1159,7 +1160,7 @@ fn draw_card(
     }
     let add = Rect::from_min_size(pos2(x, cy - 9.0), vec2(42.0, 18.0));
     let ar = ui.interact(add, ui.scope_id().with(("card_add_tag", v.id)), Sense::click());
-    p.text(add.left_center() + vec2(2.0, 0.0), Align2::LEFT_CENTER, "+ 标签", FontId::proportional(11.0), if ar.hovered() { ACCENT } else { TEXT_3 });
+    p.text(add.left_center() + vec2(2.0, 0.0), Align2::LEFT_CENTER, tr("+ 标签"), FontId::proportional(11.0), if ar.hovered() { ACCENT } else { theme::text_3() });
     if ar.clicked() {
         ev = Some(CardEvent::EditTags(v.id, pos2(card.left(), cy + 12.0)));
     }
@@ -1168,20 +1169,20 @@ fn draw_card(
         ev = Some(CardEvent::Play(v.path.clone()));
     }
     resp.context_menu(|ui| {
-        if ui.button("播放").clicked() {
+        if ui.button(tr("播放")).clicked() {
             ev = Some(CardEvent::Play(v.path.clone()));
             ui.close();
         }
-        if ui.button(if fav { "管理收藏夹…" } else { "收藏到…" }).clicked() {
+        if ui.button(if fav { tr("管理收藏夹…") } else { tr("收藏到…") }).clicked() {
             ev = Some(CardEvent::Favorite(v.id, pos2(thumb.left() + 8.0, thumb.top() + 8.0)));
             ui.close();
         }
-        if ui.button("添加标签…").clicked() {
+        if ui.button(tr("添加标签…")).clicked() {
             ev = Some(CardEvent::EditTags(v.id, pos2(card.left(), cy + 12.0)));
             ui.close();
         }
         if !v.tags.is_empty() {
-            ui.menu_button("移除标签", |ui| {
+            ui.menu_button(tr("移除标签"), |ui| {
                 for t in &v.tags {
                     if ui.button(format!("#{t}")).clicked() {
                         ev = Some(CardEvent::RemoveTag(v.id, t.clone()));
@@ -1191,12 +1192,12 @@ fn draw_card(
             });
         }
         ui.separator();
-        let reveal = if cfg!(target_os = "macos") { "在访达中显示" } else { "在资源管理器中显示" };
+        let reveal = if cfg!(target_os = "macos") { tr("在访达中显示") } else { tr("在资源管理器中显示") };
         if ui.button(reveal).clicked() {
             ev = Some(CardEvent::Reveal(v.path.clone()));
             ui.close();
         }
-        if ui.button("从媒体库移除（不删除文件）").clicked() {
+        if ui.button(tr("从媒体库移除（不删除文件）")).clicked() {
             ev = Some(CardEvent::Remove(v.id));
             ui.close();
         }
@@ -1223,7 +1224,7 @@ fn draw_folder_card(
     let hovered = resp.hovered();
 
     // 2×2 mosaic of the first videos inside.
-    p.rect_filled(thumb, 6.0, theme::BG);
+    p.rect_filled(thumb, 6.0, theme::bg());
     let (w, h) = ((thumb.width() - 1.0) / 2.0, (thumb.height() - 1.0) / 2.0);
     for i in 0..4 {
         let cell = Rect::from_min_size(thumb.min + vec2((i % 2) as f32 * (w + 1.0), (i / 2) as f32 * (h + 1.0)), vec2(w, h));
@@ -1232,7 +1233,7 @@ fn draw_folder_card(
                 p.image(t, cell, Rect::from_min_max(pos2(0.0, 0.0), pos2(1.0, 1.0)), Color32::WHITE);
             }
             None => {
-                p.rect_filled(cell, 0.0, PANEL);
+                p.rect_filled(cell, 0.0, theme::panel());
             }
         }
     }
@@ -1252,22 +1253,22 @@ fn draw_folder_card(
     }
 
     let ty = thumb.bottom() + 15.0;
-    p.text(pos2(card.left(), ty), Align2::LEFT_CENTER, elide(p, name, FontId::proportional(13.0), card.width()), FontId::proportional(13.0), TEXT);
+    p.text(pos2(card.left(), ty), Align2::LEFT_CENTER, elide(p, name, FontId::proportional(13.0), card.width()), FontId::proportional(13.0), theme::text());
     let mut meta = fmt_time(total);
     if count > 0 && watched > 0 {
-        meta.push_str(&format!(" · 看完 {watched}/{count}"));
+        meta.push_str(&tf(" · 看完 {}/{}", &[&watched, &count]));
     }
-    p.text(pos2(card.left(), thumb.bottom() + 36.0), Align2::LEFT_CENTER, meta, FontId::monospace(10.0), TEXT_3);
+    p.text(pos2(card.left(), thumb.bottom() + 36.0), Align2::LEFT_CENTER, meta, FontId::monospace(10.0), theme::text_3());
 
     if resp.clicked() {
         ev = Some(CardEvent::OpenFolder(loc.clone()));
     }
     resp.context_menu(|ui| {
-        if ui.button("打开").clicked() {
+        if ui.button(tr("打开")).clicked() {
             ev = Some(CardEvent::OpenFolder(loc.clone()));
             ui.close();
         }
-        if ui.button("播放全部").clicked() {
+        if ui.button(tr("播放全部")).clicked() {
             ev = Some(CardEvent::PlayFolder(loc.clone()));
             ui.close();
         }
@@ -1293,18 +1294,18 @@ fn empty_library(ui: &mut egui::Ui, p: &egui::Painter, content: Rect) -> Action 
     let frame = Rect::from_center_size(c - vec2(0.0, 30.0), vec2(240.0, 120.0));
     icons::corner_brackets(p, frame, 12.0, Stroke::new(1.0, theme::accent_alpha(200)));
     icons::draw(p, Icon::Folder, frame.center() - vec2(0.0, 14.0), 26.0, ACCENT);
-    p.text(frame.center() + vec2(0.0, 24.0), Align2::CENTER_CENTER, "建立你的媒体库", FontId::proportional(14.0), TEXT);
-    p.text(pos2(c.x, frame.bottom() + 22.0), Align2::CENTER_CENTER, "添加视频所在的文件夹，自动生成缩略图，支持标签与搜索", FontId::proportional(12.0), TEXT_2);
+    p.text(frame.center() + vec2(0.0, 24.0), Align2::CENTER_CENTER, tr("建立你的媒体库"), FontId::proportional(14.0), theme::text());
+    p.text(pos2(c.x, frame.bottom() + 22.0), Align2::CENTER_CENTER, tr("添加视频所在的文件夹，自动生成缩略图，支持标签与搜索"), FontId::proportional(12.0), theme::text_2());
     let mut action = Action::None;
     let y = frame.bottom() + 60.0;
-    if text_btn(ui, p, pos2(c.x - 14.0, y), "empty_add", "+ 添加文件夹", ACCENT).1 {
+    if text_btn(ui, p, pos2(c.x - 14.0, y), "empty_add", tr("+ 添加文件夹"), ACCENT).1 {
         action = Action::AddFolder;
     }
-    let open_w = p.layout_no_wrap("打开文件".into(), FontId::proportional(13.0), TEXT).size().x;
-    if text_btn(ui, p, pos2(c.x + 14.0 + open_w, y), "empty_open", "打开文件", TEXT_2).1 {
+    let open_w = p.layout_no_wrap(tr("打开文件").into(), FontId::proportional(13.0), theme::text()).size().x;
+    if text_btn(ui, p, pos2(c.x + 14.0 + open_w, y), "empty_open", tr("打开文件"), theme::text_2()).1 {
         action = Action::OpenFile;
     }
-    p.text(pos2(c.x, y + 40.0), Align2::CENTER_CENTER, "也可以直接把视频拖进窗口播放", FontId::proportional(11.0), TEXT_3);
+    p.text(pos2(c.x, y + 40.0), Align2::CENTER_CENTER, tr("也可以直接把视频拖进窗口播放"), FontId::proportional(11.0), theme::text_3());
     action
 }
 
@@ -1312,7 +1313,7 @@ fn empty_library(ui: &mut egui::Ui, p: &egui::Painter, content: Rect) -> Action 
 
 fn popup_frame() -> egui::Frame {
     egui::Frame::NONE
-        .fill(PANEL)
+        .fill(theme::panel())
         .stroke(Stroke::new(0.5, ACCENT))
         .corner_radius(6.0)
         .inner_margin(egui::Margin::symmetric(10, 8))
@@ -1323,7 +1324,7 @@ fn text_btn(ui: &mut egui::Ui, p: &egui::Painter, right_center: egui::Pos2, id: 
     let g = p.layout_no_wrap(text.to_string(), FontId::proportional(13.0), color);
     let r = Rect::from_min_size(pos2(right_center.x - g.size().x, right_center.y - g.size().y / 2.0), g.size());
     let resp = ui.interact(r.expand2(vec2(8.0, 6.0)), ui.scope_id().with(id), Sense::click());
-    let c = if resp.hovered() { TEXT } else { color };
+    let c = if resp.hovered() { theme::text() } else { color };
     p.text(r.min, Align2::LEFT_TOP, text, FontId::proportional(13.0), c);
     if resp.hovered() {
         ui.ctx().set_cursor_icon(CursorIcon::PointingHand);
@@ -1359,12 +1360,12 @@ fn nav_item_indented(
         p.rect_filled(r, 0.0, theme::accent_alpha(14));
         p.line_segment([r.left_top(), r.left_bottom()], Stroke::new(2.0, ACCENT));
     } else if resp.hovered() {
-        p.rect_filled(r, 0.0, Color32::from_white_alpha(6));
+        p.rect_filled(r, 0.0, theme::tint(6));
     }
     let text = elide(p, label, FontId::proportional(13.0), r.width() - 70.0 - indent);
-    p.text(pos2(r.left() + 18.0 + indent, r.center().y), Align2::LEFT_CENTER, text, FontId::proportional(13.0), if on || resp.hovered() { TEXT } else { TEXT_2 });
+    p.text(pos2(r.left() + 18.0 + indent, r.center().y), Align2::LEFT_CENTER, text, FontId::proportional(13.0), if on || resp.hovered() { theme::text() } else { theme::text_2() });
     if let Some(n) = count {
-        p.text(pos2(r.right() - 16.0, r.center().y), Align2::RIGHT_CENTER, n.to_string(), FontId::monospace(10.0), TEXT_3);
+        p.text(pos2(r.right() - 16.0, r.center().y), Align2::RIGHT_CENTER, n.to_string(), FontId::monospace(10.0), theme::text_3());
     }
     if resp.hovered() {
         ui.ctx().set_cursor_icon(CursorIcon::PointingHand);
@@ -1404,7 +1405,7 @@ fn load_thumb(ctx: &egui::Context, id: i64, path: &str) -> Option<TextureHandle>
 }
 
 fn elide(p: &egui::Painter, text: &str, font: FontId, max_w: f32) -> String {
-    let fits = |t: &str| p.layout_no_wrap(t.to_string(), font.clone(), TEXT).size().x <= max_w;
+    let fits = |t: &str| p.layout_no_wrap(t.to_string(), font.clone(), theme::text()).size().x <= max_w;
     if fits(text) {
         return text.to_string();
     }
