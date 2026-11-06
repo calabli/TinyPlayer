@@ -90,6 +90,27 @@ pub struct Player {
     audio_filter: std::cell::RefCell<String>,
     /// Interpolation as last applied, for the same reason.
     interpolation: std::cell::Cell<bool>,
+    /// The hardware decoding setting; see `apply_hwdec`.
+    hwdec: std::cell::Cell<bool>,
+    /// Horizontal and vertical flip.
+    flip: std::cell::Cell<(bool, bool)>,
+}
+
+/// mpv's `vf` value for a flip.
+fn flip_filters(horizontal: bool, vertical: bool) -> String {
+    let filters = [horizontal.then_some("hflip"), vertical.then_some("vflip")];
+    filters.into_iter().flatten().collect::<Vec<_>>().join(",")
+}
+
+/// Video filters run on the CPU and do nothing to frames held on the GPU, not
+/// even report an error. Flipping therefore needs the copy-back mode, which
+/// still decodes on the GPU but costs more, so it's only used while flipped.
+fn hwdec_mode(enabled: bool, flipped: bool) -> &'static str {
+    match (enabled, flipped) {
+        (false, _) => "no",
+        (true, true) => "auto-copy-safe",
+        (true, false) => "auto-safe",
+    }
 }
 
 impl Player {
@@ -141,6 +162,8 @@ impl Player {
             state: State { idle: true, volume: DEFAULT_VOLUME, speed: 1.0, ..Default::default() },
             audio_filter: Default::default(),
             interpolation: Default::default(),
+            hwdec: std::cell::Cell::new(true),
+            flip: Default::default(),
         })
     }
 
@@ -266,7 +289,8 @@ impl Player {
     /// any time; most take effect immediately, sub-auto/slang on the next file.
     pub fn apply_settings(&self, s: &crate::history::Settings) {
         let m = &self.mpv;
-        m.set_property_string("hwdec", if s.hwdec { "auto-safe" } else { "no" });
+        self.hwdec.set(s.hwdec);
+        self.apply_hwdec();
         match s.aspect.as_str() {
             "stretch" => {
                 m.set_property_string("keepaspect", "no");
@@ -337,6 +361,21 @@ impl Player {
                 self.mpv.set_double("display-fps-override", rate);
             }
         }
+    }
+
+    fn apply_hwdec(&self) {
+        let (h, v) = self.flip.get();
+        let mode = hwdec_mode(self.hwdec.get(), h || v);
+        // Setting it restarts the decoder, so leave it alone when unchanged.
+        if self.mpv.get_string("hwdec").as_deref() != Some(mode) {
+            self.mpv.set_property_string("hwdec", mode);
+        }
+    }
+
+    pub fn set_flip(&self, horizontal: bool, vertical: bool) {
+        self.flip.set((horizontal, vertical));
+        self.apply_hwdec();
+        self.mpv.set_property_string("vf", &flip_filters(horizontal, vertical));
     }
 
     pub fn set_view(&self, v: crate::view::View) {
@@ -411,6 +450,22 @@ impl Player {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn flips_become_filters() {
+        assert_eq!(flip_filters(false, false), "");
+        assert_eq!(flip_filters(true, false), "hflip");
+        assert_eq!(flip_filters(false, true), "vflip");
+        assert_eq!(flip_filters(true, true), "hflip,vflip");
+    }
+
+    #[test]
+    fn flipping_needs_frames_the_filters_can_reach() {
+        assert_eq!(hwdec_mode(true, false), "auto-safe");
+        assert_eq!(hwdec_mode(true, true), "auto-copy-safe");
+        assert_eq!(hwdec_mode(false, true), "no");
+        assert_eq!(hwdec_mode(false, false), "no");
+    }
 
     #[test]
     fn presets_step_and_stop_at_the_ends() {

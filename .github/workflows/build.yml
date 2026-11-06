@@ -62,6 +62,21 @@ jobs:
           foreach ($file in "TinyPlayer.exe", "libmpv-2.dll") {
             if (-not (Test-Path "$env:LOCALAPPDATA\Programs\TinyPlayer\$file")) { throw "$file not installed" }
           }
+          $classes = "HKCU:\Software\Classes"
+          foreach ($key in "$classes\TinyPlayer.Media\shell\open\command", "$classes\SystemFileAssociations\.mkv\shell\TinyPlayer\command", "HKCU:\Software\TinyPlayer\Capabilities\FileAssociations") {
+            if (-not (Test-Path $key)) { throw "missing $key" }
+          }
+          if (-not (Get-ItemProperty "$classes\.rmvb\OpenWithProgids" -Name TinyPlayer.Media -ErrorAction SilentlyContinue)) { throw "rmvb not offered" }
+          if (-not (Get-ItemProperty "HKCU:\Software\RegisteredApplications" -Name TinyPlayer -ErrorAction SilentlyContinue)) { throw "not registered" }
+      - name: Try uninstalling
+        run: |
+          Start-Process "$env:LOCALAPPDATA\Programs\TinyPlayer\unins000.exe" -ArgumentList "/VERYSILENT", "/SUPPRESSMSGBOXES", "/NORESTART" -Wait
+          Start-Sleep -Seconds 5
+          $classes = "HKCU:\Software\Classes"
+          foreach ($key in "$classes\TinyPlayer.Media", "$classes\SystemFileAssociations\.mkv\shell\TinyPlayer", "HKCU:\Software\TinyPlayer") {
+            if (Test-Path $key) { throw "left behind: $key" }
+          }
+          if (Get-ItemProperty "$classes\.rmvb\OpenWithProgids" -Name TinyPlayer.Media -ErrorAction SilentlyContinue) { throw "rmvb still offered" }
       - uses: actions/upload-artifact@v4
         with:
           name: TinyPlayer-windows-x64

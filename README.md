@@ -6,7 +6,7 @@
 
 | 平台 | 命令 | 产物 |
 |---|---|---|
-| Windows | `powershell -ExecutionPolicy Bypass -File scripts\package-windows.ps1` | `dist\TinyPlayer-<版本>-windows-x64.zip`（便携版，解压即用，约 48MB）；装了 [Inno Setup](https://jrsoftware.org/isinfo.php) 时还会生成 `-setup.exe` 安装程序（无需管理员权限，加入“打开方式”，不抢占默认播放器） |
+| Windows | `powershell -ExecutionPolicy Bypass -File scripts\package-windows.ps1` | `dist\TinyPlayer-<版本>-windows-x64.zip`（便携版，解压即用，约 48MB）；装了 [Inno Setup](https://jrsoftware.org/isinfo.php) 时还会生成 `-setup.exe` 安装程序（无需管理员权限） |
 | macOS | `scripts/package-macos.sh`（需要 `brew install mpv dylibbundler` 和 Xcode 命令行工具） | `dist/TinyPlayer.app` 和 `dist/TinyPlayer-<版本>-macos-<架构>.dmg`（约 32MB，打开后把 TinyPlayer 拖到“应用程序”即可安装）；设置 `SIGN_IDENTITY`、`NOTARY_PROFILE` 可签名公证 |
 
 安装包要求的最低 macOS 版本由打包时的依赖库决定，脚本会自动写入 `Info.plist`：用 Homebrew 的 libmpv 打包时，通常等于打包机器的系统版本。
@@ -79,6 +79,7 @@ libmpv 体积较大，没有提交到 git。
 
 - **记住窗口**：退出时保存窗口位置、大小和是否最大化，下次启动恢复（全屏状态不保存）
 - **单实例**：TinyPlayer 已在运行时，再打开视频（双击、拖到 exe 上、命令行）会交给已有窗口播放并把它切到前台，不会再开一个窗口。实现方式是本机回环端口通信，端口由数据目录推算，所以设置了不同 `TINYPLAYER_DATA_DIR` 的实例（测试、便携版）互不干扰
+- **文件关联**（Windows 安装版）：所有支持的格式都能在“打开方式”和系统的默认应用设置里选 TinyPlayer，右键菜单还有“用 TinyPlayer 播放”（Windows 11 在“显示更多选项”里）。Windows 不允许程序自己设为默认播放器，要设默认请在“打开方式”里勾选“始终”。卸载时一并清除。便携版 zip 不做这些注册
 - **打开方式**（macOS）：可以从访达双击或用“打开方式”选择 TinyPlayer，TinyPlayer 已在运行时交给已有窗口
 - **图标**：`python scripts/make-icon.py` 只用标准库生成 `assets/` 下的图标；Windows 构建时嵌入 exe，窗口左上角也使用它；macOS 打包脚本会转成 `.icns`
 - **媒体键**：键盘媒体键、macOS 控制中心、Windows 音量浮层可以播放、暂停、切换上一个/下一个，并显示当前标题和进度
@@ -100,7 +101,7 @@ libmpv 体积较大，没有提交到 git。
 | 画面增强 | 裁剪（去黑边 / 16:9 / 4:3 / 2.35:1 / 1:1）、缩放、HDR 色调映射、插帧 |
 | 色彩 | 亮度、对比度、饱和度、伽马、色调（-100 ~ +100，靠近 0 时自动吸附）、重置 |
 
-画面比例、硬件加速、画质增强、字幕大小、位置和样式、音量标准化、均衡器会保存；HDR 色调映射、插帧也会保存；第二字幕和声道只在本次运行有效，裁剪和缩放只对当前文件有效；旋转、翻转、色彩和延迟只在本次运行有效。点面板外或按 Esc 关闭，「更多设置」打开完整设置窗口（也可按 Ctrl/⌘+,）。
+画面比例、硬件加速、画质增强、字幕大小、位置和样式、音量标准化、均衡器会保存；HDR 色调映射、插帧也会保存；第二字幕和声道只在本次运行有效，裁剪和缩放只对当前文件有效；旋转、翻转、色彩和延迟只在本次运行有效。翻转由 CPU 上的视频滤镜完成，开启时硬件解码自动切到回传模式（`auto-copy-safe`），占用略高，关闭后恢复。点面板外或按 Esc 关闭，「更多设置」打开完整设置窗口（也可按 Ctrl/⌘+,）。
 
 ## 界面
 

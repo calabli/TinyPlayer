@@ -344,12 +344,12 @@ impl QuickPanel {
         c.section(tr("画面翻转"));
         match c.buttons("qp_flip", &[tr("水平镜像"), tr("垂直翻转")]) {
             Some(0) => {
-                let _ = player.mpv.command(&["vf", "toggle", "hflip"]);
                 self.hflip = !self.hflip;
+                player.set_flip(self.hflip, self.vflip);
             }
             Some(1) => {
-                let _ = player.mpv.command(&["vf", "toggle", "vflip"]);
                 self.vflip = !self.vflip;
+                player.set_flip(self.hflip, self.vflip);
             }
             _ => {}
         }
@@ -369,13 +369,10 @@ impl QuickPanel {
                 out.settings_changed = true;
             }
             self.set_rotate(player, 0);
-            if self.hflip {
-                let _ = player.mpv.command(&["vf", "toggle", "hflip"]);
+            if self.hflip || self.vflip {
                 self.hflip = false;
-            }
-            if self.vflip {
-                let _ = player.mpv.command(&["vf", "toggle", "vflip"]);
                 self.vflip = false;
+                player.set_flip(false, false);
             }
         }
     }

@@ -8,5 +8,5 @@
 # Inno Setup scripts are compiled on Windows.
 *.iss text eol=crlf
 
-# Translation file kept exactly as Inno Setup ships it.
+# Inno Setup translation: keep its bytes, including the UTF-8 BOM.
 *.isl -text
