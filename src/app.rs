@@ -244,7 +244,12 @@ impl App {
     }
 
     fn auto_update_check(&mut self, ctx: &egui::Context, now: f64) {
-        if self.update_check_done || now < UPDATE_CHECK_DELAY_SECS {
+        if self.update_check_done {
+            return;
+        }
+        if now < UPDATE_CHECK_DELAY_SECS {
+            // An idle window draws no frames, so ask for the one that does this.
+            ctx.request_repaint_after_secs((UPDATE_CHECK_DELAY_SECS - now) as f32);
             return;
         }
         self.update_check_done = true;
