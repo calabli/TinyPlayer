@@ -30,7 +30,24 @@ pub struct State {
 pub struct Track {
     pub id: i64,
     pub label: String,
+    /// Showing as the main track.
     pub selected: bool,
+    /// Showing as the second subtitle.
+    pub secondary: bool,
+}
+
+/// mpv font name for a `Settings::sub_font` choice.
+fn sub_font_name(choice: &str) -> &'static str {
+    let mac = cfg!(target_os = "macos");
+    match choice {
+        "hei" if mac => "PingFang SC",
+        "hei" => "Microsoft YaHei",
+        "song" if mac => "Songti SC",
+        "song" => "SimSun",
+        "kai" if mac => "Kaiti SC",
+        "kai" => "KaiTi",
+        _ => "sans-serif",
+    }
 }
 
 fn language_name(code: &str) -> String {
@@ -198,6 +215,18 @@ impl Player {
         next
     }
 
+    /// Steps one frame and leaves playback paused.
+    pub fn frame_step(&self, forward: bool) {
+        let _ = self.mpv.command(&[if forward { "frame-step" } else { "frame-back-step" }]);
+    }
+
+    /// Sets or clears mpv's A-B loop points.
+    pub fn set_ab_loop(&self, ab: crate::ab_loop::AbLoop) {
+        let value = |t: Option<f64>| t.map_or("no".to_string(), |t| format!("{t:.3}"));
+        self.mpv.set_property_string("ab-loop-a", &value(ab.a));
+        self.mpv.set_property_string("ab-loop-b", &value(ab.b));
+    }
+
     pub fn cycle_subtitles(&self) {
         let _ = self.mpv.command(&["cycle", "sub"]);
     }
@@ -228,6 +257,11 @@ impl Player {
         m.set_property_string("sub-auto", if s.sub_auto { "fuzzy" } else { "no" });
         m.set_property_string("sub-font-size", &s.sub_size.to_string());
         m.set_property_string("sub-pos", &s.sub_pos.to_string());
+        m.set_property_string("sub-font", sub_font_name(&s.sub_font));
+        m.set_property_string("sub-color", &s.sub_color);
+        m.set_property_string("sub-outline-size", &s.sub_outline.to_string());
+        m.set_property_string("sub-shadow-offset", if s.sub_shadow { "2" } else { "0" });
+        m.set_property_string("sub-ass-override", if s.sub_ass_force { "force" } else { "scale" });
         let slang = match s.sub_lang.as_str() {
             "zh" => "chi,zho,zh,chs,cht,sc,tc,zh-Hans,zh-Hant,zh-CN,zh-TW",
             "en" => "eng,en",
@@ -261,9 +295,24 @@ impl Player {
             if external {
                 label.push_str("（外挂）");
             }
-            out.push(Track { id, label, selected: get("selected").as_deref() == Some("yes") });
+            let selected = get("selected").as_deref() == Some("yes");
+            let secondary = selected && get("main-selection").as_deref() == Some("1");
+            out.push(Track { id, label, selected: selected && !secondary, secondary });
         }
         out
+    }
+
+    /// The chapters of the loaded file, in order.
+    pub fn chapters(&self) -> Vec<crate::marks::Chapter> {
+        let m = &self.mpv;
+        let n: usize = m.get_string("chapter-list/count").and_then(|c| c.parse().ok()).unwrap_or(0);
+        (0..n)
+            .filter_map(|i| {
+                let time = m.get_string(&format!("chapter-list/{i}/time"))?.parse().ok()?;
+                let title = m.get_string(&format!("chapter-list/{i}/title")).filter(|t| !t.is_empty());
+                Some(crate::marks::Chapter { time, title: title.unwrap_or_else(|| format!("第 {} 章", i + 1)) })
+            })
+            .collect()
     }
 
     pub fn stop(&self) {

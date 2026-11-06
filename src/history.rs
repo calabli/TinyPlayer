@@ -55,6 +55,15 @@ pub struct Settings {
     pub sub_pos: u32,
     /// Preferred subtitle language: "auto", "zh" or "en".
     pub sub_lang: String,
+    /// "default", "hei", "song" or "kai"; see `player::sub_font_name`.
+    pub sub_font: String,
+    /// mpv `sub-color`.
+    pub sub_color: String,
+    /// mpv `sub-outline-size`.
+    pub sub_outline: u32,
+    pub sub_shadow: bool,
+    /// Apply the style above to ASS subtitles too, replacing their own.
+    pub sub_ass_force: bool,
 }
 
 impl Default for Settings {
@@ -75,8 +84,21 @@ impl Default for Settings {
             sub_size: 46,
             sub_pos: 100,
             sub_lang: "auto".into(),
+            sub_font: "default".into(),
+            sub_color: "#FFFFFF".into(),
+            sub_outline: 2,
+            sub_shadow: false,
+            sub_ass_force: false,
         }
     }
+}
+
+#[derive(Clone, Debug, PartialEq)]
+pub struct Bookmark {
+    pub id: i64,
+    pub time: f64,
+    /// The chapter it was added in, if any.
+    pub label: String,
 }
 
 #[derive(Clone, Debug)]
@@ -152,6 +174,15 @@ impl Store {
                  watched_secs REAL NOT NULL DEFAULT 0
              );
              CREATE INDEX IF NOT EXISTS play_events_key ON play_events(key, started_at);
+             CREATE TABLE IF NOT EXISTS bookmarks (
+                 id         INTEGER PRIMARY KEY,
+                 key        TEXT NOT NULL,
+                 path       TEXT NOT NULL,
+                 time       REAL NOT NULL,
+                 label      TEXT NOT NULL,
+                 created_at INTEGER NOT NULL
+             );
+             CREATE INDEX IF NOT EXISTS bookmarks_key ON bookmarks(key, time);
              CREATE TABLE IF NOT EXISTS settings (k TEXT PRIMARY KEY, v TEXT NOT NULL);",
         )
         .map_err(|e| e.to_string())?;
@@ -191,6 +222,11 @@ impl Store {
             sub_size: get("sub_size").and_then(|v| v.parse().ok()).unwrap_or(d.sub_size),
             sub_pos: get("sub_pos").and_then(|v| v.parse().ok()).unwrap_or(d.sub_pos),
             sub_lang: get("sub_lang").unwrap_or(d.sub_lang),
+            sub_font: get("sub_font").unwrap_or(d.sub_font),
+            sub_color: get("sub_color").unwrap_or(d.sub_color),
+            sub_outline: get("sub_outline").and_then(|v| v.parse().ok()).unwrap_or(d.sub_outline),
+            sub_shadow: flag("sub_shadow", d.sub_shadow),
+            sub_ass_force: flag("sub_ass_force", d.sub_ass_force),
         }
     }
 
@@ -217,12 +253,38 @@ impl Store {
             ("sub_size", s.sub_size.to_string()),
             ("sub_pos", s.sub_pos.to_string()),
             ("sub_lang", s.sub_lang.clone()),
+            ("sub_font", s.sub_font.clone()),
+            ("sub_color", s.sub_color.clone()),
+            ("sub_outline", s.sub_outline.to_string()),
+            ("sub_shadow", b(s.sub_shadow)),
+            ("sub_ass_force", b(s.sub_ass_force)),
         ] {
             let _ = self.db.execute(
                 "INSERT INTO settings (k, v) VALUES (?1, ?2) ON CONFLICT(k) DO UPDATE SET v = ?2",
                 params![k, v],
             );
         }
+    }
+
+    // ---- Bookmarks ----
+    // Kept like play counts: clearing history doesn't remove them.
+
+    pub fn add_bookmark(&self, key: &str, path: &str, time: f64, label: &str) {
+        let _ = self.db.execute(
+            "INSERT INTO bookmarks (key, path, time, label, created_at) VALUES (?1, ?2, ?3, ?4, ?5)",
+            params![key, path, time, label, now_secs()],
+        );
+    }
+
+    pub fn bookmarks(&self, key: &str) -> Vec<Bookmark> {
+        let rows = self.db.prepare("SELECT id, time, label FROM bookmarks WHERE key = ?1 ORDER BY time").and_then(|mut st| {
+            st.query_map([key], |r| Ok(Bookmark { id: r.get(0)?, time: r.get(1)?, label: r.get(2)? }))?.collect()
+        });
+        rows.unwrap_or_default()
+    }
+
+    pub fn remove_bookmark(&self, id: i64) {
+        let _ = self.db.execute("DELETE FROM bookmarks WHERE id = ?1", [id]);
     }
 
     /// Free-form key/value (e.g. the window placement).
@@ -366,6 +428,11 @@ mod tests {
             sub_size: 60,
             sub_pos: 90,
             sub_lang: "en".into(),
+            sub_font: "kai".into(),
+            sub_color: "#FFE066".into(),
+            sub_outline: 4,
+            sub_shadow: true,
+            sub_ass_force: true,
         };
         s.save_settings(&custom);
         assert_eq!(s.load_settings(), custom);
@@ -379,6 +446,21 @@ mod tests {
         s.clear_history();
         assert!(s.position("k").is_none());
         assert_eq!(s.play_count("k"), 1);
+    }
+
+    #[test]
+    fn bookmarks_are_per_file_ordered_and_survive_clearing_history() {
+        let s = mem();
+        s.add_bookmark("k", "/a.mp4", 90.0, "");
+        s.add_bookmark("k", "/a.mp4", 30.0, "第一章");
+        s.add_bookmark("other", "/b.mp4", 10.0, "");
+        s.clear_history();
+        let marks = s.bookmarks("k");
+        assert_eq!(marks.iter().map(|b| b.time).collect::<Vec<_>>(), [30.0, 90.0]);
+        assert_eq!(marks[0].label, "第一章");
+        s.remove_bookmark(marks[0].id);
+        assert_eq!(s.bookmarks("k").len(), 1);
+        assert_eq!(s.bookmarks("other").len(), 1);
     }
 
     #[test]

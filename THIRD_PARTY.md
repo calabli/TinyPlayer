@@ -13,6 +13,7 @@ TinyPlayer 使用了以下开源组件：
 | [image](https://github.com/image-rs/image)、[zune-jpeg](https://github.com/etemesi254/zune-image) | 缩略图解码 | MIT 或 Apache-2.0 |
 | [rfd](https://github.com/PolyMeilex/rfd) | 文件选择对话框 | MIT |
 | [libloading](https://github.com/nagisa/rust_libloading) | 运行时加载 libmpv | ISC |
+| [souvlaki](https://github.com/Sinono3/souvlaki) | 系统媒体键 | MIT |
 
 ## 关于 libmpv 的许可
 

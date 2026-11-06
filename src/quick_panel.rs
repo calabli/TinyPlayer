@@ -1,8 +1,8 @@
 //! In-player quick settings, opened from the control bar's gear:
-//! 字幕 / 声音 / 画面 / 色彩. Anchored above the bar at the bottom-right.
+//! 字幕 / 字幕样式 / 声音 / 画面 / 色彩. Anchored above the bar at the bottom-right.
 //!
-//! Aspect, hardware decoding, enhancement and subtitle size/position are
-//! saved settings; rotation, flips, colors and delays last for this run.
+//! Aspect, hardware decoding, enhancement and subtitle size/position/style
+//! are saved settings; rotation, flips, colors and delays last for this run.
 
 use eframe::egui::{self, Align2, Color32, CursorIcon, FontId, Pos2, Rect, Sense, Stroke, StrokeKind, pos2, vec2};
 
@@ -23,6 +23,7 @@ const BORDER: Color32 = Color32::from_rgb(0x6A, 0x6A, 0x6A);
 #[derive(Clone, Copy, PartialEq, Default)]
 enum Page {
     Subtitles,
+    SubStyle,
     Audio,
     #[default]
     Video,
@@ -94,7 +95,7 @@ impl QuickPanel {
         p.rect_filled(nav, egui::CornerRadius { nw: 8, sw: 8, ne: 0, se: 0 }, NAV_BG);
 
         // Nav
-        let items = [(Page::Subtitles, "字幕"), (Page::Audio, "声音"), (Page::Video, "画面"), (Page::Color, "色彩")];
+        let items = [(Page::Subtitles, "字幕"), (Page::SubStyle, "字幕样式"), (Page::Audio, "声音"), (Page::Video, "画面"), (Page::Color, "色彩")];
         let top = nav.center().y - items.len() as f32 * 48.0 / 2.0;
         for (i, (page, label)) in items.into_iter().enumerate() {
             let r = Rect::from_min_size(pos2(nav.left(), top + i as f32 * 48.0), vec2(NAV_W, 40.0));
@@ -126,6 +127,7 @@ impl QuickPanel {
         let mut c = Cursor { ui, p: &p, body, y: body.top() + 8.0, ctx: ctx.clone() };
         match self.page {
             Page::Subtitles => self.subtitles(&mut c, player, s, &mut out),
+            Page::SubStyle => self.sub_style(&mut c, player, s, &mut out),
             Page::Audio => self.audio(&mut c, player),
             Page::Video => self.video(&mut c, player, s, &mut out),
             Page::Color => self.color(&mut c, player),
@@ -192,6 +194,46 @@ impl QuickPanel {
         if let Some(d) = c.stepper("qp_subdelay", self.sub_delay, 0.5) {
             self.sub_delay = d;
             player.mpv.set_property_string("sub-delay", &format!("{d:.2}"));
+        }
+    }
+
+    fn sub_style(&mut self, c: &mut Cursor, player: &Player, s: &mut Settings, out: &mut Actions) {
+        c.section("第二字幕");
+        // mpv can't show one track twice, so the main track isn't offered.
+        let tracks: Vec<&Track> = self.subs.iter().filter(|t| !t.selected).collect();
+        let mut opts: Vec<(Option<i64>, &str, bool)> = vec![(None, "关闭", !tracks.iter().any(|t| t.secondary))];
+        opts.extend(tracks.iter().map(|t| (Some(t.id), t.label.as_str(), t.secondary)));
+        if let Some(i) = c.radios("qp_sid2", &opts.iter().map(|o| (o.1, o.2)).collect::<Vec<_>>()) {
+            let v = opts[i].0.map_or("no".to_string(), |id| id.to_string());
+            player.mpv.set_property_string("secondary-sid", &v);
+            self.last_refresh = f64::NEG_INFINITY;
+        }
+        c.gap(4.0);
+
+        c.section("字体");
+        if let Some(v) = c.choice("qp_font", &[("默认", "default"), ("黑体", "hei"), ("宋体", "song"), ("楷体", "kai")], s.sub_font.as_str()) {
+            s.sub_font = v.to_string();
+            out.settings_changed = true;
+        }
+        c.section("颜色");
+        let colors = [("白色", "#FFFFFF"), ("黄色", "#FFE066"), ("青色", "#7FE7FF"), ("绿色", "#9CFF8F")];
+        if let Some(v) = c.choice("qp_color", &colors, s.sub_color.as_str()) {
+            s.sub_color = v.to_string();
+            out.settings_changed = true;
+        }
+        c.section("描边");
+        if let Some(v) = c.choice("qp_outline", &[("细", 1u32), ("中", 2), ("粗", 4)], s.sub_outline) {
+            s.sub_outline = v;
+            out.settings_changed = true;
+        }
+        if c.toggle_row("qp_shadow", "阴影", s.sub_shadow) {
+            s.sub_shadow = !s.sub_shadow;
+            out.settings_changed = true;
+        }
+        c.gap(4.0);
+        if c.toggle_row("qp_assforce", "覆盖 ASS", s.sub_ass_force) {
+            s.sub_ass_force = !s.sub_ass_force;
+            out.settings_changed = true;
         }
     }
 
@@ -346,6 +388,12 @@ impl Cursor<'_> {
         }
         self.y += 32.0;
         clicked
+    }
+
+    /// Radio buttons for a setting's possible values. Returns the clicked value.
+    fn choice<T: Copy + PartialEq>(&mut self, id: &str, opts: &[(&str, T)], cur: T) -> Option<T> {
+        let labels: Vec<(&str, bool)> = opts.iter().map(|(l, v)| (*l, *v == cur)).collect();
+        self.radios(id, &labels).map(|i| opts[i].1)
     }
 
     /// Radio buttons in a fixed number of columns (as in the reference).

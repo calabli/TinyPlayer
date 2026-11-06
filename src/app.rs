@@ -8,9 +8,14 @@ use eframe::egui::{
 };
 use eframe::glow;
 
+use crate::ab_loop::AbLoop;
 use crate::history::Entry;
+use crate::hover_thumbs::HoverThumbs;
 use crate::icons::{self, Icon};
+use crate::keep_awake::{KeepAwake, hold_for};
 use crate::library_ui::{Action as LibAction, LibraryView};
+use crate::marks::{self, Marks};
+use crate::media_keys::{Cmd as MediaCmd, MediaKeys};
 use crate::scanner::{Msg as ScanMsg, Scanner};
 use crate::mpv::{Event, RenderContext};
 use crate::player::Player;
@@ -28,6 +33,15 @@ const RESUME_PROMPT_SECS: f64 = 10.0;
 const SIDEBAR_W: f32 = 280.0;
 /// Height of the bottom control bar (seek line + button row).
 const BAR_H: f32 = 64.0;
+/// Below this width the control bar has no room for the optional buttons.
+const WIDE_BAR: f32 = 820.0;
+const AB_COLOR: Color32 = Color32::from_rgb(0xFF, 0xC1, 0x4D);
+const BOOKMARK_COLOR: Color32 = Color32::from_rgb(0xFF, 0x8A, 0x65);
+const HOVER_THUMB_W: f32 = 200.0;
+const PIP_MAX_SIDE: f32 = 400.0;
+const PIP_MARGIN: f32 = 24.0;
+const NORMAL_MIN_SIZE: [f32; 2] = [480.0, 300.0];
+const PIP_MIN_SIZE: [f32; 2] = [200.0, 120.0];
 
 type ProcAddr = Arc<dyn Fn(&std::ffi::CStr) -> *const std::ffi::c_void + Send + Sync>;
 
@@ -58,6 +72,8 @@ pub struct App {
     was_eof: bool,
     side_rect: Rect,
     side_scroll: f32,
+    /// The sidebar shows chapters and bookmarks instead of the playlist.
+    side_marks: bool,
     scroll_to_current: bool,
     speed_menu: bool,
     library: LibraryView,
@@ -73,6 +89,15 @@ pub struct App {
     instance_rx: Option<std::sync::mpsc::Receiver<Vec<String>>>,
     /// Last normal (not fullscreen) window placement, saved on exit.
     window_place: Option<crate::WindowPlace>,
+    ab: AbLoop,
+    marks: Marks,
+    always_on_top: bool,
+    pip: bool,
+    /// Where the window goes back to when leaving picture-in-picture.
+    pip_restore: Option<crate::WindowPlace>,
+    hover_thumbs: HoverThumbs,
+    keep_awake: KeepAwake,
+    media_keys: Option<MediaKeys>,
 }
 
 impl App {
@@ -99,6 +124,8 @@ impl App {
         let scanner = Scanner::spawn(cc.egui_ctx.clone());
         scanner.scan();
         let playlist = Playlist::new(tracker.settings.loop_mode, tracker.settings.shuffle);
+        let hover_thumbs = HoverThumbs::spawn(cc.egui_ctx.clone(), crate::history::data_dir());
+        let media_keys = MediaKeys::new(cc);
         if let Some(p) = &player {
             p.apply_settings(&tracker.settings);
         }
@@ -125,6 +152,7 @@ impl App {
             was_eof: false,
             side_rect: Rect::NOTHING,
             side_scroll: 0.0,
+            side_marks: false,
             scroll_to_current: false,
             speed_menu: false,
             library: LibraryView::new(),
@@ -136,6 +164,14 @@ impl App {
             sub_margin: 22,
             instance_rx,
             window_place: None,
+            ab: AbLoop::default(),
+            marks: Marks::default(),
+            always_on_top: false,
+            pip: false,
+            pip_restore: None,
+            hover_thumbs,
+            keep_awake: KeepAwake::new(),
+            media_keys,
         }
     }
 
@@ -169,6 +205,135 @@ impl App {
         self.osd = Some((text.into(), now, OSD_SECS));
     }
 
+    fn apply_window_level(&self, ctx: &egui::Context) {
+        let on_top = self.always_on_top || self.pip;
+        let level = if on_top { egui::WindowLevel::AlwaysOnTop } else { egui::WindowLevel::Normal };
+        ctx.send_viewport_cmd(ViewportCommand::WindowLevel(level));
+    }
+
+    fn toggle_on_top(&mut self, ctx: &egui::Context) {
+        self.always_on_top = !self.always_on_top;
+        self.apply_window_level(ctx);
+        self.show_osd(ctx, if self.always_on_top { "窗口置顶  开" } else { "窗口置顶  关" });
+    }
+
+    /// Shrinks the window to a borderless, always-on-top video in the corner
+    /// of the screen, or puts it back where it was.
+    fn toggle_pip(&mut self, ctx: &egui::Context) {
+        if ctx.input(|i| i.viewport().fullscreen.unwrap_or(false)) {
+            self.show_osd(ctx, "请先退出全屏");
+            return;
+        }
+        self.pip = !self.pip;
+        self.apply_window_level(ctx);
+        if self.pip {
+            self.pip_restore = self.window_place;
+            self.sidebar_open = false;
+            self.side_rect = Rect::NOTHING;
+            self.speed_menu = false;
+            self.quick.close();
+            let (w, h) = self.player.as_ref().map_or((0, 0), |p| (p.state.width, p.state.height));
+            let size = pip_size(w, h);
+            ctx.send_viewport_cmd(ViewportCommand::Maximized(false));
+            ctx.send_viewport_cmd(ViewportCommand::Decorations(false));
+            ctx.send_viewport_cmd(ViewportCommand::MinInnerSize(PIP_MIN_SIZE.into()));
+            ctx.send_viewport_cmd(ViewportCommand::InnerSize(size));
+            if let Some(monitor) = ctx.input(|i| i.viewport().monitor_size) {
+                let corner = (monitor - size - vec2(PIP_MARGIN, PIP_MARGIN)).to_pos2();
+                ctx.send_viewport_cmd(ViewportCommand::OuterPosition(corner));
+            }
+        } else {
+            ctx.send_viewport_cmd(ViewportCommand::Decorations(true));
+            ctx.send_viewport_cmd(ViewportCommand::MinInnerSize(NORMAL_MIN_SIZE.into()));
+            if let Some(p) = self.pip_restore.take() {
+                ctx.send_viewport_cmd(ViewportCommand::InnerSize(vec2(p.w, p.h)));
+                ctx.send_viewport_cmd(ViewportCommand::OuterPosition(pos2(p.x, p.y)));
+                ctx.send_viewport_cmd(ViewportCommand::Maximized(p.maximized));
+            }
+        }
+    }
+
+    fn press_ab(&mut self, ctx: &egui::Context) {
+        let Some(player) = &self.player else { return };
+        self.ab.press(player.state.position);
+        player.set_ab_loop(self.ab);
+        // B is set at or behind the playhead, so mpv would never reach it.
+        if let (Some(a), Some(_)) = (self.ab.a, self.ab.b) {
+            player.seek_to(a, true);
+        }
+        let text = match (self.ab.a, self.ab.b) {
+            (Some(a), None) => format!("A  {}", fmt_time(a)),
+            (Some(a), Some(b)) => format!("A-B 循环  {} – {}", fmt_time(a), fmt_time(b)),
+            _ => "A-B 循环  已清除".to_string(),
+        };
+        self.show_osd(ctx, text);
+    }
+
+    fn jump_chapter(&mut self, ctx: &egui::Context, forward: bool) {
+        let Some(player) = &self.player else { return };
+        if self.marks.chapters.is_empty() {
+            self.show_osd(ctx, "这个文件没有章节");
+            return;
+        }
+        let pos = player.state.position;
+        let target = if forward { self.marks.next_chapter(pos) } else { self.marks.prev_chapter(pos) };
+        let Some(i) = target else {
+            self.show_osd(ctx, if forward { "已是最后一章" } else { "已是第一章" });
+            return;
+        };
+        let chapter = &self.marks.chapters[i];
+        player.seek_to(chapter.time, true);
+        let text = format!("{} / {}  {}", i + 1, self.marks.chapters.len(), chapter.title);
+        self.show_osd(ctx, text);
+    }
+
+    fn add_bookmark(&mut self, ctx: &egui::Context) {
+        let Some(player) = &self.player else { return };
+        let (pos, path) = (player.state.position, player.state.path.clone());
+        let Some(key) = self.marks.key.clone() else {
+            self.show_osd(ctx, "只有本地文件可以添加书签");
+            return;
+        };
+        if self.tracker.incognito {
+            self.show_osd(ctx, "无痕模式下不保存书签");
+            return;
+        }
+        if self.marks.has_bookmark_near(pos) {
+            self.show_osd(ctx, "这里已有书签");
+            return;
+        }
+        let Some(store) = &self.tracker.store else { return };
+        let label = self.marks.chapter_at(pos).map_or("", |i| self.marks.chapters[i].title.as_str());
+        store.add_bookmark(&key, &path, pos, label);
+        self.marks.bookmarks = store.bookmarks(&key);
+        self.show_osd(ctx, format!("已添加书签  {}", fmt_time(pos)));
+    }
+
+    /// Opens the sidebar on the playlist or the marks, or closes it if it's
+    /// already showing that.
+    fn show_side(&mut self, marks: bool) {
+        if !self.sidebar_open || self.side_marks == marks {
+            self.toggle_sidebar();
+        }
+        self.side_marks = marks;
+    }
+
+    fn handle_media_key(&mut self, ctx: &egui::Context, cmd: MediaCmd) {
+        match cmd {
+            MediaCmd::Next => self.play_next(ctx),
+            MediaCmd::Prev => self.play_prev(ctx),
+            MediaCmd::Toggle | MediaCmd::Play | MediaCmd::Pause | MediaCmd::Stop => {
+                let Some(player) = &self.player else { return };
+                match cmd {
+                    MediaCmd::Toggle => player.toggle_pause(),
+                    MediaCmd::Play => player.mpv.set_flag("pause", false),
+                    MediaCmd::Pause => player.mpv.set_flag("pause", true),
+                    _ => player.stop(),
+                }
+            }
+        }
+    }
+
     fn open_dialog(&mut self) {
         if let Some(files) = rfd::FileDialog::new()
             .add_filter("媒体文件", playlist::MEDIA_EXTS)
@@ -190,7 +355,7 @@ impl App {
 
     fn handle_input(&mut self, ctx: &egui::Context) {
         let Some(player) = &self.player else { return };
-        let (dropped, keys, cmd, scroll, moved) = ctx.input(|i| {
+        let (dropped, keys, cmd, shift, scroll, moved) = ctx.input(|i| {
             let dropped: Vec<String> = i
                 .raw
                 .dropped_files
@@ -207,7 +372,7 @@ impl App {
                     _ => {}
                 }
             }
-            (dropped, keys, i.modifiers.command, scroll, i.pointer.delta() != egui::Vec2::ZERO)
+            (dropped, keys, i.modifiers.command, i.modifiers.shift, scroll, i.pointer.delta() != egui::Vec2::ZERO)
         });
 
         let now = ctx.input(|i| i.time);
@@ -225,6 +390,9 @@ impl App {
         let mut open_dialog = false;
         let (mut want_next, mut want_prev, mut want_side) = (false, false, false);
         let mut want_fav = false;
+        let (mut want_ab, mut want_on_top, mut want_pip) = (false, false, false);
+        let (mut want_bookmark, mut want_marks) = (false, false);
+        let mut want_chapter: Option<bool> = None;
 
         // The settings overlay is modal: only its own shortcuts apply.
         if keys.iter().any(|k| *k == Key::Comma) && cmd {
@@ -266,6 +434,7 @@ impl App {
                     player.toggle_pause();
                     osd = Some(if s.paused || s.eof { "PLAY".into() } else { "PAUSE".into() });
                 }
+                Key::ArrowLeft | Key::ArrowRight if shift && !s.idle => want_chapter = Some(key == Key::ArrowRight),
                 Key::ArrowLeft | Key::ArrowRight if !s.idle => {
                     let step = if cmd { 60.0 } else { 5.0 };
                     let d = if key == Key::ArrowLeft { -step } else { step };
@@ -290,6 +459,7 @@ impl App {
                 Key::F | Key::Enter => {
                     ctx.send_viewport_cmd(ViewportCommand::Fullscreen(!fullscreen));
                 }
+                Key::Escape if self.pip => want_pip = true,
                 Key::Escape if fullscreen => {
                     ctx.send_viewport_cmd(ViewportCommand::Fullscreen(false));
                 }
@@ -297,6 +467,16 @@ impl App {
                     let sp = player.step_speed(if key == Key::OpenBracket { -1 } else { 1 });
                     osd = Some(format!("SPEED  {}", fmt_speed(sp)));
                 }
+                Key::Comma | Key::Period if !cmd && !s.idle => {
+                    let forward = key == Key::Period;
+                    player.frame_step(forward);
+                    osd = Some(if forward { "下一帧".into() } else { "上一帧".into() });
+                }
+                Key::B if cmd && !s.idle => want_bookmark = true,
+                Key::B if !s.idle => want_ab = true,
+                Key::G if !cmd && !s.idle && !self.pip => want_marks = true,
+                Key::T if !cmd => want_on_top = true,
+                Key::I if !cmd && !s.idle => want_pip = true,
                 Key::Backspace => {
                     player.set_speed(1.0);
                     osd = Some("SPEED  1.0×".into());
@@ -307,7 +487,7 @@ impl App {
                 }
                 Key::PageDown | Key::N => want_next = true,
                 Key::PageUp | Key::P => want_prev = true,
-                Key::L => want_side = true,
+                Key::L if !self.pip => want_side = true,
                 Key::S if cmd => {
                     player.screenshot();
                     osd = Some("SCREENSHOT  → DESKTOP".into());
@@ -340,10 +520,28 @@ impl App {
             self.play_prev(ctx);
         }
         if want_side {
-            self.toggle_sidebar();
+            self.show_side(false);
+        }
+        if want_marks {
+            self.show_side(true);
+        }
+        if let Some(forward) = want_chapter {
+            self.jump_chapter(ctx, forward);
+        }
+        if want_bookmark {
+            self.add_bookmark(ctx);
         }
         if want_fav {
             self.toggle_favorite(ctx);
+        }
+        if want_ab {
+            self.press_ab(ctx);
+        }
+        if want_on_top {
+            self.toggle_on_top(ctx);
+        }
+        if want_pip {
+            self.toggle_pip(ctx);
         }
     }
 
@@ -459,7 +657,7 @@ impl eframe::App for App {
         // Remember where the window is (skip fullscreen/minimized states).
         ctx.input(|i| {
             let vp = i.viewport();
-            if vp.fullscreen != Some(true) && vp.minimized != Some(true) {
+            if !self.pip && vp.fullscreen != Some(true) && vp.minimized != Some(true) {
                 if let (Some(outer), Some(inner)) = (vp.outer_rect, vp.inner_rect) {
                     let maximized = vp.maximized == Some(true);
                     let prev = self.window_place;
@@ -498,7 +696,12 @@ impl eframe::App for App {
         }
 
         // ---- Video ----
-        let surface = ui.interact(full, ui.scope_id().with("surface"), Sense::click());
+        // In picture-in-picture there's no title bar, so the video drags the window.
+        let sense = if self.pip { Sense::click_and_drag() } else { Sense::click() };
+        let surface = ui.interact(full, ui.scope_id().with("surface"), sense);
+        if self.pip && surface.drag_started() {
+            ctx.send_viewport_cmd(ViewportCommand::StartDrag);
+        }
         if !s.idle {
             if let (Some(video), Some(render), Some(gl)) = (&mut self.video, &self.render, frame.gl()) {
                 let ppp = ctx.pixels_per_point();
@@ -512,7 +715,9 @@ impl eframe::App for App {
                 );
             }
         }
-        if surface.double_clicked() && !s.idle {
+        if self.pip && (s.idle || surface.double_clicked()) {
+            self.toggle_pip(&ctx);
+        } else if surface.double_clicked() && !s.idle {
             let fs = ctx.input(|i| i.viewport().fullscreen.unwrap_or(false));
             ctx.send_viewport_cmd(ViewportCommand::Fullscreen(!fs));
         }
@@ -567,10 +772,14 @@ impl eframe::App for App {
                 ctx.request_repaint_after_secs((HIDE_AFTER - (now - self.last_activity)).max(0.05) as f32);
             }
 
-            if s.paused && !s.eof {
+            if s.paused && !s.eof && !self.pip {
                 icons::draw(&painter, Icon::Play, full.center(), 40.0, Color32::from_white_alpha(220));
             }
-            if alpha > 0.0 {
+            if self.pip {
+                if alpha > 0.0 {
+                    self.draw_pip_controls(ui, full, alpha);
+                }
+            } else if alpha > 0.0 {
                 draw_top_bar(&painter, stage, &s, self.tracker.current_play_count(), alpha);
                 if let Some(fav) = self.current_fav {
                     if fav_button(ui, stage, &s.title, fav, alpha) {
@@ -613,7 +822,7 @@ impl eframe::App for App {
             }
 
             // Edge handle: "‹" while paused opens the playlist, "›" closes it.
-            let show_handle = self.sidebar_open || s.paused;
+            let show_handle = !self.pip && (self.sidebar_open || s.paused);
             let ha = ctx.animate_bool_with_time(ui.scope_id().with("edge_handle"), show_handle, 0.15);
             if ha > 0.0 && self.drag_from.is_none() {
                 if draw_edge_handle(ui, stage, self.sidebar_open, ha) {
@@ -694,6 +903,14 @@ impl eframe::App for App {
                 Event::FileLoaded => {
                     self.resume_prompt = None;
                     self.current_fav = self.library.is_favorite_path(&player.state.path);
+                    self.ab = AbLoop::default();
+                    player.set_ab_loop(self.ab);
+                    let key = crate::history::file_key(&player.state.path);
+                    let bookmarks = match (&key, &self.tracker.store) {
+                        (Some(k), Some(st)) => st.bookmarks(k),
+                        _ => Vec::new(),
+                    };
+                    self.marks = Marks { key, chapters: player.chapters(), bookmarks };
                     match self.tracker.file_loaded(&player.state) {
                         Resume::Resumed(pos) => {
                             player.seek_to(pos, true);
@@ -732,7 +949,13 @@ impl eframe::App for App {
                 ScanMsg::Idle => self.library.probing = None,
             }
         }
+        self.hover_thumbs.receive(ctx);
         self.tracker.tick(&player.state);
+        let st = &player.state;
+        self.keep_awake.set(hold_for(!st.idle && !st.paused && !st.eof, st.width > 0));
+        if let Some(keys) = &mut self.media_keys {
+            keys.publish(st);
+        }
         let eof = player.state.eof && !player.state.idle;
         let eof_edge = eof && !self.was_eof;
         self.was_eof = eof;
@@ -743,6 +966,10 @@ impl eframe::App for App {
         if idle && self.recent_dirty {
             self.recent = self.tracker.recent(5);
             self.recent_dirty = false;
+        }
+        let media: Vec<MediaCmd> = self.media_keys.as_ref().map_or(Vec::new(), |k| k.rx.try_iter().collect());
+        for cmd in media {
+            self.handle_media_key(ctx, cmd);
         }
     }
 
@@ -787,6 +1014,7 @@ impl App {
         let mut want_stop = false;
         let mut open_settings = false;
         let mut toggle_list = false;
+        let mut want_pip = false;
 
         // ---- Seek line ----
         let line_y = bar.top() + 3.0;
@@ -806,7 +1034,25 @@ impl App {
             seg(track.left(), track.right(), Color32::from_white_alpha(38));
             seg(track.left(), at(s.cached_until / s.duration), Color32::from_white_alpha(80));
             seg(track.left(), at(frac), ACCENT);
+            if let Some(a_pos) = self.ab.a {
+                let ax = at(a_pos / s.duration);
+                if let Some(b_pos) = self.ab.b {
+                    seg(ax, at(b_pos / s.duration), AB_COLOR);
+                }
+                for t in [Some(a_pos), self.ab.b].into_iter().flatten() {
+                    let x = at(t / s.duration);
+                    painter.line_segment([pos2(x, line_y - 6.0), pos2(x, line_y + 6.0)], Stroke::new(2.0, a(AB_COLOR)));
+                }
+            }
             knob(&painter, pos2(at(frac), line_y), if hot { 7.0 } else { 6.0 }, alpha);
+
+            for t in self.marks.chapters.iter().map(|c| c.time).filter(|t| *t > 0.0) {
+                let x = at(t / s.duration);
+                painter.line_segment([pos2(x, line_y - 3.0), pos2(x, line_y + 3.0)], Stroke::new(1.5, a(Color32::BLACK)));
+            }
+            for b in &self.marks.bookmarks {
+                painter.circle_filled(pos2(at(b.time / s.duration), line_y), 3.5, a(BOOKMARK_COLOR));
+            }
 
             let pointer_frac = tresp
                 .hover_pos()
@@ -814,13 +1060,25 @@ impl App {
                 .map(|p| ((p.x - track.left()) / track.width()).clamp(0.0, 1.0) as f64);
             if let Some(f) = pointer_frac {
                 if hot {
-                    let label = fmt_time(f * s.duration);
+                    let time = fmt_time(f * s.duration);
+                    let label = match self.marks.chapter_at(f * s.duration) {
+                        Some(i) => format!("{}  {time}", self.marks.chapters[i].title),
+                        None => time,
+                    };
                     let g = painter.layout_no_wrap(label, FontId::monospace(11.0), TEXT);
                     let x = at(f).clamp(track.left() + g.size().x / 2.0 + 6.0, track.right() - g.size().x / 2.0 - 6.0);
                     let r = Rect::from_center_size(pos2(x, line_y - 20.0), g.size() + vec2(12.0, 6.0));
                     painter.rect_filled(r, 4.0, theme::scrim(225));
                     painter.galley(r.min + vec2(6.0, 3.0), g, TEXT);
                     ctx.set_cursor_icon(CursorIcon::PointingHand);
+                    if let Some(tex) = self.hover_thumbs.lookup(&s.path, f * s.duration, s.duration) {
+                        let size = tex.size_vec2() * (HOVER_THUMB_W / tex.size_vec2().x);
+                        let half = size.x / 2.0 + 6.0;
+                        let tx = at(f).clamp(track.left() + half, track.right() - half);
+                        let thumb = Rect::from_center_size(pos2(tx, r.top() - 6.0 - size.y / 2.0), size);
+                        painter.image(tex.id(), thumb, Rect::from_min_max(pos2(0.0, 0.0), pos2(1.0, 1.0)), Color32::WHITE);
+                        painter.rect_stroke(thumb, 3.0, Stroke::new(1.0, Color32::from_white_alpha(70)), StrokeKind::Outside);
+                    }
                 }
                 if tresp.dragged() {
                     self.seek_preview = Some(f);
@@ -917,6 +1175,12 @@ impl App {
             ctx.send_viewport_cmd(ViewportCommand::Fullscreen(!fs));
         }
         rx -= 40.0;
+        if bar.width() >= WIDE_BAR {
+            if button(ui, pos2(rx, cy), "pip", Icon::PictureInPicture, 17.0, true) {
+                want_pip = true;
+            }
+            rx -= 40.0;
+        }
         if button(ui, pos2(rx, cy), "settings", Icon::Settings, 17.0, true) {
             open_settings = true;
         }
@@ -1003,6 +1267,32 @@ impl App {
         if want_next {
             self.play_next(&ctx);
         }
+        if want_pip {
+            self.toggle_pip(&ctx);
+        }
+    }
+
+    /// Picture-in-picture only has room for play/pause and the way back.
+    fn draw_pip_controls(&mut self, ui: &mut egui::Ui, full: Rect, alpha: f32) {
+        let Some(player) = &self.player else { return };
+        let painter = ui.painter().clone();
+        painter.rect_filled(full, 0.0, theme::scrim((90.0 * alpha) as u8));
+        let color = Color32::WHITE.gamma_multiply(alpha);
+
+        let play = Rect::from_center_size(full.center(), vec2(48.0, 48.0));
+        let resp = ui.interact(play, ui.scope_id().with("pip_play"), Sense::click());
+        let paused = player.state.paused || player.state.eof;
+        icons::draw(&painter, if paused { Icon::Play } else { Icon::Pause }, play.center(), 30.0, color);
+        if resp.clicked() {
+            player.toggle_pause();
+        }
+
+        let back = Rect::from_center_size(pos2(full.right() - 22.0, full.top() + 22.0), vec2(32.0, 32.0));
+        let resp = ui.interact(back, ui.scope_id().with("pip_back"), Sense::click());
+        icons::draw(&painter, Icon::PictureInPicture, back.center(), 18.0, color);
+        if resp.clicked() {
+            self.toggle_pip(ui.ctx());
+        }
     }
 
     /// "上次看到 12:40  继续播放 Enter  从头开始", above the control bar.
@@ -1061,6 +1351,17 @@ impl App {
 }
 
 /// White dot with an accent ring, as on the seek and volume sliders.
+/// Picture-in-picture window size: fits the video, longest side `PIP_MAX_SIDE`.
+fn pip_size(width: i64, height: i64) -> egui::Vec2 {
+    let aspect = if width > 0 && height > 0 { width as f32 / height as f32 } else { 16.0 / 9.0 };
+    let size = if aspect >= 1.0 {
+        vec2(PIP_MAX_SIDE, PIP_MAX_SIDE / aspect)
+    } else {
+        vec2(PIP_MAX_SIDE * aspect, PIP_MAX_SIDE)
+    };
+    size.max(PIP_MIN_SIZE.into()).round()
+}
+
 fn knob(p: &egui::Painter, c: egui::Pos2, r: f32, alpha: f32) {
     p.circle_filled(c, r, Color32::WHITE.gamma_multiply(alpha));
     p.circle_stroke(c, r, Stroke::new(2.0, ACCENT.gamma_multiply(alpha)));
@@ -1166,7 +1467,7 @@ fn draw_empty_state(ui: &mut egui::Ui, full: Rect, recent: &[Entry]) -> EmptyAct
     if resp.hovered() {
         ui.ctx().set_cursor_icon(CursorIcon::PointingHand);
     }
-    let shortcut = if cfg!(target_os = "macos") { "⌘O" } else { "Ctrl+O" };
+    let shortcut = format!("{}O", theme::CMD);
     p.text(open_rect.center(), Align2::CENTER_CENTER, format!("打开文件  {shortcut}"), FontId::monospace(11.0), color);
 
     let lib_rect = Rect::from_center_size(pos2(c.x + 84.0, frame.bottom() + 26.0), vec2(150.0, 28.0));
@@ -1325,7 +1626,28 @@ impl App {
         // Header
         let hy = side.top() + 24.0;
         let n = self.playlist.len();
-        p.text(pos2(left + 16.0, hy), Align2::LEFT_CENTER, format!("PLAYLIST · {n:02}"), FontId::monospace(10.0), TEXT_3.gamma_multiply(a));
+        let tabs = [(false, format!("PLAYLIST · {n:02}"), left + 16.0), (true, format!("MARKS · {:02}", self.marks.len()), left + 116.0)];
+        for (marks, label, x) in tabs {
+            let on = self.side_marks == marks;
+            let g = p.layout_no_wrap(label, FontId::monospace(10.0), if on { TEXT } else { TEXT_3 });
+            let r = Rect::from_min_size(pos2(x, hy - g.size().y / 2.0), g.size()).expand2(vec2(6.0, 8.0));
+            let resp = ui.interact(r, ui.scope_id().with(("side_tab", marks)), Sense::click());
+            p.galley(pos2(x, hy - g.size().y / 2.0), g, TEXT);
+            if on {
+                p.line_segment([pos2(r.left() + 6.0, r.bottom()), pos2(r.right() - 6.0, r.bottom())], Stroke::new(1.5, ACCENT.gamma_multiply(a)));
+            }
+            if resp.hovered() {
+                ctx.set_cursor_icon(CursorIcon::PointingHand);
+            }
+            if resp.clicked() {
+                self.side_marks = marks;
+                self.side_scroll = 0.0;
+            }
+        }
+        if self.side_marks {
+            self.draw_marks(ui, side, a);
+            return;
+        }
         let loop_mode = self.playlist.loop_mode;
         let header_btn = |ui: &mut egui::Ui, cx: f32, id: &str, icon: Icon, on: bool| -> bool {
             let r = Rect::from_center_size(pos2(cx, hy), vec2(28.0, 28.0));
@@ -1488,5 +1810,97 @@ impl App {
             }
             None => {}
         }
+    }
+}
+
+impl App {
+    /// The sidebar's other tab: chapters and bookmarks in time order.
+    fn draw_marks(&mut self, ui: &mut egui::Ui, side: Rect, a: f32) {
+        let ctx = ui.ctx().clone();
+        let left = side.left();
+        let right = left + SIDEBAR_W;
+        let p = ui.painter_at(side);
+        let list = Rect::from_min_max(pos2(left, side.top() + 48.0), pos2(right, side.bottom() - 34.0));
+        let lp = ui.painter_at(list.intersect(side));
+        let rows = self.marks.rows();
+        self.side_scroll = self.side_scroll.clamp(0.0, (rows.len() as f32 * ROW_H - list.height()).max(0.0));
+        if rows.is_empty() {
+            lp.text(list.center() - vec2(0.0, 10.0), Align2::CENTER_CENTER, "没有章节或书签", FontId::proportional(13.0), TEXT_2.gamma_multiply(a));
+        }
+        let pos = self.player.as_ref().map_or(0.0, |pl| pl.state.position);
+        let current = marks::current_row(&rows, pos);
+        let mut seek: Option<f64> = None;
+        let mut remove: Option<i64> = None;
+        for (i, row) in rows.iter().enumerate() {
+            let y = list.top() + i as f32 * ROW_H - self.side_scroll;
+            if y + ROW_H < list.top() || y > list.bottom() {
+                continue;
+            }
+            let r = Rect::from_min_size(pos2(left, y), vec2(SIDEBAR_W, ROW_H));
+            let resp = ui.interact(r.intersect(list), ui.scope_id().with(("mark_row", i)), Sense::click());
+            let on = current == Some(i);
+            if on {
+                lp.rect_filled(r, 0.0, theme::accent_alpha(14));
+                lp.line_segment([r.left_top(), r.left_bottom()], Stroke::new(2.0, ACCENT.gamma_multiply(a)));
+            } else if resp.hovered() {
+                lp.rect_filled(r, 0.0, Color32::from_white_alpha(6));
+            }
+            let cy = r.center().y;
+            lp.text(pos2(left + 16.0, cy), Align2::LEFT_CENTER, fmt_time(row.time), FontId::monospace(11.0), (if on { ACCENT } else { TEXT_3 }).gamma_multiply(a));
+            let title_x = left + 76.0;
+            let mut title_w = right - title_x - 14.0;
+            if row.bookmark.is_some() {
+                icons::draw(&lp, Icon::StarFilled, pos2(title_x + 6.0, cy), 12.0, BOOKMARK_COLOR.gamma_multiply(a));
+                title_w -= 18.0;
+            }
+            let close = Rect::from_center_size(pos2(right - 20.0, cy), vec2(24.0, 24.0));
+            let hot = row.bookmark.is_some() && (resp.hovered() || ui.rect_contains_pointer(close));
+            if hot {
+                title_w -= 20.0;
+            }
+            let x = if row.bookmark.is_some() { title_x + 18.0 } else { title_x };
+            let title = elide(&lp, &row.title, FontId::proportional(12.0), title_w);
+            lp.text(pos2(x, cy), Align2::LEFT_CENTER, title, FontId::proportional(12.0), (if on { TEXT } else { TEXT_2 }).gamma_multiply(a));
+            if hot {
+                let cresp = ui.interact(close, ui.scope_id().with(("mark_rm", i)), Sense::click());
+                icons::draw(&lp, Icon::Close, close.center(), 12.0, if cresp.hovered() { ACCENT } else { TEXT_3 });
+                if cresp.clicked() {
+                    remove = row.bookmark;
+                }
+            }
+            if resp.hovered() {
+                ctx.set_cursor_icon(CursorIcon::PointingHand);
+            }
+            if resp.clicked() && remove.is_none() {
+                seek = Some(row.time);
+            }
+        }
+        let hint = format!("{}B 添加书签 · G 收起", theme::CMD);
+        p.text(pos2(left + 16.0, side.bottom() - 17.0), Align2::LEFT_CENTER, hint, FontId::proportional(10.0), TEXT_3.gamma_multiply(a));
+
+        if let (Some(t), Some(pl)) = (seek, &self.player) {
+            pl.seek_to(t, true);
+        }
+        if let (Some(id), Some(store), Some(key)) = (remove, &self.tracker.store, &self.marks.key) {
+            store.remove_bookmark(id);
+            self.marks.bookmarks = store.bookmarks(key);
+        }
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn pip_size_keeps_the_video_shape() {
+        assert_eq!(pip_size(1920, 1080), vec2(400.0, 225.0));
+        assert_eq!(pip_size(1080, 1920), vec2(225.0, 400.0));
+    }
+
+    #[test]
+    fn pip_size_has_a_default_and_a_floor() {
+        assert_eq!(pip_size(0, 0), vec2(400.0, 225.0));
+        assert_eq!(pip_size(4000, 100), vec2(400.0, 120.0));
     }
 }

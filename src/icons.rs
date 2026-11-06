@@ -23,6 +23,7 @@ pub enum Icon {
     Star,
     StarFilled,
     Folder,
+    PictureInPicture,
 }
 
 /// Draws `icon` centered at `c`, fitting in a `s`×`s` box.
@@ -30,6 +31,12 @@ pub fn draw(p: &Painter, icon: Icon, c: Pos2, s: f32, color: Color32) {
     let h = s / 2.0;
     let stroke = Stroke::new((s / 11.0).max(1.4), color);
     match icon {
+        Icon::PictureInPicture => {
+            let outer = eframe::egui::Rect::from_center_size(c, vec2(s, s * 0.76));
+            p.rect_stroke(outer, 2.0, stroke, eframe::egui::StrokeKind::Middle);
+            let inner = eframe::egui::Rect::from_min_max(pos2(c.x + h * 0.05, c.y + h * 0.02), pos2(c.x + h * 0.74, c.y + h * 0.5));
+            p.rect_filled(inner, 1.0, color);
+        }
         Icon::Play => {
             let pts = vec![
                 pos2(c.x - h * 0.55, c.y - h * 0.75),

@@ -1,10 +1,15 @@
 #![cfg_attr(not(debug_assertions), windows_subsystem = "windows")]
 
+mod ab_loop;
 mod app;
 mod history;
+mod hover_thumbs;
 mod icons;
+mod keep_awake;
 mod library;
 mod library_ui;
+mod marks;
+mod media_keys;
 mod mpv;
 mod player;
 mod quick_panel;

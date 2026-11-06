@@ -69,3 +69,7 @@ fn install_fonts(ctx: &egui::Context) {
     }
     ctx.set_fonts(fonts);
 }
+
+/// Prefix for shortcut labels. Spelled out because the bundled fallback fonts
+/// have no ⌘ glyph.
+pub const CMD: &str = if cfg!(target_os = "macos") { "Cmd+" } else { "Ctrl+" };

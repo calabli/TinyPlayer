@@ -202,7 +202,7 @@ pub fn show(
     }
 
     if st.page == Page::Shortcuts {
-        let cmd = if cfg!(target_os = "macos") { "⌘" } else { "Ctrl+" };
+        let cmd = crate::theme::CMD;
         let keys: Vec<(String, &str)> = vec![
             ("Space / K".into(), "播放 / 暂停"),
             ("← / →".into(), "快退 / 快进 5 秒"),
@@ -217,6 +217,13 @@ pub fn show(
             ("C".into(), "切换字幕"),
             ("N / P".into(), "下一个 / 上一个"),
             ("L".into(), "播放列表"),
+            ("G".into(), "章节和书签"),
+            ("Shift+← / →".into(), "上一章 / 下一章"),
+            (format!("{cmd}B"), "添加书签"),
+            (", / .".into(), "上一帧 / 下一帧"),
+            ("B".into(), "A-B 循环"),
+            ("T".into(), "窗口置顶"),
+            ("I".into(), "画中画"),
             (format!("{cmd}O"), "打开文件"),
             (format!("{cmd}D"), "收藏 / 取消收藏"),
             (format!("{cmd}S"), "截图到桌面"),

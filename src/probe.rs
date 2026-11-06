@@ -102,7 +102,7 @@ impl Prober {
     }
 }
 
-fn clear_dir(dir: &Path) {
+pub fn clear_dir(dir: &Path) {
     if let Ok(rd) = std::fs::read_dir(dir) {
         for e in rd.flatten() {
             let _ = std::fs::remove_file(e.path());
@@ -110,7 +110,7 @@ fn clear_dir(dir: &Path) {
     }
 }
 
-fn first_jpg(dir: &Path) -> Option<PathBuf> {
+pub fn first_jpg(dir: &Path) -> Option<PathBuf> {
     std::fs::read_dir(dir)
         .ok()?
         .flatten()
