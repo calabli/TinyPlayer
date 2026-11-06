@@ -266,5 +266,10 @@ pub const EN: &[(&str, &str)] = &[
     ("当前版本 {}", "Version {}"),
     ("检查更新", "Check now"),
     ("查看", "View"),
+    ("无边框", "Frameless"),
+    ("无边框播放", "Frameless playback"),
+    ("无边框播放  开", "Frameless: on"),
+    ("无边框播放  关", "Frameless: off"),
+    ("关闭窗口", "Close window"),
     ("跳过此版本", "Skip this version"),
 ];

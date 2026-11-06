@@ -412,6 +412,11 @@ impl QuickPanel {
             s.interpolation = !s.interpolation;
             out.settings_changed = true;
         }
+        c.gap(4.0);
+        if c.toggle_row("qp_frameless", tr("无边框"), s.frameless) {
+            s.frameless = !s.frameless;
+            out.settings_changed = true;
+        }
     }
 
     fn color(&mut self, c: &mut Cursor, player: &Player) {

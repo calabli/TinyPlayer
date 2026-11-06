@@ -81,6 +81,8 @@ pub struct Settings {
     pub language: String,
     /// Look for a new version at most once a day.
     pub auto_update: bool,
+    /// Hide the window's title bar during playback.
+    pub frameless: bool,
 }
 
 impl Default for Settings {
@@ -114,6 +116,7 @@ impl Default for Settings {
             theme: "dark".into(),
             language: "zh".into(),
             auto_update: true,
+            frameless: false,
         }
     }
 }
@@ -260,6 +263,7 @@ impl Store {
             theme: get("theme").unwrap_or(d.theme),
             language: get("language").unwrap_or(d.language),
             auto_update: flag("auto_update", d.auto_update),
+            frameless: flag("frameless", d.frameless),
         }
     }
 
@@ -298,6 +302,7 @@ impl Store {
             ("theme", s.theme.clone()),
             ("language", s.language.clone()),
             ("auto_update", b(s.auto_update)),
+            ("frameless", b(s.frameless)),
         ] {
             let _ = self.db.execute(
                 "INSERT INTO settings (k, v) VALUES (?1, ?2) ON CONFLICT(k) DO UPDATE SET v = ?2",
@@ -481,6 +486,7 @@ mod tests {
             theme: "light".into(),
             language: "en".into(),
             auto_update: false,
+            frameless: true,
         };
         s.save_settings(&custom);
         assert_eq!(s.load_settings(), custom);

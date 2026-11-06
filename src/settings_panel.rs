@@ -267,6 +267,7 @@ pub fn show(
             ("B".into(), tr("A-B 循环")),
             ("T".into(), tr("窗口置顶")),
             ("I".into(), tr("画中画")),
+            ("H".into(), tr("无边框播放")),
             (format!("{cmd}O"), tr("打开文件")),
             (format!("{cmd}D"), tr("收藏 / 取消收藏")),
             (format!("{cmd}S"), tr("截图到桌面")),

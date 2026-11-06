@@ -44,6 +44,9 @@ const BOOKMARK_COLOR: Color32 = Color32::from_rgb(0xFF, 0x8A, 0x65);
 const HOVER_THUMB_W: f32 = 200.0;
 const PIP_MAX_SIDE: f32 = 400.0;
 const PIP_MARGIN: f32 = 24.0;
+/// A click on the video waits this long in case it's half of a double-click.
+/// Matches egui's double-click window.
+const CLICK_DELAY_SECS: f64 = 0.3;
 /// How often interpolation re-checks the display's refresh rate.
 const REFRESH_CHECK_SECS: f64 = 2.0;
 /// Lets the app settle (and private mode be turned on) before going online.
@@ -100,6 +103,10 @@ pub struct App {
     ab: AbLoop,
     marks: Marks,
     view: View,
+    /// The title bar is currently hidden.
+    frameless: bool,
+    /// When the video was clicked, while waiting to see if a second click follows.
+    pending_click: Option<f64>,
     updater: UpdateChecker,
     /// A newer release, for the settings page and the banner.
     new_release: Option<Release>,
@@ -189,6 +196,8 @@ impl App {
             ab: AbLoop::default(),
             marks: Marks::default(),
             view: View::default(),
+            frameless: false,
+            pending_click: None,
             updater: UpdateChecker::new(),
             new_release: None,
             update_check_done: false,
@@ -309,6 +318,25 @@ impl App {
         }
     }
 
+    /// The title bar goes away in picture-in-picture and, when that's on,
+    /// during playback. It comes back for the library, which needs it, and
+    /// for full screen, which manages the window by itself.
+    fn sync_window_frame(&mut self, ctx: &egui::Context) {
+        let playing = self.player.as_ref().is_some_and(|p| !p.state.idle);
+        let fullscreen = ctx.input(|i| i.viewport().fullscreen.unwrap_or(false));
+        let wanted = self.pip || (self.tracker.settings.frameless && playing && !fullscreen);
+        if wanted != self.frameless {
+            self.frameless = wanted;
+            ctx.send_viewport_cmd(ViewportCommand::Decorations(!wanted));
+        }
+    }
+
+    fn set_frameless(&mut self, ctx: &egui::Context, on: bool) {
+        self.tracker.settings.frameless = on;
+        self.tracker.save_settings();
+        self.show_osd(ctx, if on { tr("无边框播放  开") } else { tr("无边框播放  关") });
+    }
+
     fn apply_window_level(&self, ctx: &egui::Context) {
         let on_top = self.always_on_top || self.pip;
         let level = if on_top { egui::WindowLevel::AlwaysOnTop } else { egui::WindowLevel::Normal };
@@ -339,7 +367,6 @@ impl App {
             let (w, h) = self.player.as_ref().map_or((0, 0), |p| (p.state.width, p.state.height));
             let size = pip_size(w, h);
             ctx.send_viewport_cmd(ViewportCommand::Maximized(false));
-            ctx.send_viewport_cmd(ViewportCommand::Decorations(false));
             ctx.send_viewport_cmd(ViewportCommand::MinInnerSize(PIP_MIN_SIZE.into()));
             ctx.send_viewport_cmd(ViewportCommand::InnerSize(size));
             if let Some(monitor) = ctx.input(|i| i.viewport().monitor_size) {
@@ -347,7 +374,6 @@ impl App {
                 ctx.send_viewport_cmd(ViewportCommand::OuterPosition(corner));
             }
         } else {
-            ctx.send_viewport_cmd(ViewportCommand::Decorations(true));
             ctx.send_viewport_cmd(ViewportCommand::MinInnerSize(NORMAL_MIN_SIZE.into()));
             if let Some(p) = self.pip_restore.take() {
                 ctx.send_viewport_cmd(ViewportCommand::InnerSize(vec2(p.w, p.h)));
@@ -371,6 +397,37 @@ impl App {
             _ => tr("A-B 循环  已清除").to_string(),
         };
         self.show_osd(ctx, text);
+    }
+
+    /// A click on the picture plays or pauses, once it's clear that it isn't
+    /// the start of a double-click.
+    fn handle_video_click(&mut self, ctx: &egui::Context, surface: &egui::Response, stage: Rect, idle: bool) {
+        let now = ctx.input(|i| i.time);
+        if surface.double_clicked() || idle {
+            self.pending_click = None;
+        } else if surface.clicked() {
+            let pos = ctx.input(|i| i.pointer.interact_pos());
+            // These all have their own use for a click: the bars' empty parts,
+            // the sidebar, and a click that just closes an open menu or panel.
+            let on_bar = pos.is_some_and(|p| p.y > stage.bottom() - BAR_H - 8.0 && p.x < stage.right());
+            let on_side = pos.is_some_and(|p| self.side_rect.contains(p));
+            let menu_open = self.speed_menu || self.quick.open;
+            if !self.pip && !on_bar && !on_side && !menu_open {
+                self.pending_click = Some(now);
+            }
+        }
+        let Some(at) = self.pending_click else { return };
+        let left = CLICK_DELAY_SECS - (now - at);
+        if left > 0.0 {
+            ctx.request_repaint_after_secs(left as f32);
+            return;
+        }
+        self.pending_click = None;
+        if let Some(player) = &self.player {
+            let resuming = player.state.paused || player.state.eof;
+            player.toggle_pause();
+            self.show_osd(ctx, if resuming { "PLAY" } else { "PAUSE" });
+        }
     }
 
     fn apply_view(&mut self, ctx: &egui::Context, osd: bool) {
@@ -543,6 +600,7 @@ impl App {
         let mut want_fav = false;
         let (mut want_ab, mut want_on_top, mut want_pip) = (false, false, false);
         let (mut want_bookmark, mut want_marks) = (false, false);
+        let mut want_frameless: Option<bool> = None;
         let mut want_zoom: Option<f64> = None;
         let mut want_view_reset = false;
         let mut want_chapter: Option<bool> = None;
@@ -613,6 +671,7 @@ impl App {
                     ctx.send_viewport_cmd(ViewportCommand::Fullscreen(!fullscreen));
                 }
                 Key::Escape if self.pip => want_pip = true,
+                Key::Escape if self.frameless && !self.quick.open => want_frameless = Some(false),
                 Key::Escape if fullscreen => {
                     ctx.send_viewport_cmd(ViewportCommand::Fullscreen(false));
                 }
@@ -634,6 +693,9 @@ impl App {
                 Key::G if !cmd && !s.idle && !self.pip => want_marks = true,
                 Key::T if !cmd => want_on_top = true,
                 Key::I if !cmd && !s.idle => want_pip = true,
+                Key::H if !cmd && !s.idle && !self.pip => {
+                    want_frameless = Some(!self.tracker.settings.frameless);
+                }
                 Key::Backspace => {
                     player.set_speed(1.0);
                     osd = Some("SPEED  1.0×".into());
@@ -695,6 +757,9 @@ impl App {
         }
         if want_ab {
             self.press_ab(ctx);
+        }
+        if let Some(on) = want_frameless {
+            self.set_frameless(ctx, on);
         }
         if let Some(d) = want_zoom {
             self.view.zoom_by(d);
@@ -817,6 +882,7 @@ impl eframe::App for App {
     fn ui(&mut self, ui: &mut egui::Ui, frame: &mut eframe::Frame) {
         let ctx = ui.ctx().clone();
         self.sync_theme(&ctx);
+        self.sync_window_frame(&ctx);
         self.ensure_gl(&ctx, frame);
         self.handle_input(&ctx);
         self.flush_open(&ctx);
@@ -865,14 +931,15 @@ impl eframe::App for App {
         }
 
         // ---- Video ----
-        // In picture-in-picture there's no title bar, so the video drags the window.
+        // Without a title bar, the video drags the window.
         // A zoomed picture is dragged around instead.
-        let draggable = self.pip || self.view.zoomed();
+        let zoomed = self.view.zoomed() && !self.pip;
+        let draggable = self.frameless || zoomed;
         let sense = if draggable { Sense::click_and_drag() } else { Sense::click() };
         let surface = ui.interact(full, ui.scope_id().with("surface"), sense);
-        if self.pip && surface.drag_started() {
+        if self.frameless && !zoomed && surface.drag_started() {
             ctx.send_viewport_cmd(ViewportCommand::StartDrag);
-        } else if !self.pip && self.view.zoomed() {
+        } else if zoomed {
             if surface.dragged() {
                 let fit = view::fit_size((s.width as f64, s.height as f64), (full.width() as f64, full.height() as f64));
                 let d = surface.drag_delta();
@@ -903,6 +970,7 @@ impl eframe::App for App {
             let fs = ctx.input(|i| i.viewport().fullscreen.unwrap_or(false));
             ctx.send_viewport_cmd(ViewportCommand::Fullscreen(!fs));
         }
+        self.handle_video_click(&ctx, &surface, stage, s.idle);
 
         let hovering_files = ctx.input(|i| !i.raw.hovered_files.is_empty());
 
@@ -962,7 +1030,11 @@ impl eframe::App for App {
                     self.draw_pip_controls(ui, full, alpha);
                 }
             } else if alpha > 0.0 {
-                draw_top_bar(&painter, stage, &s, self.tracker.current_play_count(), alpha);
+                let right_gap = if self.frameless { 44.0 } else { 16.0 };
+                draw_top_bar(&painter, stage, &s, self.tracker.current_play_count(), alpha, right_gap);
+                if self.frameless && close_button(ui, stage, alpha) {
+                    ctx.send_viewport_cmd(ViewportCommand::Close);
+                }
                 if let Some(fav) = self.current_fav {
                     if fav_button(ui, stage, &s.title, fav, alpha) {
                         let ctx = ui.ctx().clone();
@@ -1611,6 +1683,18 @@ fn fav_button(ui: &mut egui::Ui, stage: Rect, title: &str, fav: bool, alpha: f32
 }
 
 /// "‹ 媒体库" at the top-left of the player. Returns true when clicked.
+/// Stands in for the title bar's close button while it's hidden.
+fn close_button(ui: &mut egui::Ui, stage: Rect, alpha: f32) -> bool {
+    let r = Rect::from_center_size(pos2(stage.right() - 22.0, stage.top() + 22.0), vec2(28.0, 28.0));
+    let resp = ui.interact(r, ui.scope_id().with("close_window"), Sense::click()).on_hover_text(tr("关闭窗口"));
+    let c = if resp.hovered() { ACCENT } else { TEXT };
+    icons::draw(ui.painter(), Icon::Close, r.center(), 14.0, c.gamma_multiply(alpha));
+    if resp.hovered() {
+        ui.ctx().set_cursor_icon(CursorIcon::PointingHand);
+    }
+    resp.clicked()
+}
+
 fn back_button(ui: &mut egui::Ui, stage: Rect, alpha: f32) -> bool {
     let r = Rect::from_min_size(pos2(stage.left() + 8.0, stage.top() + 8.0), vec2(74.0, 28.0));
     let resp = ui.interact(r, ui.scope_id().with("back_to_library"), Sense::click());
@@ -1629,7 +1713,7 @@ fn back_button(ui: &mut egui::Ui, stage: Rect, alpha: f32) -> bool {
     resp.clicked()
 }
 
-fn draw_top_bar(p: &egui::Painter, full: Rect, s: &crate::player::State, plays: i64, alpha: f32) {
+fn draw_top_bar(p: &egui::Painter, full: Rect, s: &crate::player::State, plays: i64, alpha: f32, right_gap: f32) {
     let a = |c: Color32| c.gamma_multiply(alpha);
     let band = Rect::from_min_max(full.min, pos2(full.right(), full.top() + 44.0));
     p.rect_filled(band, 0.0, theme::scrim((110.0 * alpha) as u8));
@@ -1651,7 +1735,7 @@ fn draw_top_bar(p: &egui::Painter, full: Rect, s: &crate::player::State, plays: 
         TEXT_2,
     ));
 
-    let mut x = full.right() - 16.0;
+    let mut x = full.right() - right_gap;
     let font = FontId::monospace(10.0);
     for (i, (t, c)) in tags.iter().rev().enumerate() {
         let r = p.text(pos2(x, y), Align2::RIGHT_CENTER, t, font.clone(), a(*c));
