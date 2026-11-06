@@ -12,6 +12,7 @@ mod icons;
 mod keep_awake;
 mod library;
 mod library_ui;
+mod mac_open;
 mod marks;
 mod media_keys;
 mod mpv;
@@ -61,6 +62,8 @@ impl WindowPlace {
 fn main() -> eframe::Result {
     // Files passed on the command line (e.g. from "Open with" / file association).
     let files: Vec<String> = std::env::args().skip(1).filter(|a| !a.starts_with('-')).collect();
+
+    mac_open::install();
 
     // Already running? Hand the files to that window and exit.
     let listener = match single_instance::acquire(&files) {

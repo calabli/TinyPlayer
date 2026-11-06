@@ -1,0 +1,91 @@
+name: Build
+
+on:
+  push:
+    branches: [main]
+    tags: ["v*"]
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+jobs:
+  macos:
+    name: macOS ${{ matrix.arch }}
+    runs-on: ${{ matrix.runner }}
+    strategy:
+      fail-fast: false
+      matrix:
+        include:
+          - { runner: macos-14, arch: arm64 }
+          - { runner: macos-15-intel, arch: x86_64 }
+    steps:
+      - uses: actions/checkout@v4
+      - uses: dtolnay/rust-toolchain@stable
+      - uses: Swatinem/rust-cache@v2
+      - name: Install libmpv and bundling tools
+        run: brew install mpv dylibbundler
+      - name: Unit tests
+        run: cargo test --locked
+      - name: Package
+        run: scripts/package-macos.sh
+      - uses: actions/upload-artifact@v4
+        with:
+          name: TinyPlayer-macos-${{ matrix.arch }}
+          path: dist/*.dmg
+          if-no-files-found: error
+
+  windows:
+    name: Windows x64
+    runs-on: windows-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: dtolnay/rust-toolchain@stable
+      - uses: Swatinem/rust-cache@v2
+      - name: Download libmpv
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: |
+          gh release download --repo shinchiro/mpv-winbuild-cmake --pattern "mpv-dev-x86_64-2*.7z" --output mpv-dev.7z
+          7z e mpv-dev.7z libmpv-2.dll -othird_party\mpv\windows
+      - name: Unit tests
+        run: cargo test --locked
+      - name: Load libmpv and read a real video
+        run: |
+          choco install ffmpeg --no-progress -y
+          ffmpeg -v error -f lavfi -i testsrc2=size=320x180:rate=24:duration=4 -pix_fmt yuv420p sample.mp4
+          $env:TP_PROBE_FILE = "$PWD\sample.mp4"
+          cargo test --locked probe -- --ignored
+      - name: Install Inno Setup
+        run: choco install innosetup --no-progress -y
+      - name: Package
+        run: powershell -ExecutionPolicy Bypass -File scripts\package-windows.ps1
+      - name: Try the installer
+        run: |
+          $setup = (Get-Item dist\TinyPlayer-*-setup.exe).FullName
+          Start-Process $setup -ArgumentList "/VERYSILENT", "/SUPPRESSMSGBOXES", "/NORESTART" -Wait
+          foreach ($file in "TinyPlayer.exe", "libmpv-2.dll") {
+            if (-not (Test-Path "$env:LOCALAPPDATA\Programs\TinyPlayer\$file")) { throw "$file not installed" }
+          }
+      - uses: actions/upload-artifact@v4
+        with:
+          name: TinyPlayer-windows-x64
+          path: |
+            dist/*-setup.exe
+            dist/*.zip
+          if-no-files-found: error
+
+  release:
+    name: Publish release
+    if: startsWith(github.ref, 'refs/tags/v')
+    needs: [macos, windows]
+    runs-on: ubuntu-latest
+    permissions:
+      contents: write
+    steps:
+      - uses: actions/download-artifact@v4
+        with:
+          path: packages
+      - env:
+          GH_TOKEN: ${{ github.token }}
+        run: gh release create "$GITHUB_REF_NAME" packages/*/* --repo "$GITHUB_REPOSITORY" --generate-notes

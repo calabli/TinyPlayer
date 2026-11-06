@@ -1,8 +1,6 @@
 #!/usr/bin/env bash
 # Builds dist/TinyPlayer.app and dist/TinyPlayer-<version>-macos-<arch>.dmg.
 #
-# NOTE: written on Windows and not yet run on a Mac — expect to adjust.
-#
 # Requirements:
 #   brew install mpv dylibbundler
 # Optional environment:
@@ -44,6 +42,15 @@ dylibbundler --overwrite-files --bundle-deps \
     --dest-dir "$APP/Contents/Frameworks/" \
     --install-path @loader_path/
 
+# dylibbundler can leave the same rpath twice, and dyld refuses to load a
+# library like that. Keep one of each.
+for lib in "$APP"/Contents/Frameworks/*.dylib; do
+    otool -l "$lib" | awk '/cmd LC_RPATH/ { getline; getline; print $2 }' | sort | uniq -d |
+        while read -r rpath; do
+            install_name_tool -delete_rpath "$rpath" "$lib" 2>/dev/null
+        done
+done
+
 cat > "$APP/Contents/Info.plist" <<PLIST
 <?xml version="1.0" encoding="UTF-8"?>
 <!DOCTYPE plist PUBLIC "-//Apple//DTD PLIST 1.0//EN" "http://www.apple.com/DTDs/PropertyList-1.0.dtd">
@@ -72,6 +79,18 @@ cat > "$APP/Contents/Info.plist" <<PLIST
                 <string>public.audio</string>
             </array>
         </dict>
+        <!-- macOS has no type for these, so public.movie doesn't cover them. -->
+        <dict>
+            <key>CFBundleTypeName</key><string>Video</string>
+            <key>CFBundleTypeRole</key><string>Viewer</string>
+            <key>LSHandlerRank</key><string>Alternate</string>
+            <key>CFBundleTypeExtensions</key>
+            <array>
+                <string>mkv</string><string>webm</string><string>flv</string>
+                <string>rmvb</string><string>wmv</string><string>ts</string>
+                <string>m2ts</string><string>ogv</string><string>opus</string>
+            </array>
+        </dict>
     </array>
 </dict>
 </plist>
@@ -98,13 +117,42 @@ if [ -n "${SIGN_IDENTITY:-}" ]; then
     codesign --force --timestamp --options runtime --sign "$SIGN_IDENTITY" "$APP"
 else
     # Ad-hoc: runs on this Mac; other Macs need right-click → Open the first time.
-    codesign --force --deep --sign - "$APP"
+    find "$APP/Contents/Frameworks" -name '*.dylib' -exec codesign --force --sign - {} \;
+    codesign --force --sign - "$APP"
 fi
 codesign --verify --deep --strict "$APP"
 
+# A library that won't load only shows up at runtime, as a player that can't
+# play, so check every one here. Homebrew must not be able to fill in for a
+# file the bundle is missing, hence no search paths and no Homebrew in them.
+echo "Checking bundled libraries"
+if otool -L "$APP"/Contents/Frameworks/*.dylib | grep -E '^\s+(/opt/homebrew|/usr/local)'; then
+    echo "bundle still depends on the libraries above"; exit 1
+fi
+CHECK=$(mktemp -d)
+cat > "$CHECK/check.c" <<'C'
+#include <dlfcn.h>
+#include <stdio.h>
+int main(int argc, char **argv) {
+    int failed = 0;
+    for (int i = 1; i < argc; i++)
+        if (!dlopen(argv[i], RTLD_NOW)) { printf("%s\n", dlerror()); failed = 1; }
+    return failed;
+}
+C
+cc "$CHECK/check.c" -o "$CHECK/check"
+"$CHECK/check" "$APP"/Contents/Frameworks/*.dylib
+rm -rf "$CHECK"
+
 echo "Creating $DMG"
 rm -f "$DMG"
-hdiutil create -volname TinyPlayer -srcfolder "$APP" -ov -format UDZO "$DMG"
+# The window that opens with the disk image: drag the app onto Applications.
+STAGE=dist/dmg-stage
+rm -rf "$STAGE"; mkdir -p "$STAGE"
+cp -R "$APP" "$STAGE/"
+ln -s /Applications "$STAGE/Applications"
+hdiutil create -volname TinyPlayer -srcfolder "$STAGE" -ov -format UDZO "$DMG"
+rm -rf "$STAGE"
 
 if [ -n "${SIGN_IDENTITY:-}" ] && [ -n "${NOTARY_PROFILE:-}" ]; then
     echo "Notarizing (this can take a few minutes)"

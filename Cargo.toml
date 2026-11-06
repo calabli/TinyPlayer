@@ -13,6 +13,11 @@ rfd = "0.17.2"
 rusqlite = { version = "0.41.1", features = ["bundled"] }
 souvlaki = { version = "0.9.3", default-features = false }
 
+[target.'cfg(target_os = "macos")'.dependencies]
+# Receives files opened from Finder; both are already in the tree through winit.
+objc2 = "0.6"
+objc2-foundation = { version = "0.3", features = ["NSAppleEventDescriptor", "NSAppleEventManager", "NSNotification", "NSString", "NSURL"] }
+
 [target.'cfg(windows)'.dependencies]
 # Souvlaki needs the window handle to reach the Windows media controls.
 raw-window-handle = "0.6"

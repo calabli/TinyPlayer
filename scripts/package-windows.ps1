@@ -1,4 +1,5 @@
 # Builds a portable Windows release: dist\TinyPlayer-<version>-windows-x64.zip
+# and, when Inno Setup is installed, dist\TinyPlayer-<version>-windows-x64-setup.exe
 # Usage (from anywhere):  powershell -ExecutionPolicy Bypass -File scripts\package-windows.ps1
 param([string]$Out = "dist")
 
@@ -29,6 +30,15 @@ Copy-Item THIRD_PARTY.md $dir
 $zip = Join-Path $Out "$name.zip"
 if (Test-Path $zip) { Remove-Item -Force $zip }
 Compress-Archive -Path (Join-Path $dir "*") -DestinationPath $zip
+
+$iscc = "${env:ProgramFiles(x86)}\Inno Setup 6\ISCC.exe"
+if (Test-Path $iscc) {
+    Write-Host "Building installer..."
+    & $iscc "/DAppVersion=$version" "/DSourceDir=$((Resolve-Path $dir).Path)" scripts\installer-windows.iss
+    if ($LASTEXITCODE -ne 0) { throw "Inno Setup failed" }
+} else {
+    Write-Host "Inno Setup not found, skipping the installer"
+}
 
 $exeMB = [math]::Round((Get-Item (Join-Path $dir "TinyPlayer.exe")).Length / 1MB, 1)
 $dllMB = [math]::Round((Get-Item (Join-Path $dir "libmpv-2.dll")).Length / 1MB, 1)

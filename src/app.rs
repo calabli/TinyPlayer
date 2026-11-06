@@ -118,6 +118,7 @@ impl App {
             }
             Err(e) => (None, Some(e)),
         };
+        crate::mac_open::set_wake(cc.egui_ctx.clone());
         // Files handed over by later launches (single instance).
         let instance_rx = listener.map(|l| {
             let (tx, rx) = std::sync::mpsc::channel();
@@ -1046,6 +1047,11 @@ impl eframe::App for App {
                 }
                 _ => {}
             }
+        }
+        let opened = crate::mac_open::take();
+        if !opened.is_empty() {
+            self.pending_open.extend(opened);
+            ctx.send_viewport_cmd(ViewportCommand::Focus);
         }
         if let Some(rx) = &self.instance_rx {
             while let Ok(files) = rx.try_recv() {

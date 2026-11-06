@@ -6,8 +6,12 @@
 
 | 平台 | 命令 | 产物 |
 |---|---|---|
-| Windows | `powershell -ExecutionPolicy Bypass -File scripts\package-windows.ps1` | `dist\TinyPlayer-<版本>-windows-x64.zip`（便携版，解压即用，约 48MB） |
-| macOS | `scripts/package-macos.sh`（需要 `brew install mpv dylibbundler`） | `dist/TinyPlayer.app` 和 `.dmg`；设置 `SIGN_IDENTITY`、`NOTARY_PROFILE` 可签名公证。**此脚本尚未在 Mac 上实际运行过** |
+| Windows | `powershell -ExecutionPolicy Bypass -File scripts\package-windows.ps1` | `dist\TinyPlayer-<版本>-windows-x64.zip`（便携版，解压即用，约 48MB）；装了 [Inno Setup](https://jrsoftware.org/isinfo.php) 时还会生成 `-setup.exe` 安装程序（无需管理员权限，加入“打开方式”，不抢占默认播放器） |
+| macOS | `scripts/package-macos.sh`（需要 `brew install mpv dylibbundler` 和 Xcode 命令行工具） | `dist/TinyPlayer.app` 和 `dist/TinyPlayer-<版本>-macos-<架构>.dmg`（约 32MB，打开后把 TinyPlayer 拖到“应用程序”即可安装）；设置 `SIGN_IDENTITY`、`NOTARY_PROFILE` 可签名公证 |
+
+macOS 脚本默认只做临时签名，在本机可直接运行。发给别人的话，对方首次打开要右键 →“打开”，或用 Developer ID 签名并公证后再分发。安装包只支持打包机器的架构。脚本最后会逐个加载包内的库，有库加载失败或仍依赖 Homebrew 时直接报错。
+
+推送到 `main` 时，GitHub Actions 会自动编译 Windows x64 和 macOS（Apple 芯片、Intel）安装包，可在 Actions 页面的构建记录里下载。推送 `v*` 标签时还会发布到 Releases。安装包都没有付费签名，首次打开时 Windows SmartScreen 或 macOS 可能会拦截。
 
 分发前请阅读 [THIRD_PARTY.md](THIRD_PARTY.md) 中关于 libmpv 许可（GPL / LGPL）的说明。
 
@@ -73,6 +77,7 @@ libmpv 体积较大，没有提交到 git。
 
 - **记住窗口**：退出时保存窗口位置、大小和是否最大化，下次启动恢复（全屏状态不保存）
 - **单实例**：TinyPlayer 已在运行时，再打开视频（双击、拖到 exe 上、命令行）会交给已有窗口播放并把它切到前台，不会再开一个窗口。实现方式是本机回环端口通信，端口由数据目录推算，所以设置了不同 `TINYPLAYER_DATA_DIR` 的实例（测试、便携版）互不干扰
+- **打开方式**（macOS）：可以从访达双击或用“打开方式”选择 TinyPlayer，TinyPlayer 已在运行时交给已有窗口
 - **图标**：`python scripts/make-icon.py` 只用标准库生成 `assets/` 下的图标；Windows 构建时嵌入 exe，窗口左上角也使用它；macOS 打包脚本会转成 `.icns`
 - **媒体键**：键盘媒体键、macOS 控制中心、Windows 音量浮层可以播放、暂停、切换上一个/下一个，并显示当前标题和进度
 - **阻止休眠**：播放视频时屏幕不熄灭，只播音频时系统不休眠但屏幕可以熄灭；暂停或播完后恢复
@@ -192,6 +197,7 @@ src/
   settings_panel.rs  完整设置窗口（播放 / 画面 / 字幕 / 播放记录 / 快捷键）
   quick_panel.rs     播放时的快捷设置面板（字幕 / 声音 / 画面 / 色彩）
   single_instance.rs 单实例：把后续打开的文件转交给已运行的窗口
+  mac_open.rs 接收 macOS 访达打开文件的事件
   mpv.rs      libmpv 运行时加载的 FFI 封装 + OpenGL 渲染上下文
   video.rs    mpv 渲染目标（FBO → egui 纹理）
   icons.rs    矢量图标（不依赖图标字体或图片）
@@ -212,4 +218,5 @@ src/
 - [x] 文件夹视图（面包屑）、收藏夹、最常播放
 - [x] 设置页：播放、画面（硬解、画面比例）、字幕（自动加载、大小、位置、语言）、播放记录、快捷键
 - [x] Windows 便携版打包
-- [ ] macOS 打包：脚本已写好（.app、依赖打包、签名、公证、dmg），待在 Mac 上验证
+- [x] macOS 打包：.app、依赖打包、临时签名、dmg 已在 Apple 芯片的 Mac 上验证
+- [ ] macOS 公证：脚本已写好，需要 Developer ID 证书

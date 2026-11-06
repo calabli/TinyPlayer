@@ -156,14 +156,22 @@ fn open_library() -> Result<Library, String> {
         }
         candidates.push(name.into());
     }
+    // A file that exists but won't load says far more than the later names
+    // that aren't there, so that error is the one to report.
+    let mut first_err: Option<String> = None;
     let mut last_err = String::new();
     for path in candidates {
         match unsafe { Library::new(&path) } {
             Ok(lib) => return Ok(lib),
-            Err(e) => last_err = format!("{}: {e}", path.display()),
+            Err(e) => {
+                last_err = format!("{}: {e}", path.display());
+                if path.exists() && first_err.is_none() {
+                    first_err = Some(last_err.clone());
+                }
+            }
         }
     }
-    Err(format!("couldn't load libmpv ({last_err})"))
+    Err(format!("couldn't load libmpv ({})", first_err.unwrap_or(last_err)))
 }
 
 // ---- Public API ----------------------------------------------------------

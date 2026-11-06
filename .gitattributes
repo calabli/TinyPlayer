@@ -4,3 +4,6 @@
 
 # PowerShell scripts are run on Windows.
 *.ps1 text eol=crlf
+
+# Inno Setup scripts are compiled on Windows.
+*.iss text eol=crlf
