@@ -14,6 +14,7 @@ TinyPlayer 使用了以下开源组件：
 | [rfd](https://github.com/PolyMeilex/rfd) | 文件选择对话框 | MIT |
 | [libloading](https://github.com/nagisa/rust_libloading) | 运行时加载 libmpv | ISC |
 | [souvlaki](https://github.com/Sinono3/souvlaki) | 系统媒体键 | MIT |
+| [Inno Setup](https://jrsoftware.org/isinfo.php) | Windows 安装程序（`scripts/ChineseSimplified.isl` 来自其 6.7.1 版，由 Kira 维护的社区译文） | Inno Setup 许可 |
 
 ## 关于 libmpv 的许可
 

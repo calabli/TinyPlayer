@@ -17,7 +17,7 @@ jobs:
       fail-fast: false
       matrix:
         include:
-          - { runner: macos-14, arch: arm64 }
+          - { runner: macos-15, arch: arm64 }
           - { runner: macos-15-intel, arch: x86_64 }
     steps:
       - uses: actions/checkout@v4
@@ -56,10 +56,11 @@ jobs:
           ffmpeg -v error -f lavfi -i testsrc2=size=320x180:rate=24:duration=4 -pix_fmt yuv420p sample.mp4
           $env:TP_PROBE_FILE = "$PWD\sample.mp4"
           cargo test --locked probe -- --ignored
+      # scripts/ChineseSimplified.isl comes from this version; update them together.
       - name: Install Inno Setup
-        run: choco install innosetup --no-progress -y
+        run: choco install innosetup --version=6.7.1 --no-progress -y
       - name: Package
-        run: powershell -ExecutionPolicy Bypass -File scripts\package-windows.ps1
+        run: powershell -ExecutionPolicy Bypass -File scripts\package-windows.ps1 -RequireInstaller
       - name: Try the installer
         run: |
           $setup = (Get-Item dist\TinyPlayer-*-setup.exe).FullName

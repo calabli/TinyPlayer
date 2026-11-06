@@ -1,7 +1,11 @@
 # Builds a portable Windows release: dist\TinyPlayer-<version>-windows-x64.zip
 # and, when Inno Setup is installed, dist\TinyPlayer-<version>-windows-x64-setup.exe
 # Usage (from anywhere):  powershell -ExecutionPolicy Bypass -File scripts\package-windows.ps1
-param([string]$Out = "dist")
+param(
+    [string]$Out = "dist",
+    # Fail instead of skipping when Inno Setup is missing.
+    [switch]$RequireInstaller
+)
 
 $ErrorActionPreference = "Stop"
 $root = Split-Path -Parent $PSScriptRoot
@@ -31,11 +35,25 @@ $zip = Join-Path $Out "$name.zip"
 if (Test-Path $zip) { Remove-Item -Force $zip }
 Compress-Archive -Path (Join-Path $dir "*") -DestinationPath $zip
 
-$iscc = "${env:ProgramFiles(x86)}\Inno Setup 6\ISCC.exe"
-if (Test-Path $iscc) {
-    Write-Host "Building installer..."
+function Find-InnoCompiler {
+    $onPath = Get-Command iscc.exe -ErrorAction SilentlyContinue
+    if ($onPath) { return $onPath.Source }
+    foreach ($base in ${env:ProgramFiles(x86)}, $env:ProgramFiles, (Join-Path $env:LOCALAPPDATA "Programs")) {
+        if (-not $base) { continue }
+        $found = Get-ChildItem -Path (Join-Path $base "Inno Setup*\ISCC.exe") -ErrorAction SilentlyContinue |
+            Select-Object -First 1
+        if ($found) { return $found.FullName }
+    }
+    return $null
+}
+
+$iscc = Find-InnoCompiler
+if ($iscc) {
+    Write-Host "Building installer with $iscc"
     & $iscc "/DAppVersion=$version" "/DSourceDir=$((Resolve-Path $dir).Path)" scripts\installer-windows.iss
     if ($LASTEXITCODE -ne 0) { throw "Inno Setup failed" }
+} elseif ($RequireInstaller) {
+    throw "Inno Setup not found"
 } else {
     Write-Host "Inno Setup not found, skipping the installer"
 }
