@@ -222,3 +222,9 @@ src/
 - [x] Windows 便携版打包
 - [x] macOS 打包：.app、依赖打包、临时签名、dmg 已在 Apple 芯片的 Mac 上验证
 - [ ] macOS 公证：脚本已写好，需要 Developer ID 证书
+
+## 许可证
+
+Copyright (C) 2026 calabli
+
+TinyPlayer 以 [GNU 通用公共许可证 3.0 或更高版本](LICENSE)（GPL-3.0-or-later）发布，不提供任何担保。第三方组件的许可见 [THIRD_PARTY.md](THIRD_PARTY.md)。

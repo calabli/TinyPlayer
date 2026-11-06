@@ -30,6 +30,7 @@ Copy-Item "target\release\tinyplayer.exe" (Join-Path $dir "TinyPlayer.exe")
 Copy-Item $dll $dir
 Copy-Item README.md $dir
 Copy-Item THIRD_PARTY.md $dir
+Copy-Item LICENSE $dir
 
 $zip = Join-Path $Out "$name.zip"
 if (Test-Path $zip) { Remove-Item -Force $zip }

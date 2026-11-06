@@ -3,6 +3,8 @@ name = "tinyplayer"
 version = "0.1.0"
 edition = "2024"
 description = "A fast, small, cross-platform video player built on libmpv"
+license = "GPL-3.0-or-later"
+repository = "https://github.com/calabli/TinyPlayer"
 
 [dependencies]
 eframe = { version = "0.37.0", default-features = false, features = ["glow", "default_fonts"] }
