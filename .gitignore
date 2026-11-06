@@ -3,3 +3,6 @@
 /third_party/mpv/windows/*.dll
 /third_party/mpv/macos/*.dylib
 /dist
+
+# Local sandbox/ACL diagnostic output
+/.acl-recovery
