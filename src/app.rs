@@ -10,6 +10,7 @@ use eframe::glow;
 
 use crate::ab_loop::AbLoop;
 use crate::crop_detect::CropDetect;
+use crate::float_window;
 use crate::history::Entry;
 use crate::hover_thumbs::HoverThumbs;
 use crate::icons::{self, Icon};
@@ -44,6 +45,9 @@ const BOOKMARK_COLOR: Color32 = Color32::from_rgb(0xFF, 0x8A, 0x65);
 const HOVER_THUMB_W: f32 = 200.0;
 const PIP_MAX_SIDE: f32 = 400.0;
 const PIP_MARGIN: f32 = 24.0;
+/// Grab widths along the floating window's edges and in its corners.
+const PIP_GRIP_EDGE: f32 = 6.0;
+const PIP_GRIP_CORNER: f32 = 14.0;
 /// A click on the video waits this long in case it's half of a double-click.
 /// Matches egui's double-click window.
 const CLICK_DELAY_SECS: f64 = 0.3;
@@ -120,6 +124,9 @@ pub struct App {
     pip: bool,
     /// Where the window goes back to when leaving picture-in-picture.
     pip_restore: Option<crate::WindowPlace>,
+    /// Longest side of the floating window, kept when it's reopened.
+    pip_side: f32,
+    pip_resize: Option<float_window::Resize>,
     hover_thumbs: HoverThumbs,
     keep_awake: KeepAwake,
     media_keys: Option<MediaKeys>,
@@ -208,6 +215,8 @@ impl App {
             always_on_top: false,
             pip: false,
             pip_restore: None,
+            pip_side: PIP_MAX_SIDE,
+            pip_resize: None,
             hover_thumbs,
             keep_awake: KeepAwake::new(),
             media_keys,
@@ -470,7 +479,9 @@ impl App {
             return;
         }
         self.pip = !self.pip;
+        self.pip_resize = None;
         self.apply_window_level(ctx);
+        float_window::follow_spaces(self.pip);
         if self.pip {
             self.pip_restore = self.window_place;
             self.sidebar_open = false;
@@ -478,11 +489,12 @@ impl App {
             self.speed_menu = false;
             self.quick.close();
             let (w, h) = self.player.as_ref().map_or((0, 0), |p| (p.state.width, p.state.height));
-            let size = pip_size(w, h);
+            let monitor = ctx.input(|i| i.viewport().monitor_size);
+            let size = monitor.map_or(pip_size(w, h, self.pip_side), |m| pip_fit(pip_size(w, h, self.pip_side), m));
             ctx.send_viewport_cmd(ViewportCommand::Maximized(false));
             ctx.send_viewport_cmd(ViewportCommand::MinInnerSize(PIP_MIN_SIZE.into()));
             ctx.send_viewport_cmd(ViewportCommand::InnerSize(size));
-            if let Some(monitor) = ctx.input(|i| i.viewport().monitor_size) {
+            if let Some(monitor) = monitor {
                 let corner = (monitor - size - vec2(PIP_MARGIN, PIP_MARGIN)).to_pos2();
                 ctx.send_viewport_cmd(ViewportCommand::OuterPosition(corner));
             }
@@ -492,6 +504,41 @@ impl App {
                 ctx.send_viewport_cmd(ViewportCommand::InnerSize(vec2(p.w, p.h)));
                 ctx.send_viewport_cmd(ViewportCommand::OuterPosition(pos2(p.x, p.y)));
                 ctx.send_viewport_cmd(ViewportCommand::Maximized(p.maximized));
+            }
+        }
+    }
+
+    /// Edge and corner grips of the floating window. Called after the video
+    /// surface so they take the press, and before the buttons so those win.
+    fn pip_resize_grips(&mut self, ui: &mut egui::Ui, full: Rect, aspect: f32) {
+        let ctx = ui.ctx().clone();
+        let window = ctx.input(|i| i.viewport().inner_rect);
+        for grip in float_window::Grip::ALL {
+            let rect = grip.rect(full, PIP_GRIP_EDGE, PIP_GRIP_CORNER);
+            let id = ui.scope_id().with(("pip_grip", grip.x, grip.y));
+            let resp = ui.interact(rect, id, Sense::drag());
+            if resp.hovered() {
+                ctx.set_cursor_icon(grip.cursor());
+            }
+            if resp.drag_started() {
+                self.pip_resize = window.and_then(|w| float_window::Resize::begin(grip, w));
+            }
+        }
+
+        let Some(resize) = self.pip_resize else { return };
+        if !ctx.input(|i| i.pointer.primary_down()) {
+            self.pip_resize = None;
+            return;
+        }
+        ctx.set_cursor_icon(resize.grip().cursor());
+        ctx.request_repaint();
+        let screen = ctx.input(|i| i.viewport().monitor_size).unwrap_or(vec2(f32::MAX, f32::MAX));
+        let target = resize.target(ctx.pixels_per_point(), aspect, PIP_MIN_SIZE.into(), screen);
+        if let (Some(target), Some(window)) = (target, window) {
+            if target != window {
+                self.pip_side = target.width().max(target.height());
+                ctx.send_viewport_cmd(ViewportCommand::InnerSize(target.size()));
+                ctx.send_viewport_cmd(ViewportCommand::OuterPosition(target.min));
             }
         }
     }
@@ -1076,6 +1123,10 @@ impl eframe::App for App {
                     Color32::WHITE,
                 );
             }
+        }
+        if self.pip && !s.idle {
+            let aspect = if s.width > 0 && s.height > 0 { s.width as f32 / s.height as f32 } else { 0.0 };
+            self.pip_resize_grips(ui, full, aspect);
         }
         if self.pip && (s.idle || surface.double_clicked()) {
             self.toggle_pip(&ctx);
@@ -1771,15 +1822,21 @@ impl App {
 }
 
 /// White dot with an accent ring, as on the seek and volume sliders.
-/// Picture-in-picture window size: fits the video, longest side `PIP_MAX_SIDE`.
-fn pip_size(width: i64, height: i64) -> egui::Vec2 {
+/// Picture-in-picture window size: fits the video, longest side `side`.
+fn pip_size(width: i64, height: i64, side: f32) -> egui::Vec2 {
     let aspect = if width > 0 && height > 0 { width as f32 / height as f32 } else { 16.0 / 9.0 };
     let size = if aspect >= 1.0 {
-        vec2(PIP_MAX_SIDE, PIP_MAX_SIDE / aspect)
+        vec2(side, side / aspect)
     } else {
-        vec2(PIP_MAX_SIDE * aspect, PIP_MAX_SIDE)
+        vec2(side * aspect, side)
     };
     size.max(PIP_MIN_SIZE.into()).round()
+}
+
+/// Shrinks `size` to leave `PIP_MARGIN` around it on the screen.
+fn pip_fit(size: egui::Vec2, monitor: egui::Vec2) -> egui::Vec2 {
+    let room = monitor - vec2(PIP_MARGIN, PIP_MARGIN) * 2.0;
+    (size * (room.x / size.x).min(room.y / size.y).min(1.0)).round()
 }
 
 fn knob(p: &egui::Painter, c: egui::Pos2, r: f32, alpha: f32) {
@@ -2335,13 +2392,20 @@ mod tests {
 
     #[test]
     fn pip_size_keeps_the_video_shape() {
-        assert_eq!(pip_size(1920, 1080), vec2(400.0, 225.0));
-        assert_eq!(pip_size(1080, 1920), vec2(225.0, 400.0));
+        assert_eq!(pip_size(1920, 1080, PIP_MAX_SIDE), vec2(400.0, 225.0));
+        assert_eq!(pip_size(1080, 1920, PIP_MAX_SIDE), vec2(225.0, 400.0));
+    }
+
+    #[test]
+    fn a_big_floating_window_reopens_inside_the_screen() {
+        let monitor = vec2(1800.0, 1169.0);
+        assert_eq!(pip_fit(vec2(400.0, 225.0), monitor), vec2(400.0, 225.0));
+        assert_eq!(pip_fit(vec2(1800.0, 1013.0), monitor), vec2(1752.0, 986.0));
     }
 
     #[test]
     fn pip_size_has_a_default_and_a_floor() {
-        assert_eq!(pip_size(0, 0), vec2(400.0, 225.0));
-        assert_eq!(pip_size(4000, 100), vec2(400.0, 120.0));
+        assert_eq!(pip_size(0, 0, PIP_MAX_SIDE), vec2(400.0, 225.0));
+        assert_eq!(pip_size(4000, 100, PIP_MAX_SIDE), vec2(400.0, 120.0));
     }
 }

@@ -4,6 +4,7 @@ mod ab_loop;
 mod app;
 mod audio_fx;
 mod crop_detect;
+mod float_window;
 mod history;
 mod hover_thumbs;
 mod i18n;
