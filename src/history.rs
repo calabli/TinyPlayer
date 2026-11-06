@@ -81,6 +81,8 @@ pub struct Settings {
     pub language: String,
     /// Look for a new version at most once a day.
     pub auto_update: bool,
+    /// Fetch a found update in the background, ready to install.
+    pub auto_download: bool,
     /// Hide the window's title bar during playback.
     pub frameless: bool,
 }
@@ -116,6 +118,7 @@ impl Default for Settings {
             theme: "dark".into(),
             language: "zh".into(),
             auto_update: true,
+            auto_download: true,
             frameless: false,
         }
     }
@@ -263,6 +266,7 @@ impl Store {
             theme: get("theme").unwrap_or(d.theme),
             language: get("language").unwrap_or(d.language),
             auto_update: flag("auto_update", d.auto_update),
+            auto_download: flag("auto_download", d.auto_download),
             frameless: flag("frameless", d.frameless),
         }
     }
@@ -302,6 +306,7 @@ impl Store {
             ("theme", s.theme.clone()),
             ("language", s.language.clone()),
             ("auto_update", b(s.auto_update)),
+            ("auto_download", b(s.auto_download)),
             ("frameless", b(s.frameless)),
         ] {
             let _ = self.db.execute(
@@ -486,6 +491,7 @@ mod tests {
             theme: "light".into(),
             language: "en".into(),
             auto_update: false,
+            auto_download: false,
             frameless: true,
         };
         s.save_settings(&custom);

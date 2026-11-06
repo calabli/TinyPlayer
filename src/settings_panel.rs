@@ -228,9 +228,17 @@ pub fn show(
         y += ROW_H;
 
         let r = row(y);
-        label(r, tr("自动检查更新"), tr("每天最多访问一次 GitHub，只提示，不会自动下载"), true);
+        label(r, tr("自动检查更新"), tr("每天最多访问一次 GitHub，不发送使用数据"), true);
         if toggle(ui, &p, r, "auto_update", settings.auto_update, true) {
             settings.auto_update = !settings.auto_update;
+            out.settings_changed = true;
+        }
+        y += ROW_H;
+
+        let r = row(y);
+        label(r, tr("自动下载更新"), tr("在后台下载，下载完成后询问是否重启，也可以在退出时安装"), settings.auto_update);
+        if toggle(ui, &p, r, "auto_download", settings.auto_download, settings.auto_update) {
+            settings.auto_download = !settings.auto_download;
             out.settings_changed = true;
         }
         y += ROW_H;

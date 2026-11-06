@@ -14,6 +14,7 @@ TinyPlayer 使用了以下开源组件：
 | [rfd](https://github.com/PolyMeilex/rfd) | 文件选择对话框 | MIT |
 | [libloading](https://github.com/nagisa/rust_libloading) | 运行时加载 libmpv | ISC |
 | [souvlaki](https://github.com/Sinono3/souvlaki) | 系统媒体键 | MIT |
+| [sha2](https://github.com/RustCrypto/hashes) | 校验更新文件 | MIT 或 Apache-2.0 |
 | [Inno Setup](https://jrsoftware.org/isinfo.php) | Windows 安装程序（`scripts/ChineseSimplified.isl` 来自其 6.7.1 版，由 Kira 维护的社区译文） | Inno Setup 许可 |
 
 egui 自带的界面字体随程序内嵌：Ubuntu-Light（Ubuntu Font Licence 1.0）、Hack（MIT 和 Bitstream Vera 许可）、Noto Emoji（SIL OFL 1.1）、emoji-icon-font 及其子集 egui-icons（MIT）。其余 Rust 依赖的许可证均为 MIT、Apache-2.0、BSD、ISC 或 Zlib 这类宽松许可，完整列表可用 `cargo metadata` 查看。

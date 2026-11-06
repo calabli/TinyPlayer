@@ -24,7 +24,7 @@ use crate::player::Player;
 use crate::quick_panel::{Crop, QuickPanel};
 use crate::playlist::{self, LoopMode, Playlist};
 use crate::session::{Resume, Tracker};
-use crate::update::{self, Release, UpdateChecker};
+use crate::update::{self, Dialog, PollResult, Updater};
 use crate::settings_panel::{self, PanelState};
 use crate::theme::{self, ACCENT, TEXT, TEXT_2, TEXT_3};
 use crate::video::VideoTarget;
@@ -107,9 +107,9 @@ pub struct App {
     frameless: bool,
     /// When the video was clicked, while waiting to see if a second click follows.
     pending_click: Option<f64>,
-    updater: UpdateChecker,
-    /// A newer release, for the settings page and the banner.
-    new_release: Option<Release>,
+    updater: Updater,
+    /// Show the update dialog at the next quiet moment.
+    update_dialog: bool,
     /// The check that runs by itself at startup has been considered.
     update_check_done: bool,
     /// The viewer asked for this check, so a skipped version still shows.
@@ -148,6 +148,7 @@ impl App {
         let system = cc.egui_ctx.input(|i| i.raw.system_theme);
         let light = theme::wants_light(&tracker.settings.theme, system);
         theme::apply(&cc.egui_ctx, light);
+        update::clean_up();
         let (fill_tx, fill_rx) = std::sync::mpsc::channel();
         // Pick up new/changed files in watched folders on every start.
         let scanner = Scanner::spawn(cc.egui_ctx.clone());
@@ -198,8 +199,8 @@ impl App {
             view: View::default(),
             frameless: false,
             pending_click: None,
-            updater: UpdateChecker::new(),
-            new_release: None,
+            updater: Updater::new(),
+            update_dialog: false,
             update_check_done: false,
             update_check_manual: false,
             crop_detect: CropDetect::new(),
@@ -269,52 +270,164 @@ impl App {
         let last = self.tracker.store.as_ref().and_then(|s| s.get_value("update_checked_at"));
         let last: i64 = last.and_then(|v| v.parse().ok()).unwrap_or(0);
         if crate::history::now_secs() - last >= update::CHECK_EVERY_SECS {
-            self.updater.start(ctx);
+            self.updater.check(ctx);
         }
     }
 
-    fn on_update_result(&mut self, result: Option<Release>) {
-        let manual = std::mem::take(&mut self.update_check_manual);
-        let Some(release) = result else { return };
-        let Some(store) = &self.tracker.store else { return };
-        store.set_value("update_checked_at", &crate::history::now_secs().to_string());
-        let skipped = store.get_value("update_skipped").as_deref() == Some(release.version.as_str());
-        let newer = update::is_newer(&release.version, update::CURRENT_VERSION);
-        self.new_release = (newer && (manual || !skipped)).then_some(release);
+    fn on_update_event(&mut self, ctx: &egui::Context, event: PollResult) {
+        match event {
+            PollResult::CheckFinished(found) => {
+                let manual = std::mem::take(&mut self.update_check_manual);
+                let Some(store) = &self.tracker.store else { return };
+                store.set_value("update_checked_at", &crate::history::now_secs().to_string());
+                let Some(version) = found else { return };
+                let skipped = store.get_value("update_skipped").as_deref() == Some(version.as_str());
+                if manual {
+                    self.update_dialog = true;
+                } else if skipped {
+                    self.updater.dismiss();
+                } else if self.tracker.settings.auto_download && update::can_update() {
+                    self.updater.start_download(ctx);
+                } else {
+                    self.update_dialog = true;
+                }
+            }
+            PollResult::Ready => {
+                // Applies even if the viewer never answers the dialog.
+                self.updater.install_on_exit = true;
+                self.update_dialog = true;
+            }
+            // A background download stays quiet: the next check tries again.
+            PollResult::Failed => {}
+        }
     }
 
-    /// The offer of a new version, in the corner of the library.
-    fn draw_update_banner(&mut self, ui: &mut egui::Ui, stage: Rect) {
-        let Some(release) = self.new_release.clone() else { return };
-        let size = vec2(340.0, 46.0);
-        let rect = Rect::from_min_size(stage.right_bottom() - size - vec2(16.0, 16.0), size);
-        let p = ui.painter();
-        let _blocker = ui.interact(rect, ui.scope_id().with("update_banner"), Sense::click());
-        p.rect_filled(rect, 8.0, theme::panel());
-        p.rect_stroke(rect, 8.0, Stroke::new(1.0, theme::line()), StrokeKind::Inside);
-        let cy = rect.center().y;
-        let text = tf("发现新版本 {}", &[&release.version]);
-        p.text(pos2(rect.left() + 16.0, cy), Align2::LEFT_CENTER, text, FontId::proportional(13.0), theme::text());
-        let mut right = rect.right() - 14.0;
-        let mut link = |ui: &mut egui::Ui, id: &str, label: &str, color: Color32| {
-            let g = ui.painter().layout_no_wrap(label.to_string(), FontId::proportional(13.0), color);
-            let r = Rect::from_min_size(pos2(right - g.size().x, cy - g.size().y / 2.0), g.size());
-            let resp = ui.interact(r.expand(6.0), ui.scope_id().with(id), Sense::click());
-            ui.painter().galley(r.min, g, color);
-            if resp.hovered() {
-                ui.ctx().set_cursor_icon(CursorIcon::PointingHand);
-            }
-            right = r.left() - 16.0;
-            resp.clicked()
+    fn restart_to_update(&mut self, ctx: &egui::Context) {
+        let Some(prepared) = self.updater.take_prepared() else { return };
+        if update::install(&prepared, true) {
+            ctx.send_viewport_cmd(ViewportCommand::Close);
+        } else {
+            self.show_osd(ctx, tr("无法安装更新"));
+        }
+    }
+
+    /// The usual update steps, in a dialog over everything else.
+    fn draw_update_dialog(&mut self, ui: &mut egui::Ui, full: Rect) {
+        let ctx = ui.ctx().clone();
+        let Some(dialog) = self.updater.dialog() else {
+            self.update_dialog = false;
+            return;
         };
-        if link(ui, "update_view", tr("查看"), ACCENT) {
-            update::open_page(&release.url);
-        }
-        if link(ui, "update_skip", tr("跳过此版本"), theme::text_2()) {
-            if let Some(store) = &self.tracker.store {
-                store.set_value("update_skipped", &release.version);
+        let (title, body, buttons): (String, String, Vec<(&str, UpdateAction)>) = match dialog {
+            Dialog::Available { version, notes, can_update } => {
+                let title = tf("发现新版本 {}", &[&version]);
+                let current = tf("当前版本 {}", &[&update::CURRENT_VERSION]);
+                let body = if notes.is_empty() { current } else { format!("{current}\n\n{notes}") };
+                if can_update {
+                    let buttons = vec![
+                        (tr("立即更新"), UpdateAction::Download),
+                        (tr("稍后提醒"), UpdateAction::Later),
+                        (tr("跳过此版本"), UpdateAction::Skip(version.to_string())),
+                    ];
+                    (title, body, buttons)
+                } else {
+                    let body = format!("{body}\n\n{}", tr("这个安装方式不支持应用内更新，请下载新版安装包"));
+                    (title, body, vec![(tr("知道了"), UpdateAction::Later)])
+                }
             }
-            self.new_release = None;
+            Dialog::Downloading { version, done, total } => {
+                let mb = |v: u64| v as f64 / 1_048_576.0;
+                let body = if total > 0 { format!("{:.1} / {:.1} MB", mb(done), mb(total)) } else { format!("{:.1} MB", mb(done)) };
+                (tf("正在下载 {}", &[&version]), body, vec![(tr("取消"), UpdateAction::Cancel)])
+            }
+            Dialog::Ready { version } => {
+                let buttons = vec![(tr("立即重启"), UpdateAction::Restart), (tr("稍后"), UpdateAction::Close)];
+                (tf("新版本 {} 已准备好", &[&version]), tr("重启后完成更新。选择稍后，会在退出时安装。").to_string(), buttons)
+            }
+            Dialog::Failed { reason } => {
+                let buttons = vec![(tr("重试"), UpdateAction::Download), (tr("知道了"), UpdateAction::Later)];
+                (tr("更新失败").to_string(), tr(reason).to_string(), buttons)
+            }
+        };
+        let progress = match self.updater.dialog() {
+            Some(Dialog::Downloading { done, total, .. }) if total > 0 => Some((done as f32 / total as f32).clamp(0.0, 1.0)),
+            Some(Dialog::Downloading { .. }) => Some(0.0),
+            _ => None,
+        };
+
+        let p = ui.painter().clone();
+        let w = 420.0_f32.min(full.width() - 32.0);
+        let wrap = w - 48.0;
+        let title_g = p.layout(title, FontId::proportional(16.0), theme::text(), wrap);
+        let body_g = p.layout(body, FontId::proportional(13.0), theme::text_2(), wrap);
+        let extra = if progress.is_some() { 22.0 } else { 0.0 };
+        let h = 24.0 + title_g.size().y + 12.0 + body_g.size().y + extra + 20.0 + 32.0 + 20.0;
+        let panel = Rect::from_center_size(full.center(), vec2(w, h.min(full.height() - 32.0)));
+        p.rect_filled(full, 0.0, theme::scrim(150));
+        let _blocker = ui.interact(full, ui.scope_id().with("update_blocker"), Sense::click_and_drag());
+        p.rect_filled(panel, 10.0, theme::panel());
+        p.rect_stroke(panel, 10.0, Stroke::new(0.5, theme::line()), StrokeKind::Inside);
+        let mut y = panel.top() + 24.0;
+        let left = panel.left() + 24.0;
+        let title_h = title_g.size().y;
+        p.galley(pos2(left, y), title_g, theme::text());
+        y += title_h + 12.0;
+        let body_h = body_g.size().y;
+        p.galley(pos2(left, y), body_g, theme::text_2());
+        y += body_h;
+        if let Some(f) = progress {
+            y += 12.0;
+            let track = Rect::from_min_size(pos2(left, y), vec2(wrap, 6.0));
+            p.rect_filled(track, 3.0, theme::tint(30));
+            p.rect_filled(Rect::from_min_size(track.min, vec2(wrap * f, 6.0)), 3.0, ACCENT);
+            ctx.request_repaint_after_secs(0.2);
+        }
+
+        let mut action = None;
+        let mut right = panel.right() - 24.0;
+        let cy = panel.bottom() - 36.0;
+        for (i, (label, act)) in buttons.into_iter().enumerate() {
+            let primary = i == 0;
+            let color = if primary { Color32::WHITE } else { theme::text() };
+            let g = p.layout_no_wrap(label.to_string(), FontId::proportional(13.0), color);
+            let bw = (g.size().x + 28.0).max(72.0);
+            let r = Rect::from_center_size(pos2(right - bw / 2.0, cy), vec2(bw, 32.0));
+            let resp = ui.interact(r, ui.scope_id().with(("update_btn", i)), Sense::click());
+            if primary {
+                p.rect_filled(r, 6.0, if resp.hovered() { ACCENT.lerp_to_gamma(Color32::WHITE, 0.15) } else { ACCENT });
+            } else {
+                p.rect_stroke(r, 6.0, Stroke::new(1.0, if resp.hovered() { ACCENT } else { theme::line() }), StrokeKind::Inside);
+            }
+            p.galley(r.center() - g.size() / 2.0, g, color);
+            if resp.hovered() {
+                ctx.set_cursor_icon(CursorIcon::PointingHand);
+            }
+            if resp.clicked() {
+                action = Some(act);
+            }
+            right = r.left() - 10.0;
+        }
+
+        match action {
+            Some(UpdateAction::Download) => self.updater.start_download(&ctx),
+            Some(UpdateAction::Later) => {
+                self.updater.dismiss();
+                self.update_dialog = false;
+            }
+            Some(UpdateAction::Skip(version)) => {
+                if let Some(store) = &self.tracker.store {
+                    store.set_value("update_skipped", &version);
+                }
+                self.updater.dismiss();
+                self.update_dialog = false;
+            }
+            Some(UpdateAction::Cancel) => {
+                self.updater.cancel_download();
+                self.update_dialog = false;
+            }
+            Some(UpdateAction::Restart) => self.restart_to_update(&ctx),
+            Some(UpdateAction::Close) => self.update_dialog = false,
+            None => {}
         }
     }
 
@@ -1096,10 +1209,6 @@ impl eframe::App for App {
             }
         }
 
-        if s.idle && !self.settings_open {
-            self.draw_update_banner(ui, stage);
-        }
-
         // ---- OSD ----
         if let Some((text, at, life)) = &self.osd {
             let now = ctx.input(|i| i.time);
@@ -1128,7 +1237,7 @@ impl eframe::App for App {
         if self.settings_open {
             let stats = self.tracker.stats();
             let before = self.tracker.settings.clone();
-            let update_status = self.updater.status_text(self.new_release.as_ref());
+            let update_status = self.updater.status_text();
             let act = settings_panel::show(
                 ui,
                 full,
@@ -1140,7 +1249,7 @@ impl eframe::App for App {
             );
             if act.check_update {
                 self.update_check_manual = true;
-                self.updater.start(&ctx);
+                self.updater.check(&ctx);
             }
             if act.settings_changed && self.tracker.settings != before {
                 self.tracker.save_settings();
@@ -1166,6 +1275,12 @@ impl eframe::App for App {
             if act.close {
                 self.settings_open = false;
             }
+        }
+
+        // Never in front of a video, unless the viewer asked just now.
+        let quiet = s.idle || self.settings_open;
+        if self.update_dialog && quiet {
+            self.draw_update_dialog(ui, full);
         }
     }
 
@@ -1257,8 +1372,8 @@ impl eframe::App for App {
             self.recent_dirty = false;
         }
         self.auto_update_check(ctx, now);
-        if let Some(result) = self.updater.poll() {
-            self.on_update_result(result);
+        if let Some(event) = self.updater.poll(ctx) {
+            self.on_update_event(ctx, event);
         }
         while let Ok((path, area)) = self.crop_detect.rx.try_recv() {
             self.on_crop_detected(ctx, &path, area);
@@ -1272,6 +1387,11 @@ impl eframe::App for App {
     fn on_exit(&mut self, gl: Option<&glow::Context>) {
         if let (Some(place), Some(store)) = (self.window_place, &self.tracker.store) {
             store.set_value("window", &place.encode());
+        }
+        if self.updater.install_on_exit {
+            if let Some(prepared) = self.updater.take_prepared() {
+                update::install(&prepared, false);
+            }
         }
         self.scanner.quit();
         self.tracker.shutdown();
@@ -1754,6 +1874,15 @@ fn draw_osd(p: &egui::Painter, full: Rect, text: &str, alpha: f32) {
     p.rect_filled(rect, 0.0, theme::scrim((190.0 * alpha) as u8));
     p.line_segment([rect.left_top(), rect.left_bottom()], Stroke::new(2.0, ACCENT.gamma_multiply(alpha)));
     p.galley(origin + vec2(12.0, 6.0), galley, TEXT);
+}
+
+enum UpdateAction {
+    Download,
+    Later,
+    Skip(String),
+    Cancel,
+    Restart,
+    Close,
 }
 
 enum EmptyAction {
