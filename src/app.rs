@@ -24,6 +24,7 @@ use crate::player::Player;
 use crate::quick_panel::{Crop, QuickPanel};
 use crate::playlist::{self, LoopMode, Playlist};
 use crate::session::{Resume, Tracker};
+use crate::update::{self, Release, UpdateChecker};
 use crate::settings_panel::{self, PanelState};
 use crate::theme::{self, ACCENT, TEXT, TEXT_2, TEXT_3};
 use crate::video::VideoTarget;
@@ -45,6 +46,8 @@ const PIP_MAX_SIDE: f32 = 400.0;
 const PIP_MARGIN: f32 = 24.0;
 /// How often interpolation re-checks the display's refresh rate.
 const REFRESH_CHECK_SECS: f64 = 2.0;
+/// Lets the app settle (and private mode be turned on) before going online.
+const UPDATE_CHECK_DELAY_SECS: f64 = 5.0;
 const NORMAL_MIN_SIZE: [f32; 2] = [480.0, 300.0];
 const PIP_MIN_SIZE: [f32; 2] = [200.0, 120.0];
 
@@ -97,6 +100,13 @@ pub struct App {
     ab: AbLoop,
     marks: Marks,
     view: View,
+    updater: UpdateChecker,
+    /// A newer release, for the settings page and the banner.
+    new_release: Option<Release>,
+    /// The check that runs by itself at startup has been considered.
+    update_check_done: bool,
+    /// The viewer asked for this check, so a skipped version still shows.
+    update_check_manual: bool,
     crop_detect: CropDetect,
     last_refresh_check: f64,
     always_on_top: bool,
@@ -179,6 +189,10 @@ impl App {
             ab: AbLoop::default(),
             marks: Marks::default(),
             view: View::default(),
+            updater: UpdateChecker::new(),
+            new_release: None,
+            update_check_done: false,
+            update_check_manual: false,
             crop_detect: CropDetect::new(),
             last_refresh_check: 0.0,
             always_on_top: false,
@@ -226,6 +240,67 @@ impl App {
         let light = theme::wants_light(&self.tracker.settings.theme, system);
         if light != theme::is_light() {
             theme::set_light(ctx, light);
+        }
+    }
+
+    fn auto_update_check(&mut self, ctx: &egui::Context, now: f64) {
+        if self.update_check_done || now < UPDATE_CHECK_DELAY_SECS {
+            return;
+        }
+        self.update_check_done = true;
+        let settings = &self.tracker.settings;
+        if !settings.auto_update || self.tracker.incognito {
+            return;
+        }
+        let last = self.tracker.store.as_ref().and_then(|s| s.get_value("update_checked_at"));
+        let last: i64 = last.and_then(|v| v.parse().ok()).unwrap_or(0);
+        if crate::history::now_secs() - last >= update::CHECK_EVERY_SECS {
+            self.updater.start(ctx);
+        }
+    }
+
+    fn on_update_result(&mut self, result: Option<Release>) {
+        let manual = std::mem::take(&mut self.update_check_manual);
+        let Some(release) = result else { return };
+        let Some(store) = &self.tracker.store else { return };
+        store.set_value("update_checked_at", &crate::history::now_secs().to_string());
+        let skipped = store.get_value("update_skipped").as_deref() == Some(release.version.as_str());
+        let newer = update::is_newer(&release.version, update::CURRENT_VERSION);
+        self.new_release = (newer && (manual || !skipped)).then_some(release);
+    }
+
+    /// The offer of a new version, in the corner of the library.
+    fn draw_update_banner(&mut self, ui: &mut egui::Ui, stage: Rect) {
+        let Some(release) = self.new_release.clone() else { return };
+        let size = vec2(340.0, 46.0);
+        let rect = Rect::from_min_size(stage.right_bottom() - size - vec2(16.0, 16.0), size);
+        let p = ui.painter();
+        let _blocker = ui.interact(rect, ui.scope_id().with("update_banner"), Sense::click());
+        p.rect_filled(rect, 8.0, theme::panel());
+        p.rect_stroke(rect, 8.0, Stroke::new(1.0, theme::line()), StrokeKind::Inside);
+        let cy = rect.center().y;
+        let text = tf("发现新版本 {}", &[&release.version]);
+        p.text(pos2(rect.left() + 16.0, cy), Align2::LEFT_CENTER, text, FontId::proportional(13.0), theme::text());
+        let mut right = rect.right() - 14.0;
+        let mut link = |ui: &mut egui::Ui, id: &str, label: &str, color: Color32| {
+            let g = ui.painter().layout_no_wrap(label.to_string(), FontId::proportional(13.0), color);
+            let r = Rect::from_min_size(pos2(right - g.size().x, cy - g.size().y / 2.0), g.size());
+            let resp = ui.interact(r.expand(6.0), ui.scope_id().with(id), Sense::click());
+            ui.painter().galley(r.min, g, color);
+            if resp.hovered() {
+                ui.ctx().set_cursor_icon(CursorIcon::PointingHand);
+            }
+            right = r.left() - 16.0;
+            resp.clicked()
+        };
+        if link(ui, "update_view", tr("查看"), ACCENT) {
+            update::open_page(&release.url);
+        }
+        if link(ui, "update_skip", tr("跳过此版本"), theme::text_2()) {
+            if let Some(store) = &self.tracker.store {
+                store.set_value("update_skipped", &release.version);
+            }
+            self.new_release = None;
         }
     }
 
@@ -944,6 +1019,10 @@ impl eframe::App for App {
             }
         }
 
+        if s.idle && !self.settings_open {
+            self.draw_update_banner(ui, stage);
+        }
+
         // ---- OSD ----
         if let Some((text, at, life)) = &self.osd {
             let now = ctx.input(|i| i.time);
@@ -972,6 +1051,7 @@ impl eframe::App for App {
         if self.settings_open {
             let stats = self.tracker.stats();
             let before = self.tracker.settings.clone();
+            let update_status = self.updater.status_text(self.new_release.as_ref());
             let act = settings_panel::show(
                 ui,
                 full,
@@ -979,7 +1059,12 @@ impl eframe::App for App {
                 &mut self.tracker.settings,
                 &mut self.tracker.incognito,
                 stats,
+                &update_status,
             );
+            if act.check_update {
+                self.update_check_manual = true;
+                self.updater.start(&ctx);
+            }
             if act.settings_changed && self.tracker.settings != before {
                 self.tracker.save_settings();
                 crate::i18n::set_language(&self.tracker.settings.language);
@@ -1093,6 +1178,10 @@ impl eframe::App for App {
         if idle && self.recent_dirty {
             self.recent = self.tracker.recent(5);
             self.recent_dirty = false;
+        }
+        self.auto_update_check(ctx, now);
+        if let Some(result) = self.updater.poll() {
+            self.on_update_result(result);
         }
         while let Ok((path, area)) = self.crop_detect.rx.try_recv() {
             self.on_crop_detected(ctx, &path, area);

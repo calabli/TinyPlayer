@@ -31,6 +31,7 @@ pub struct Actions {
     pub clear_history: bool,
     pub clear_stats: bool,
     pub close: bool,
+    pub check_update: bool,
 }
 
 const W: f32 = 660.0;
@@ -44,6 +45,7 @@ pub fn show(
     settings: &mut Settings,
     incognito: &mut bool,
     stats: (i64, i64),
+    update_status: &str,
 ) -> Actions {
     let mut out = Actions::default();
     let p = ui.painter().clone();
@@ -222,6 +224,21 @@ pub fn show(
         if let Some(i) = segment(ui, &p, r, "language", &[names[0].1, names[1].1], sel, true) {
             settings.language = names[i].0.to_string();
             out.settings_changed = true;
+        }
+        y += ROW_H;
+
+        let r = row(y);
+        label(r, tr("自动检查更新"), tr("每天最多访问一次 GitHub，只提示，不会自动下载"), true);
+        if toggle(ui, &p, r, "auto_update", settings.auto_update, true) {
+            settings.auto_update = !settings.auto_update;
+            out.settings_changed = true;
+        }
+        y += ROW_H;
+
+        let r = row(y);
+        label(r, &tf("当前版本 {}", &[&crate::update::CURRENT_VERSION]), update_status, true);
+        if text_link(ui, &p, r.right_center(), "check_update", tr("检查更新"), ACCENT).clicked {
+            out.check_update = true;
         }
         return out;
     }

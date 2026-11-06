@@ -51,7 +51,7 @@ fn fill(template: &str, args: &[&dyn Display]) -> String {
 mod tests {
     use super::*;
 
-    const SOURCES: [(&str, &str); 11] = [
+    const SOURCES: [(&str, &str); 12] = [
         ("app", include_str!("app.rs")),
         ("audio_fx", include_str!("audio_fx.rs")),
         ("library", include_str!("library.rs")),
@@ -63,6 +63,7 @@ mod tests {
         ("hover_thumbs", include_str!("hover_thumbs.rs")),
         ("scanner", include_str!("scanner.rs")),
         ("session", include_str!("session.rs")),
+        ("update", include_str!("update.rs")),
     ];
 
     fn has_cjk(s: &str) -> bool {

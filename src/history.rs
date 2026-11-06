@@ -79,6 +79,8 @@ pub struct Settings {
     pub theme: String,
     /// "zh" or "en".
     pub language: String,
+    /// Look for a new version at most once a day.
+    pub auto_update: bool,
 }
 
 impl Default for Settings {
@@ -111,6 +113,7 @@ impl Default for Settings {
             audio_channel: Channel::Stereo,
             theme: "dark".into(),
             language: "zh".into(),
+            auto_update: true,
         }
     }
 }
@@ -256,6 +259,7 @@ impl Store {
             audio_channel: d.audio_channel,
             theme: get("theme").unwrap_or(d.theme),
             language: get("language").unwrap_or(d.language),
+            auto_update: flag("auto_update", d.auto_update),
         }
     }
 
@@ -293,6 +297,7 @@ impl Store {
             ("eq", audio_fx::encode_gains(&s.eq)),
             ("theme", s.theme.clone()),
             ("language", s.language.clone()),
+            ("auto_update", b(s.auto_update)),
         ] {
             let _ = self.db.execute(
                 "INSERT INTO settings (k, v) VALUES (?1, ?2) ON CONFLICT(k) DO UPDATE SET v = ?2",
@@ -475,6 +480,7 @@ mod tests {
             audio_channel: Channel::Stereo,
             theme: "light".into(),
             language: "en".into(),
+            auto_update: false,
         };
         s.save_settings(&custom);
         assert_eq!(s.load_settings(), custom);

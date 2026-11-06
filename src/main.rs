@@ -25,6 +25,7 @@ mod session;
 mod settings_panel;
 mod single_instance;
 mod theme;
+mod update;
 mod video;
 mod view;
 
