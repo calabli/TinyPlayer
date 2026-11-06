@@ -3,6 +3,7 @@
 mod ab_loop;
 mod app;
 mod audio_fx;
+mod audio_output;
 mod crop_detect;
 mod float_window;
 mod history;

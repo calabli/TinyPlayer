@@ -9,6 +9,7 @@ use eframe::egui::{
 use eframe::glow;
 
 use crate::ab_loop::AbLoop;
+use crate::audio_output::{DeviceVolumes, OutputMonitor};
 use crate::crop_detect::CropDetect;
 use crate::float_window;
 use crate::history::Entry;
@@ -123,6 +124,9 @@ pub struct App {
     always_on_top: bool,
     pip: bool,
     /// Where the window goes back to when leaving picture-in-picture.
+    output_monitor: OutputMonitor,
+    device_volumes: DeviceVolumes,
+    output_seen: bool,
     pip_restore: Option<crate::WindowPlace>,
     /// Longest side of the floating window, kept when it's reopened.
     pip_side: f32,
@@ -151,6 +155,7 @@ impl App {
             rx
         });
         let tracker = Tracker::new();
+        let device_volumes = DeviceVolumes::new(tracker.store.as_ref().map(|s| s.device_volumes()).unwrap_or_default());
         crate::i18n::set_language(&tracker.settings.language);
         let system = cc.egui_ctx.input(|i| i.raw.system_theme);
         let light = theme::wants_light(&tracker.settings.theme, system);
@@ -214,6 +219,9 @@ impl App {
             last_refresh_check: 0.0,
             always_on_top: false,
             pip: false,
+            output_monitor: OutputMonitor::start(cc.egui_ctx.clone()),
+            device_volumes,
+            output_seen: false,
             pip_restore: None,
             pip_side: PIP_MAX_SIDE,
             pip_resize: None,
@@ -540,6 +548,40 @@ impl App {
                 ctx.send_viewport_cmd(ViewportCommand::InnerSize(target.size()));
                 ctx.send_viewport_cmd(ViewportCommand::OuterPosition(target.min));
             }
+        }
+    }
+
+    /// Switches to the volume of the output device in use, and keeps that
+    /// device's volume up to date.
+    fn sync_device_volume(&mut self, ctx: &egui::Context) {
+        let Some(player) = &self.player else { return };
+        let volume = player.state.volume;
+        let now = ctx.input(|i| i.time);
+        let mut applied = None;
+        if let Some(device) = self.output_monitor.take_change() {
+            let first = !self.output_seen;
+            self.output_seen = true;
+            let unsaved = self.device_volumes.take_unsaved(now, true);
+            if let (Some((id, v)), Some(store)) = (unsaved, &self.tracker.store) {
+                store.set_device_volume(&id, v);
+            }
+            let target = self.device_volumes.switch_to(&device.id, volume, now);
+            if let Some(v) = target {
+                player.set_volume(v);
+            }
+            if !first {
+                applied = Some(format!("{}  VOLUME  {}%", device.name, target.unwrap_or(volume).round()));
+            }
+        }
+        self.device_volumes.observe(volume, now);
+        if let (Some((id, v)), Some(store)) = (self.device_volumes.take_unsaved(now, false), &self.tracker.store) {
+            store.set_device_volume(&id, v);
+        }
+        if self.device_volumes.pending() {
+            ctx.request_repaint_after_secs(0.5);
+        }
+        if let Some(text) = applied {
+            self.show_osd(ctx, text);
         }
     }
 
@@ -1045,6 +1087,7 @@ impl eframe::App for App {
         self.sync_window_frame(&ctx);
         self.ensure_gl(&ctx, frame);
         self.handle_input(&ctx);
+        self.sync_device_volume(&ctx);
         self.flush_open(&ctx);
 
         let full = ctx.content_rect();
@@ -1438,6 +1481,9 @@ impl eframe::App for App {
     fn on_exit(&mut self, gl: Option<&glow::Context>) {
         if let (Some(place), Some(store)) = (self.window_place, &self.tracker.store) {
             store.set_value("window", &place.encode());
+        }
+        if let (Some((id, v)), Some(store)) = (self.device_volumes.take_unsaved(0.0, true), &self.tracker.store) {
+            store.set_device_volume(&id, v);
         }
         if self.updater.install_on_exit {
             if let Some(prepared) = self.updater.take_prepared() {

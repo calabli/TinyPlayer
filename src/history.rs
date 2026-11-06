@@ -5,6 +5,7 @@
 //! - `history` (resume positions, recent list) — cleared by "clear on exit"
 //! - `play_events` (play counts) — kept, only cleared by an explicit action
 
+use std::collections::HashMap;
 use std::path::{Path, PathBuf};
 use std::time::{SystemTime, UNIX_EPOCH};
 
@@ -214,6 +215,7 @@ impl Store {
                  created_at INTEGER NOT NULL
              );
              CREATE INDEX IF NOT EXISTS bookmarks_key ON bookmarks(key, time);
+             CREATE TABLE IF NOT EXISTS device_volumes (id TEXT PRIMARY KEY, volume REAL NOT NULL);
              CREATE TABLE IF NOT EXISTS settings (k TEXT PRIMARY KEY, v TEXT NOT NULL);",
         )
         .map_err(|e| e.to_string())?;
@@ -318,6 +320,21 @@ impl Store {
 
     // ---- Bookmarks ----
     // Kept like play counts: clearing history doesn't remove them.
+
+    pub fn device_volumes(&self) -> HashMap<String, f64> {
+        let rows = self.db.prepare("SELECT id, volume FROM device_volumes").and_then(|mut st| {
+            st.query_map([], |r| Ok((r.get(0)?, r.get(1)?)))?.collect()
+        });
+        rows.unwrap_or_default()
+    }
+
+    pub fn set_device_volume(&self, id: &str, volume: f64) {
+        let _ = self.db.execute(
+            "INSERT INTO device_volumes (id, volume) VALUES (?1, ?2)
+             ON CONFLICT(id) DO UPDATE SET volume = excluded.volume",
+            rusqlite::params![id, volume],
+        );
+    }
 
     pub fn add_bookmark(&self, key: &str, path: &str, time: f64, label: &str) {
         let _ = self.db.execute(
@@ -506,6 +523,16 @@ mod tests {
         s.clear_history();
         assert!(s.position("k").is_none());
         assert_eq!(s.play_count("k"), 1);
+    }
+
+    #[test]
+    fn device_volumes_are_kept_per_device() {
+        let s = mem();
+        s.set_device_volume("speaker", 80.0);
+        s.set_device_volume("phones", 20.0);
+        s.set_device_volume("phones", 25.0);
+        let saved = s.device_volumes();
+        assert_eq!((saved["speaker"], saved["phones"], saved.len()), (80.0, 25.0, 2));
     }
 
     #[test]
