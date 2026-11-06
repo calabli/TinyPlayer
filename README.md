@@ -9,6 +9,8 @@
 | Windows | `powershell -ExecutionPolicy Bypass -File scripts\package-windows.ps1` | `dist\TinyPlayer-<版本>-windows-x64.zip`（便携版，解压即用，约 48MB）；装了 [Inno Setup](https://jrsoftware.org/isinfo.php) 时还会生成 `-setup.exe` 安装程序（无需管理员权限，加入“打开方式”，不抢占默认播放器） |
 | macOS | `scripts/package-macos.sh`（需要 `brew install mpv dylibbundler` 和 Xcode 命令行工具） | `dist/TinyPlayer.app` 和 `dist/TinyPlayer-<版本>-macos-<架构>.dmg`（约 32MB，打开后把 TinyPlayer 拖到“应用程序”即可安装）；设置 `SIGN_IDENTITY`、`NOTARY_PROFILE` 可签名公证 |
 
+安装包要求的最低 macOS 版本由打包时的依赖库决定，脚本会自动写入 `Info.plist`：用 Homebrew 的 libmpv 打包时，通常等于打包机器的系统版本。
+
 macOS 脚本默认只做临时签名，在本机可直接运行。发给别人的话，对方首次打开要右键 →“打开”，或用 Developer ID 签名并公证后再分发。安装包只支持打包机器的架构。脚本最后会逐个加载包内的库，有库加载失败或仍依赖 Homebrew 时直接报错。
 
 推送到 `main` 时，GitHub Actions 会自动编译 Windows x64 和 macOS（Apple 芯片、Intel）安装包，可在 Actions 页面的构建记录里下载。推送 `v*` 标签时还会发布到 Releases。安装包都没有付费签名，首次打开时 Windows SmartScreen 或 macOS 可能会拦截。

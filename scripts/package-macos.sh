@@ -51,6 +51,14 @@ for lib in "$APP"/Contents/Frameworks/*.dylib; do
         done
 done
 
+# Homebrew builds for the system it runs on, so the bundle can't run on
+# anything older than its newest library asks for. Declare that, or older
+# systems open the app and then fail to load libmpv.
+MIN_MACOS=$(for lib in "$APP"/Contents/Frameworks/*.dylib; do
+    vtool -show-build "$lib" | awk '$1 == "minos" { print $2 }'
+done | sort -V | tail -1)
+echo "Minimum macOS: $MIN_MACOS"
+
 cat > "$APP/Contents/Info.plist" <<PLIST
 <?xml version="1.0" encoding="UTF-8"?>
 <!DOCTYPE plist PUBLIC "-//Apple//DTD PLIST 1.0//EN" "http://www.apple.com/DTDs/PropertyList-1.0.dtd">
@@ -64,7 +72,7 @@ cat > "$APP/Contents/Info.plist" <<PLIST
     <key>CFBundlePackageType</key><string>APPL</string>
     <key>CFBundleShortVersionString</key><string>$VERSION</string>
     <key>CFBundleVersion</key><string>$VERSION</string>
-    <key>LSMinimumSystemVersion</key><string>11.0</string>
+    <key>LSMinimumSystemVersion</key><string>$MIN_MACOS</string>
     <key>NSHighResolutionCapable</key><true/>
     <key>LSApplicationCategoryType</key><string>public.app-category.video</string>
     <key>CFBundleDocumentTypes</key>
