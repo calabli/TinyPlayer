@@ -124,7 +124,8 @@ if [ -n "${SIGN_IDENTITY:-}" ]; then
         codesign --force --timestamp --options runtime --sign "$SIGN_IDENTITY" {} \;
     codesign --force --timestamp --options runtime --sign "$SIGN_IDENTITY" "$APP"
 else
-    # Ad-hoc: runs on this Mac; other Macs need right-click → Open the first time.
+    # Ad-hoc: runs on this Mac; other Macs must allow it once under System
+    # Settings → Privacy & Security.
     find "$APP/Contents/Frameworks" -name '*.dylib' -exec codesign --force --sign - {} \;
     codesign --force --sign - "$APP"
 fi
