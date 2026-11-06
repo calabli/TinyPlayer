@@ -29,6 +29,13 @@ pub enum ResumeMode {
     Start,
 }
 
+/// The volume remembered for an audio output device.
+#[derive(Clone, Debug, PartialEq)]
+pub struct SavedDevice {
+    pub name: String,
+    pub volume: f64,
+}
+
 #[derive(Clone, Debug, PartialEq)]
 pub struct Settings {
     pub remember: bool,
@@ -86,6 +93,7 @@ pub struct Settings {
     pub auto_download: bool,
     /// Hide the window's title bar during playback.
     pub frameless: bool,
+    pub device_volume: bool,
 }
 
 impl Default for Settings {
@@ -121,6 +129,7 @@ impl Default for Settings {
             auto_update: true,
             auto_download: true,
             frameless: false,
+            device_volume: true,
         }
     }
 }
@@ -215,10 +224,12 @@ impl Store {
                  created_at INTEGER NOT NULL
              );
              CREATE INDEX IF NOT EXISTS bookmarks_key ON bookmarks(key, time);
-             CREATE TABLE IF NOT EXISTS device_volumes (id TEXT PRIMARY KEY, volume REAL NOT NULL);
+             CREATE TABLE IF NOT EXISTS device_volumes (id TEXT PRIMARY KEY, volume REAL NOT NULL, name TEXT NOT NULL DEFAULT '');
              CREATE TABLE IF NOT EXISTS settings (k TEXT PRIMARY KEY, v TEXT NOT NULL);",
         )
         .map_err(|e| e.to_string())?;
+        // 0.1.6 made this table without names; it fails harmlessly after that.
+        let _ = db.execute("ALTER TABLE device_volumes ADD COLUMN name TEXT NOT NULL DEFAULT ''", []);
         Ok(Self { db })
     }
 
@@ -270,6 +281,7 @@ impl Store {
             auto_update: flag("auto_update", d.auto_update),
             auto_download: flag("auto_download", d.auto_download),
             frameless: flag("frameless", d.frameless),
+            device_volume: flag("device_volume", d.device_volume),
         }
     }
 
@@ -310,6 +322,7 @@ impl Store {
             ("auto_update", b(s.auto_update)),
             ("auto_download", b(s.auto_download)),
             ("frameless", b(s.frameless)),
+            ("device_volume", b(s.device_volume)),
         ] {
             let _ = self.db.execute(
                 "INSERT INTO settings (k, v) VALUES (?1, ?2) ON CONFLICT(k) DO UPDATE SET v = ?2",
@@ -321,19 +334,23 @@ impl Store {
     // ---- Bookmarks ----
     // Kept like play counts: clearing history doesn't remove them.
 
-    pub fn device_volumes(&self) -> HashMap<String, f64> {
-        let rows = self.db.prepare("SELECT id, volume FROM device_volumes").and_then(|mut st| {
-            st.query_map([], |r| Ok((r.get(0)?, r.get(1)?)))?.collect()
+    pub fn device_volumes(&self) -> HashMap<String, SavedDevice> {
+        let rows = self.db.prepare("SELECT id, name, volume FROM device_volumes").and_then(|mut st| {
+            st.query_map([], |r| Ok((r.get(0)?, SavedDevice { name: r.get(1)?, volume: r.get(2)? })))?.collect()
         });
         rows.unwrap_or_default()
     }
 
-    pub fn set_device_volume(&self, id: &str, volume: f64) {
+    pub fn set_device_volume(&self, id: &str, device: &SavedDevice) {
         let _ = self.db.execute(
-            "INSERT INTO device_volumes (id, volume) VALUES (?1, ?2)
-             ON CONFLICT(id) DO UPDATE SET volume = excluded.volume",
-            rusqlite::params![id, volume],
+            "INSERT INTO device_volumes (id, name, volume) VALUES (?1, ?2, ?3)
+             ON CONFLICT(id) DO UPDATE SET name = excluded.name, volume = excluded.volume",
+            params![id, device.name, device.volume],
         );
+    }
+
+    pub fn remove_device_volume(&self, id: &str) {
+        let _ = self.db.execute("DELETE FROM device_volumes WHERE id = ?1", [id]);
     }
 
     pub fn add_bookmark(&self, key: &str, path: &str, time: f64, label: &str) {
@@ -510,6 +527,7 @@ mod tests {
             auto_update: false,
             auto_download: false,
             frameless: true,
+            device_volume: false,
         };
         s.save_settings(&custom);
         assert_eq!(s.load_settings(), custom);
@@ -528,11 +546,15 @@ mod tests {
     #[test]
     fn device_volumes_are_kept_per_device() {
         let s = mem();
-        s.set_device_volume("speaker", 80.0);
-        s.set_device_volume("phones", 20.0);
-        s.set_device_volume("phones", 25.0);
+        let device = |name: &str, volume| SavedDevice { name: name.to_string(), volume };
+        s.set_device_volume("speaker", &device("Speakers", 80.0));
+        s.set_device_volume("phones", &device("", 20.0));
+        s.set_device_volume("phones", &device("Headphones", 25.0));
         let saved = s.device_volumes();
-        assert_eq!((saved["speaker"], saved["phones"], saved.len()), (80.0, 25.0, 2));
+        assert_eq!(saved["speaker"], device("Speakers", 80.0));
+        assert_eq!(saved["phones"], device("Headphones", 25.0));
+        s.remove_device_volume("phones");
+        assert_eq!(s.device_volumes().len(), 1);
     }
 
     #[test]

@@ -8,6 +8,9 @@ use std::time::Duration;
 
 use eframe::egui;
 
+use crate::history::SavedDevice;
+use crate::player::MAX_VOLUME;
+
 /// Short, because a change of device plays at the old volume until it's seen.
 const POLL: Duration = Duration::from_millis(300);
 /// Dragging the volume slider shouldn't write to disk on every frame.
@@ -59,35 +62,66 @@ impl OutputMonitor {
     }
 }
 
+/// A remembered device, for the settings page.
+#[derive(Clone, Debug, PartialEq)]
+pub struct DeviceRow {
+    pub id: String,
+    pub name: String,
+    pub volume: f64,
+    pub current: bool,
+}
+
 /// The volume remembered for each device.
 #[derive(Default)]
 pub struct DeviceVolumes {
-    saved: HashMap<String, f64>,
+    saved: HashMap<String, SavedDevice>,
     current: Option<String>,
-    /// A volume just sent to mpv. Until mpv reports it, the volume it does
-    /// report is the old device's and must not be saved for the new one.
+    /// A volume just sent to mpv, and when. Until mpv reports it, the volume it
+    /// does report is the old device's and must not be saved for the new one.
     applying: Option<(f64, f64)>,
     /// When the volume last changed, while that isn't on disk yet.
     unsaved_since: Option<f64>,
 }
 
 impl DeviceVolumes {
-    pub fn new(saved: HashMap<String, f64>) -> Self {
+    pub fn new(saved: HashMap<String, SavedDevice>) -> Self {
         Self { saved, ..Self::default() }
+    }
+
+    pub fn current(&self) -> Option<&str> {
+        self.current.as_deref()
     }
 
     /// Returns the volume to switch to. A device seen for the first time has
     /// none, and keeps what's playing now.
-    pub fn switch_to(&mut self, id: &str, volume: f64, now: f64) -> Option<f64> {
-        self.current = Some(id.to_string());
+    pub fn switch_to(&mut self, device: &OutputDevice, volume: f64, now: f64) -> Option<f64> {
+        self.current = Some(device.id.clone());
+        self.applying = None;
         self.unsaved_since = None;
-        let target = self.saved.get(id).copied();
+        let target = match self.saved.get_mut(&device.id) {
+            Some(known) => {
+                if known.name != device.name {
+                    known.name.clone_from(&device.name);
+                    self.unsaved_since = Some(f64::NEG_INFINITY);
+                }
+                Some(known.volume)
+            }
+            None => {
+                let new = SavedDevice { name: device.name.clone(), volume };
+                self.saved.insert(device.id.clone(), new);
+                self.unsaved_since = Some(f64::NEG_INFINITY);
+                None
+            }
+        };
         self.applying = target.map(|t| (t, now));
-        if target.is_none() {
-            self.saved.insert(id.to_string(), volume);
-            self.unsaved_since = Some(f64::NEG_INFINITY);
-        }
         target
+    }
+
+    /// Stops following any device. Saved volumes stay.
+    pub fn leave(&mut self) {
+        self.current = None;
+        self.applying = None;
+        self.unsaved_since = None;
     }
 
     /// Call with the volume mpv reports.
@@ -98,9 +132,9 @@ impl DeviceVolumes {
             }
             self.applying = None;
         }
-        let Some(id) = &self.current else { return };
-        if self.saved.get(id).is_none_or(|v| (v - volume).abs() >= 0.01) {
-            self.saved.insert(id.clone(), volume);
+        let Some(known) = self.current.as_ref().and_then(|id| self.saved.get_mut(id)) else { return };
+        if (known.volume - volume).abs() >= 0.01 {
+            known.volume = volume;
             self.unsaved_since = Some(now);
         }
     }
@@ -111,15 +145,50 @@ impl DeviceVolumes {
     }
 
     /// What should be written now. `force` is for a device change and exit.
-    pub fn take_unsaved(&mut self, now: f64, force: bool) -> Option<(String, f64)> {
+    pub fn take_unsaved(&mut self, now: f64, force: bool) -> Option<(String, SavedDevice)> {
         let since = self.unsaved_since?;
         if !force && now - since < SAVE_AFTER_SECS {
             return None;
         }
         self.unsaved_since = None;
         let id = self.current.clone()?;
-        let volume = *self.saved.get(&id)?;
-        Some((id, volume))
+        let device = self.saved.get(&id)?.clone();
+        Some((id, device))
+    }
+
+    /// Current device first, then by name.
+    pub fn rows(&self) -> Vec<DeviceRow> {
+        let mut rows: Vec<DeviceRow> = self
+            .saved
+            .iter()
+            .map(|(id, d)| DeviceRow {
+                id: id.clone(),
+                name: if d.name.is_empty() { id.clone() } else { d.name.clone() },
+                volume: d.volume,
+                current: self.current.as_ref() == Some(id),
+            })
+            .collect();
+        rows.sort_by(|a, b| b.current.cmp(&a.current).then_with(|| a.name.cmp(&b.name)));
+        rows
+    }
+
+    /// A volume typed in by hand. Returns what to write, and whether the
+    /// device is the one playing, so the player has to follow.
+    pub fn set(&mut self, id: &str, volume: f64, now: f64) -> Option<(SavedDevice, bool)> {
+        let device = self.saved.get_mut(id)?;
+        device.volume = volume.clamp(0.0, MAX_VOLUME);
+        let device = device.clone();
+        let current = self.current.as_deref() == Some(id);
+        if current {
+            self.applying = Some((device.volume, now));
+            self.unsaved_since = None;
+        }
+        Some((device, current))
+    }
+
+    /// The device in use can't be forgotten: it would come straight back.
+    pub fn forget(&mut self, id: &str) -> bool {
+        self.current.as_deref() != Some(id) && self.saved.remove(id).is_some()
     }
 }
 
@@ -264,63 +333,86 @@ mod os {
 mod tests {
     use super::*;
 
-    fn saved() -> HashMap<String, f64> {
-        HashMap::from([("phones".to_string(), 25.0)])
+    fn device(id: &str, name: &str) -> OutputDevice {
+        OutputDevice { id: id.to_string(), name: name.to_string() }
+    }
+
+    fn saved_device(name: &str, volume: f64) -> SavedDevice {
+        SavedDevice { name: name.to_string(), volume }
+    }
+
+    fn saved() -> HashMap<String, SavedDevice> {
+        HashMap::from([("phones".to_string(), saved_device("Headphones", 25.0))])
+    }
+
+    fn phones() -> OutputDevice {
+        device("phones", "Headphones")
+    }
+
+    fn speaker() -> OutputDevice {
+        device("speaker", "Speakers")
     }
 
     #[test]
     fn a_known_device_gets_its_volume_back() {
         let mut v = DeviceVolumes::new(saved());
-        assert_eq!(v.switch_to("phones", 60.0, 0.0), Some(25.0));
+        assert_eq!(v.switch_to(&phones(), 60.0, 0.0), Some(25.0));
     }
 
     #[test]
     fn a_new_device_keeps_the_volume_and_is_remembered() {
         let mut v = DeviceVolumes::new(HashMap::new());
-        assert_eq!(v.switch_to("speaker", 60.0, 0.0), None);
-        assert_eq!(v.take_unsaved(0.0, false), Some(("speaker".to_string(), 60.0)));
+        assert_eq!(v.switch_to(&speaker(), 60.0, 0.0), None);
+        assert_eq!(v.take_unsaved(0.0, false), Some(("speaker".to_string(), saved_device("Speakers", 60.0))));
+    }
+
+    #[test]
+    fn a_device_saved_without_a_name_gets_one() {
+        let mut v = DeviceVolumes::new(HashMap::from([("speaker".to_string(), saved_device("", 40.0))]));
+        v.switch_to(&speaker(), 60.0, 0.0);
+        assert_eq!(v.take_unsaved(0.0, false), Some(("speaker".to_string(), saved_device("Speakers", 40.0))));
     }
 
     #[test]
     fn the_old_volume_is_not_saved_for_the_new_device() {
         let mut v = DeviceVolumes::new(saved());
-        v.switch_to("phones", 60.0, 0.0);
+        v.switch_to(&phones(), 60.0, 0.0);
         v.observe(60.0, 0.1);
         assert!(!v.pending());
         v.observe(25.0, 0.2);
         assert!(!v.pending());
         v.observe(30.0, 1.2);
-        assert_eq!(v.take_unsaved(9.0, false), Some(("phones".to_string(), 30.0)));
+        assert_eq!(v.take_unsaved(9.0, false), Some(("phones".to_string(), saved_device("Headphones", 30.0))));
     }
 
     #[test]
     fn a_change_made_while_switching_is_still_saved() {
         let mut v = DeviceVolumes::new(saved());
-        v.switch_to("phones", 60.0, 0.0);
+        v.switch_to(&phones(), 60.0, 0.0);
         v.observe(45.0, 0.1);
         assert!(!v.pending());
         v.observe(45.0, 0.6);
-        assert_eq!(v.take_unsaved(9.0, false), Some(("phones".to_string(), 45.0)));
+        assert_eq!(v.take_unsaved(9.0, false).map(|(_, d)| d.volume), Some(45.0));
     }
 
     #[test]
     fn a_change_waits_until_the_volume_settles() {
         let mut v = DeviceVolumes::new(HashMap::new());
-        v.switch_to("speaker", 60.0, 0.0);
+        v.switch_to(&speaker(), 60.0, 0.0);
         v.take_unsaved(0.0, true);
         v.observe(65.0, 10.0);
         assert_eq!(v.take_unsaved(10.5, false), None);
-        assert_eq!(v.take_unsaved(11.5, false), Some(("speaker".to_string(), 65.0)));
+        assert_eq!(v.take_unsaved(11.5, false).map(|(_, d)| d.volume), Some(65.0));
         assert!(!v.pending());
     }
 
     #[test]
     fn leaving_a_device_writes_its_change_at_once() {
         let mut v = DeviceVolumes::new(saved());
-        v.switch_to("phones", 60.0, 0.0);
+        v.switch_to(&phones(), 60.0, 0.0);
         v.observe(25.0, 0.0);
         v.observe(40.0, 1.0);
-        assert_eq!(v.take_unsaved(1.0, true), Some(("phones".to_string(), 40.0)));
+        assert_eq!(v.take_unsaved(1.0, true).map(|(_, d)| d.volume), Some(40.0));
     }
 
     #[test]
@@ -328,5 +420,55 @@ mod tests {
         let mut v = DeviceVolumes::new(HashMap::new());
         v.observe(70.0, 0.0);
         assert!(!v.pending());
+    }
+
+    #[test]
+    fn rows_put_the_current_device_first_and_fall_back_to_the_id() {
+        let mut v = DeviceVolumes::new(saved());
+        v.saved.insert("hdmi".to_string(), saved_device("", 50.0));
+        v.switch_to(&speaker(), 60.0, 0.0);
+        let names: Vec<_> = v.rows().into_iter().map(|r| (r.name, r.current)).collect();
+        let expected = [("Speakers", true), ("Headphones", false), ("hdmi", false)];
+        assert_eq!(names, expected.map(|(n, c)| (n.to_string(), c)));
+    }
+
+    #[test]
+    fn setting_the_playing_device_moves_the_player_without_a_save_race() {
+        let mut v = DeviceVolumes::new(saved());
+        v.switch_to(&phones(), 25.0, 0.0);
+        v.observe(25.0, 0.1);
+        let (device, current) = v.set("phones", 50.0, 1.0).unwrap();
+        assert_eq!((device.volume, current), (50.0, true));
+        v.observe(25.0, 1.1);
+        assert_eq!(v.rows()[0].volume, 50.0);
+        v.observe(50.0, 1.2);
+        assert!(!v.pending());
+    }
+
+    #[test]
+    fn setting_another_device_leaves_the_player_alone() {
+        let mut v = DeviceVolumes::new(saved());
+        v.switch_to(&speaker(), 60.0, 0.0);
+        assert_eq!(v.set("phones", 999.0, 1.0).map(|(d, c)| (d.volume, c)), Some((MAX_VOLUME, false)));
+        assert!(v.set("gone", 10.0, 1.0).is_none());
+    }
+
+    #[test]
+    fn only_a_device_not_in_use_can_be_forgotten() {
+        let mut v = DeviceVolumes::new(saved());
+        v.switch_to(&speaker(), 60.0, 0.0);
+        assert!(!v.forget("speaker"));
+        assert!(v.forget("phones"));
+        assert_eq!(v.rows().len(), 1);
+    }
+
+    #[test]
+    fn leaving_keeps_the_saved_volumes_but_stops_recording() {
+        let mut v = DeviceVolumes::new(saved());
+        v.switch_to(&phones(), 25.0, 0.0);
+        v.leave();
+        v.observe(90.0, 1.0);
+        assert_eq!(v.rows()[0].volume, 25.0);
+        assert!(!v.rows()[0].current);
     }
 }

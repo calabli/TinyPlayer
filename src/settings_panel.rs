@@ -1,7 +1,8 @@
-//! The settings overlay (播放 / 画面 / 字幕 / 播放记录 / 快捷键), drawn in the tech-minimal style.
+//! The settings overlay (播放 / 声音 / 画面 / 字幕 / 播放记录 / 快捷键), drawn in the tech-minimal style.
 
 use eframe::egui::{self, Align2, Color32, FontId, Rect, Sense, Stroke, StrokeKind, pos2, vec2};
 
+use crate::audio_output::DeviceRow;
 use crate::history::{ResumeMode, Settings};
 use crate::i18n::{tf, tr};
 use crate::playlist::LoopMode;
@@ -18,6 +19,7 @@ pub struct PanelState {
 enum Page {
     #[default]
     Playback,
+    Audio,
     Video,
     Subtitles,
     Interface,
@@ -32,11 +34,15 @@ pub struct Actions {
     pub clear_stats: bool,
     pub close: bool,
     pub check_update: bool,
+    pub device_volume: Option<(String, f64)>,
+    pub forget_device: Option<String>,
 }
 
 const W: f32 = 660.0;
 const NAV_W: f32 = 132.0;
 const ROW_H: f32 = 58.0;
+const DEVICE_ROW_H: f32 = 44.0;
+const VOLUME_STEP: f64 = 5.0;
 
 pub fn show(
     ui: &mut egui::Ui,
@@ -46,6 +52,7 @@ pub fn show(
     incognito: &mut bool,
     stats: (i64, i64),
     update_status: &str,
+    devices: &[DeviceRow],
 ) -> Actions {
     let mut out = Actions::default();
     let p = ui.painter().clone();
@@ -71,6 +78,7 @@ pub fn show(
     p.text(nav.min + vec2(16.0, 22.0), Align2::LEFT_CENTER, "SETTINGS", FontId::monospace(10.0), theme::text_3());
     let pages = [
         (Page::Playback, tr("播放")),
+        (Page::Audio, tr("声音")),
         (Page::Video, tr("画面")),
         (Page::Subtitles, tr("字幕")),
         (Page::Interface, tr("界面")),
@@ -143,6 +151,19 @@ pub fn show(
             settings.shuffle = !settings.shuffle;
             out.settings_changed = true;
         }
+        return out;
+    }
+
+    if st.page == Page::Audio {
+        let r = row(y);
+        label(r, tr("按设备记音量"), tr("耳机、扬声器等输出设备各记一个音量，切换时自动换成对应音量"), true);
+        if toggle(ui, &p, r, "device_volume", settings.device_volume, true) {
+            settings.device_volume = !settings.device_volume;
+            out.settings_changed = true;
+        }
+        y += ROW_H;
+        let area = Rect::from_min_max(pos2(left, y + 8.0), pos2(right, panel.bottom() - 16.0));
+        device_list(ui, area, devices, settings.device_volume, &mut out);
         return out;
     }
 
@@ -379,6 +400,86 @@ pub fn show(
         out.clear_history = true;
     }
     out
+}
+
+/// The remembered devices, each with its volume.
+fn device_list(ui: &mut egui::Ui, area: Rect, devices: &[DeviceRow], enabled: bool, out: &mut Actions) {
+    if devices.is_empty() {
+        let c = theme::text_2();
+        ui.painter().text(area.left_top() + vec2(0.0, 14.0), Align2::LEFT_CENTER, tr("还没有记录的设备"), FontId::proportional(12.0), c);
+        return;
+    }
+    let dim = if enabled { 1.0 } else { 0.35 };
+    ui.scope_builder(egui::UiBuilder::new().max_rect(area), |ui| {
+        egui::ScrollArea::vertical().auto_shrink(false).show(ui, |ui| {
+            for device in devices {
+                let (r, _) = ui.allocate_exact_size(vec2(area.width() - 8.0, DEVICE_ROW_H), Sense::hover());
+                let p = ui.painter().clone();
+                let cy = r.center().y;
+                p.line_segment([r.left_bottom(), r.right_bottom()], Stroke::new(0.5, theme::line()));
+
+                // Right to left: forget, plus, value, minus.
+                let forget = Rect::from_center_size(pos2(r.right() - 12.0, cy), vec2(24.0, 24.0));
+                let plus = forget.translate(vec2(-38.0, 0.0));
+                let value = pos2(plus.left() - 26.0, cy);
+                let minus = plus.translate(vec2(-76.0, 0.0));
+                let id = ui.scope_id().with(("device", &device.id));
+
+                let text = format!("{}%", device.volume.round());
+                p.text(value, Align2::CENTER_CENTER, text, FontId::monospace(12.0), theme::text().gamma_multiply(dim));
+                if step_button(ui, &p, minus, id.with("minus"), false, enabled) {
+                    out.device_volume = Some((device.id.clone(), device.volume - VOLUME_STEP));
+                }
+                if step_button(ui, &p, plus, id.with("plus"), true, enabled) {
+                    out.device_volume = Some((device.id.clone(), device.volume + VOLUME_STEP));
+                }
+
+                let name_room = minus.left() - r.left() - 12.0;
+                let mut job_w = name_room;
+                if device.current {
+                    let tag = p.layout_no_wrap(tr("当前设备").to_string(), FontId::proportional(11.0), ACCENT.gamma_multiply(dim));
+                    job_w -= tag.size().x + 10.0;
+                    p.galley(pos2(r.left() + job_w + 10.0, cy - tag.size().y / 2.0), tag, ACCENT);
+                } else if forget_button(ui, &p, forget, id.with("forget")) {
+                    out.forget_device = Some(device.id.clone());
+                }
+                let mut job = egui::text::LayoutJob::simple_singleline(
+                    device.name.clone(),
+                    FontId::proportional(13.0),
+                    theme::text().gamma_multiply(dim),
+                );
+                job.wrap = egui::text::TextWrapping::truncate_at_width(job_w);
+                let galley = p.layout_job(job);
+                p.galley(pos2(r.left(), cy - galley.size().y / 2.0), galley, theme::text());
+            }
+        });
+    });
+}
+
+fn step_button(ui: &mut egui::Ui, p: &egui::Painter, r: Rect, id: egui::Id, plus: bool, enabled: bool) -> bool {
+    let sense = if enabled { Sense::click() } else { Sense::hover() };
+    let resp = ui.interact(r, id, sense);
+    let c = match (enabled, resp.hovered()) {
+        (false, _) => theme::text_3(),
+        (_, true) => ACCENT,
+        _ => theme::text_2(),
+    };
+    p.rect_stroke(r, 4.0, Stroke::new(0.5, theme::line()), StrokeKind::Inside);
+    let (center, d) = (r.center(), 4.5);
+    p.line_segment([center - vec2(d, 0.0), center + vec2(d, 0.0)], Stroke::new(1.4, c));
+    if plus {
+        p.line_segment([center - vec2(0.0, d), center + vec2(0.0, d)], Stroke::new(1.4, c));
+    }
+    resp.clicked()
+}
+
+fn forget_button(ui: &mut egui::Ui, p: &egui::Painter, r: Rect, id: egui::Id) -> bool {
+    let resp = ui.interact(r, id, Sense::click());
+    let c = if resp.hovered() { ACCENT } else { theme::text_3() };
+    let (center, d) = (r.center(), 4.0);
+    p.line_segment([center + vec2(-d, -d), center + vec2(d, d)], Stroke::new(1.2, c));
+    p.line_segment([center + vec2(-d, d), center + vec2(d, -d)], Stroke::new(1.2, c));
+    resp.clicked()
 }
 
 struct LinkResp {

@@ -5,6 +5,7 @@ use crate::i18n::{tf, tr};
 
 /// Startup volume (percent). mpv defaults to 100, which is loud on most setups.
 pub const DEFAULT_VOLUME: f64 = 60.0;
+pub const MAX_VOLUME: f64 = 150.0;
 
 pub const SPEEDS: [f64; 11] = [0.25, 0.5, 0.75, 1.0, 1.25, 1.5, 1.75, 2.0, 2.5, 3.0, 4.0];
 pub const FINE_SPEED_STEP: f64 = 0.05;
@@ -127,7 +128,7 @@ impl Player {
             ("terminal", "no"),
             ("config", "no"),
             ("volume", &DEFAULT_VOLUME.to_string()),
-            ("volume-max", "150"),
+            ("volume-max", &MAX_VOLUME.to_string()),
             // mpv's default: cache network streams, read local files directly
             // (forcing the cache on local files only cost memory).
             ("cache", "auto"),
@@ -241,7 +242,7 @@ impl Player {
     }
 
     pub fn set_volume(&self, v: f64) {
-        self.mpv.set_double("volume", v.clamp(0.0, 150.0));
+        self.mpv.set_double("volume", v.clamp(0.0, MAX_VOLUME));
         if self.state.muted {
             self.mpv.set_flag("mute", false);
         }

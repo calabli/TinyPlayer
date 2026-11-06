@@ -9,7 +9,7 @@ use eframe::egui::{
 use eframe::glow;
 
 use crate::ab_loop::AbLoop;
-use crate::audio_output::{DeviceVolumes, OutputMonitor};
+use crate::audio_output::{DeviceVolumes, OutputDevice, OutputMonitor};
 use crate::crop_detect::CropDetect;
 use crate::float_window;
 use crate::history::Entry;
@@ -126,7 +126,7 @@ pub struct App {
     /// Where the window goes back to when leaving picture-in-picture.
     output_monitor: OutputMonitor,
     device_volumes: DeviceVolumes,
-    output_seen: bool,
+    output_device: Option<OutputDevice>,
     pip_restore: Option<crate::WindowPlace>,
     /// Longest side of the floating window, kept when it's reopened.
     pip_side: f32,
@@ -221,7 +221,7 @@ impl App {
             pip: false,
             output_monitor: OutputMonitor::start(cc.egui_ctx.clone()),
             device_volumes,
-            output_seen: false,
+            output_device: None,
             pip_restore: None,
             pip_side: PIP_MAX_SIDE,
             pip_resize: None,
@@ -551,37 +551,58 @@ impl App {
         }
     }
 
+    /// Writes any device volume that's due. `force` skips the wait.
+    fn save_device_volume(&mut self, now: f64, force: bool) {
+        if let (Some((id, device)), Some(store)) = (self.device_volumes.take_unsaved(now, force), &self.tracker.store) {
+            store.set_device_volume(&id, &device);
+        }
+    }
+
     /// Switches to the volume of the output device in use, and keeps that
     /// device's volume up to date.
     fn sync_device_volume(&mut self, ctx: &egui::Context) {
-        let Some(player) = &self.player else { return };
-        let volume = player.state.volume;
+        let Some(volume) = self.player.as_ref().map(|p| p.state.volume) else { return };
         let now = ctx.input(|i| i.time);
-        let mut applied = None;
         if let Some(device) = self.output_monitor.take_change() {
-            let first = !self.output_seen;
-            self.output_seen = true;
-            let unsaved = self.device_volumes.take_unsaved(now, true);
-            if let (Some((id, v)), Some(store)) = (unsaved, &self.tracker.store) {
-                store.set_device_volume(&id, v);
-            }
-            let target = self.device_volumes.switch_to(&device.id, volume, now);
-            if let Some(v) = target {
-                player.set_volume(v);
-            }
-            if !first {
-                applied = Some(format!("{}  VOLUME  {}%", device.name, target.unwrap_or(volume).round()));
+            self.output_device = Some(device);
+        }
+        let wanted = self.output_device.clone().filter(|_| self.tracker.settings.device_volume);
+        let mut osd = None;
+        if self.device_volumes.current() != wanted.as_ref().map(|d| d.id.as_str()) {
+            self.save_device_volume(now, true);
+            let first = self.device_volumes.current().is_none();
+            match &wanted {
+                Some(device) => {
+                    let target = self.device_volumes.switch_to(device, volume, now);
+                    if let (Some(v), Some(player)) = (target, &self.player) {
+                        player.set_volume(v);
+                    }
+                    if !first {
+                        osd = Some(format!("{}  VOLUME  {}%", device.name, target.unwrap_or(volume).round()));
+                    }
+                }
+                None => self.device_volumes.leave(),
             }
         }
         self.device_volumes.observe(volume, now);
-        if let (Some((id, v)), Some(store)) = (self.device_volumes.take_unsaved(now, false), &self.tracker.store) {
-            store.set_device_volume(&id, v);
-        }
+        self.save_device_volume(now, false);
         if self.device_volumes.pending() {
             ctx.request_repaint_after_secs(0.5);
         }
-        if let Some(text) = applied {
+        if let Some(text) = osd {
             self.show_osd(ctx, text);
+        }
+    }
+
+    /// A volume changed on the settings page.
+    fn set_device_volume(&mut self, ctx: &egui::Context, id: &str, volume: f64) {
+        let now = ctx.input(|i| i.time);
+        let Some((device, current)) = self.device_volumes.set(id, volume, now) else { return };
+        if let Some(store) = &self.tracker.store {
+            store.set_device_volume(id, &device);
+        }
+        if let (true, Some(player)) = (current, &self.player) {
+            player.set_volume(device.volume);
         }
     }
 
@@ -1332,6 +1353,7 @@ impl eframe::App for App {
             let stats = self.tracker.stats();
             let before = self.tracker.settings.clone();
             let update_status = self.updater.status_text();
+            let devices = self.device_volumes.rows();
             let act = settings_panel::show(
                 ui,
                 full,
@@ -1340,7 +1362,18 @@ impl eframe::App for App {
                 &mut self.tracker.incognito,
                 stats,
                 &update_status,
+                &devices,
             );
+            if let Some((id, volume)) = act.device_volume {
+                self.set_device_volume(&ctx, &id, volume);
+            }
+            if let Some(id) = act.forget_device {
+                if self.device_volumes.forget(&id) {
+                    if let Some(store) = &self.tracker.store {
+                        store.remove_device_volume(&id);
+                    }
+                }
+            }
             if act.check_update {
                 self.update_check_manual = true;
                 self.updater.check(&ctx);
@@ -1482,9 +1515,7 @@ impl eframe::App for App {
         if let (Some(place), Some(store)) = (self.window_place, &self.tracker.store) {
             store.set_value("window", &place.encode());
         }
-        if let (Some((id, v)), Some(store)) = (self.device_volumes.take_unsaved(0.0, true), &self.tracker.store) {
-            store.set_device_volume(&id, v);
-        }
+        self.save_device_volume(0.0, true);
         if self.updater.install_on_exit {
             if let Some(prepared) = self.updater.take_prepared() {
                 update::install(&prepared, false);
