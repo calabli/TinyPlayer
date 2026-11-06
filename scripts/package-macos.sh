@@ -160,7 +160,13 @@ STAGE=dist/dmg-stage
 rm -rf "$STAGE"; mkdir -p "$STAGE"
 cp -R "$APP" "$STAGE/"
 ln -s /Applications "$STAGE/Applications"
-hdiutil create -volname TinyPlayer -srcfolder "$STAGE" -ov -format UDZO "$DMG"
+# hdiutil now and then fails with "Resource busy", most often on CI machines.
+for attempt in 1 2 3 4 5; do
+    hdiutil create -volname TinyPlayer -srcfolder "$STAGE" -ov -format UDZO "$DMG" && break
+    [ "$attempt" -lt 5 ] || exit 1
+    echo "hdiutil failed, retrying"
+    sleep 5
+done
 rm -rf "$STAGE"
 
 if [ -n "${SIGN_IDENTITY:-}" ] && [ -n "${NOTARY_PROFILE:-}" ]; then

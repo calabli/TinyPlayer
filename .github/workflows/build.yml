@@ -11,14 +11,8 @@ permissions:
 
 jobs:
   macos:
-    name: macOS ${{ matrix.arch }}
-    runs-on: ${{ matrix.runner }}
-    strategy:
-      fail-fast: false
-      matrix:
-        include:
-          - { runner: macos-15, arch: arm64 }
-          - { runner: macos-15-intel, arch: x86_64 }
+    name: macOS arm64
+    runs-on: macos-15
     steps:
       - uses: actions/checkout@v4
       - uses: dtolnay/rust-toolchain@stable
@@ -31,7 +25,7 @@ jobs:
         run: scripts/package-macos.sh
       - uses: actions/upload-artifact@v4
         with:
-          name: TinyPlayer-macos-${{ matrix.arch }}
+          name: TinyPlayer-macos-arm64
           path: dist/*.dmg
           if-no-files-found: error
 

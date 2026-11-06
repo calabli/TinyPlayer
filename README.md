@@ -13,7 +13,7 @@
 
 macOS 脚本默认只做临时签名，在本机可直接运行。发给别人的话，对方首次打开时系统会拦截，要先打开一次，再到“系统设置 → 隐私与安全性”点“仍要打开”；用 Developer ID 签名并公证后分发就不会被拦截。安装包只支持打包机器的架构。脚本最后会逐个加载包内的库，有库加载失败或仍依赖 Homebrew 时直接报错。
 
-推送到 `main` 时，GitHub Actions 会自动编译 Windows x64 和 macOS（Apple 芯片、Intel）安装包，可在 Actions 页面的构建记录里下载。推送 `v*` 标签时还会发布到 Releases。安装包都没有付费签名，首次打开时 Windows SmartScreen 或 macOS 可能会拦截。
+推送到 `main` 时，GitHub Actions 会自动编译 Windows x64 和 macOS（Apple 芯片）安装包，可在 Actions 页面的构建记录里下载。推送 `v*` 标签时还会发布到 Releases。安装包都没有付费签名，首次打开时 Windows SmartScreen 或 macOS 可能会拦截。
 
 分发前请阅读 [THIRD_PARTY.md](THIRD_PARTY.md) 中关于 libmpv 许可（GPL / LGPL）的说明。
 
