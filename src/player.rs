@@ -94,6 +94,8 @@ pub struct Player {
     /// The hardware decoding setting; see `apply_hwdec`.
     hwdec: std::cell::Cell<bool>,
     panorama: std::cell::Cell<bool>,
+    /// What [`FAST_PANORAMA`] replaced.
+    before_panorama: std::cell::RefCell<Vec<(&'static str, String)>>,
     /// Horizontal and vertical flip.
     flip: std::cell::Cell<(bool, bool)>,
 }
@@ -103,6 +105,19 @@ fn flip_filters(horizontal: bool, vertical: bool) -> String {
     let filters = [horizontal.then_some("hflip"), vertical.then_some("vflip")];
     filters.into_iter().flatten().collect::<Vec<_>>().join(",")
 }
+
+/// mpv's settings for a panorama, close to its own `fast` profile.
+const FAST_PANORAMA: [(&str, &str); 9] = [
+    ("deband", "no"),
+    ("scale", "bilinear"),
+    ("dscale", "bilinear"),
+    ("cscale", "bilinear"),
+    ("dither-depth", "no"),
+    ("correct-downscaling", "no"),
+    ("linear-downscaling", "no"),
+    ("sigmoid-upscaling", "no"),
+    ("hdr-compute-peak", "no"),
+];
 
 /// Video filters run on the CPU and do nothing to frames held on the GPU, not
 /// even report an error. Flipping therefore needs the copy-back mode, which
@@ -166,6 +181,7 @@ impl Player {
             interpolation: Default::default(),
             hwdec: std::cell::Cell::new(true),
             panorama: std::cell::Cell::new(false),
+            before_panorama: std::cell::RefCell::default(),
             flip: Default::default(),
         })
     }
@@ -301,10 +317,25 @@ impl Player {
     }
 
     /// mpv draws subtitles into the frame, where a panorama would bend them
-    /// out of view, so they're hidden. `aspect` is the saved setting.
-    pub fn set_panorama(&self, on: bool, aspect: &str) {
-        self.panorama.set(on);
-        self.apply_aspect(aspect);
+    /// out of view, so they're hidden. mpv also works on far more pixels than
+    /// usual here, so the costly processing is off until the panorama ends.
+    pub fn set_panorama(&self, on: bool, s: &crate::history::Settings) {
+        if on == self.panorama.replace(on) {
+            return;
+        }
+        let m = &self.mpv;
+        if on {
+            let saved = FAST_PANORAMA.iter().filter_map(|(k, _)| Some((*k, m.get_string(k)?))).collect();
+            self.before_panorama.replace(saved);
+            for (k, v) in FAST_PANORAMA {
+                m.set_property_string(k, v);
+            }
+        } else {
+            for (k, v) in self.before_panorama.take() {
+                m.set_property_string(k, &v);
+            }
+        }
+        self.apply_settings(s);
         let subtitles = if on { "no" } else { "yes" };
         self.mpv.set_property_string("sub-visibility", subtitles);
         self.mpv.set_property_string("secondary-sub-visibility", subtitles);
@@ -318,11 +349,13 @@ impl Player {
         self.apply_hwdec();
         self.apply_aspect(&s.aspect);
         // 画质增强: debanding plus a sharper (heavier) upscaler.
-        m.set_property_string("deband", if s.enhance { "yes" } else { "no" });
-        m.set_property_string("scale", if s.enhance { "ewa_lanczossharp" } else { "lanczos" });
-        m.set_property_string("cscale", if s.enhance { "ewa_lanczossharp" } else { "bilinear" });
+        if !self.panorama.get() {
+            m.set_property_string("deband", if s.enhance { "yes" } else { "no" });
+            m.set_property_string("scale", if s.enhance { "ewa_lanczossharp" } else { "lanczos" });
+            m.set_property_string("cscale", if s.enhance { "ewa_lanczossharp" } else { "bilinear" });
+        }
         m.set_property_string("tone-mapping", &s.tone_mapping);
-        self.set_interpolation(s.interpolation);
+        self.set_interpolation(s.interpolation && !self.panorama.get());
         m.set_property_string("sub-auto", if s.sub_auto { "fuzzy" } else { "no" });
         m.set_property_string("sub-font-size", &s.sub_size.to_string());
         m.set_property_string("sub-pos", &s.sub_pos.to_string());

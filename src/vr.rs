@@ -13,6 +13,12 @@ const MAX_FOV: f64 = 120.0;
 /// Zoom per wheel event, in the same log2 steps as `view::ZOOM_STEP`. Small
 /// because a trackpad sends one every frame.
 pub const WHEEL_STEP: f64 = 0.06;
+/// The render size moves in steps of this fraction, so zooming doesn't
+/// reallocate the frame every time.
+const RENDER_STEPS: f64 = 8.0;
+/// The longest side worth rendering, however large the video and window are:
+/// more than this stutters on most computers.
+const MAX_RENDER_SIDE: f64 = 5760.0;
 /// How far a frame's shape may be from its format's and still be detected.
 const ASPECT_TOLERANCE: f64 = 0.1;
 
@@ -195,6 +201,29 @@ impl Look {
         };
     }
 
+    /// The size to render a `frame`-sized video at so that a view
+    /// `view_height` pixels tall stays about as sharp as the video allows,
+    /// and no larger.
+    pub fn render_size(&self, format: Format, frame: [i32; 2], view_height: i32) -> [i32; 2] {
+        let [w, h] = frame.map(|v| v.max(1) as f64);
+        let per_radian = view_height as f64 / 2.0 / (self.fov.to_radians() / 2.0).tan();
+        let turn = match format.span {
+            Span::Half => PI,
+            Span::Full => TAU,
+        };
+        let (eye_w, eye_h) = (per_radian * turn, per_radian * PI);
+        let (wanted_w, wanted_h) = match format.layout {
+            Layout::Mono => (eye_w, eye_h),
+            Layout::SideBySide => (eye_w * 2.0, eye_h),
+            Layout::TopBottom => (eye_w, eye_h * 2.0),
+        };
+        let wanted = (wanted_w / w).max(wanted_h / h);
+        let stepped = (wanted * RENDER_STEPS).ceil() / RENDER_STEPS;
+        let scale = stepped.min(1.0).min(MAX_RENDER_SIDE / w.max(h));
+        // Even, as a chroma plane is half as wide.
+        [w, h].map(|v| ((v * scale).round() as i32 & !1).max(2))
+    }
+
     /// `aspect` is the view's width over its height.
     pub fn projection(&self, format: Format, aspect: f64) -> Projection {
         let (sy, cy) = self.yaw.sin_cos();
@@ -321,6 +350,24 @@ mod tests {
         let mut full = Look::default();
         full.drag(-1e6, 0.0, 1.0, Span::Full);
         assert!(full.yaw.abs() <= PI);
+    }
+
+    #[test]
+    fn render_size_follows_the_view() {
+        let frame = [7680, 3840];
+        let look = Look::default();
+        // 771 pixels per radian is 4845 across a full turn.
+        assert_eq!(look.render_size(MONO_360, frame, 1080), [5760, 2880]);
+        assert_eq!(look.render_size(MONO_360, frame, 540), [2880, 1440]);
+        assert_eq!(look.render_size(SBS_180, frame, 1080), [5760, 2880]);
+    }
+
+    #[test]
+    fn render_size_never_exceeds_the_video_or_the_limit() {
+        let look = Look::default();
+        assert_eq!(look.render_size(MONO_360, [2048, 1024], 1080), [2048, 1024]);
+        assert_eq!(look.render_size(MONO_360, [11520, 5760], 2160), [5760, 2880]);
+        assert_eq!(look.render_size(MONO_360, [0, 0], 1080), [2, 2]);
     }
 
     #[test]

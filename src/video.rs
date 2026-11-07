@@ -186,10 +186,11 @@ impl Projector {
     }
 }
 
-/// A panoramic picture to show: the view, and the video's size in pixels.
+/// A panoramic picture to show: the view, and the size to render the whole
+/// frame at.
 pub struct Panorama {
     pub view: Projection,
-    pub frame_size: [i32; 2],
+    pub size: [i32; 2],
 }
 
 pub struct VideoTarget {
@@ -210,8 +211,8 @@ impl VideoTarget {
     /// Renders a new frame if mpv has one, or if the target was resized, and
     /// returns the texture to show. `window` is in physical pixels.
     ///
-    /// mpv normally renders at window size. A panorama renders at the video's
-    /// own size instead, as a view only shows a small part of it.
+    /// mpv normally renders at window size. A panorama renders larger, as a
+    /// view only shows a small part of it.
     pub fn update(
         &mut self,
         gl: &glow::Context,
@@ -223,7 +224,7 @@ impl VideoTarget {
         let size = match &panorama {
             Some(p) => {
                 let limit = unsafe { gl.get_parameter_i32(glow::MAX_TEXTURE_SIZE) }.max(1);
-                p.frame_size.map(|v| v.clamp(1, limit))
+                p.size.map(|v| v.clamp(1, limit))
             }
             None => window,
         };

@@ -711,7 +711,7 @@ impl App {
         let Some(p) = &self.player else { return };
         p.set_view(self.view);
         p.set_crop(None);
-        p.set_panorama(format.is_some(), &self.tracker.settings.aspect);
+        p.set_panorama(format.is_some(), &self.tracker.settings);
         if remember && !self.tracker.incognito {
             if let (Some(store), Some(key)) = (&self.tracker.store, crate::history::file_key(&p.state.path)) {
                 store.set_value(&format!("vr:{key}"), vr::Format::stored(format));
@@ -1293,7 +1293,7 @@ impl eframe::App for App {
                 let aspect = px[0].max(1) as f64 / px[1].max(1) as f64;
                 let pano = self.vr.map(|f| Panorama {
                     view: self.vr_look.projection(f, aspect),
-                    frame_size: [s.width as i32, s.height as i32],
+                    size: self.vr_look.render_size(f, [s.width as i32, s.height as i32], px[1]),
                 });
                 match video.update(gl, render, px, pano) {
                     Ok(texture) => {
@@ -1549,7 +1549,7 @@ impl eframe::App for App {
                     self.view = View::default();
                     player.set_view(self.view);
                     if self.vr.take().is_some() {
-                        player.set_panorama(false, &self.tracker.settings.aspect);
+                        player.set_panorama(false, &self.tracker.settings);
                     }
                     self.vr_pending = true;
                     self.quick.crop = Crop::Off;
