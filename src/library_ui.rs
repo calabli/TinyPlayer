@@ -14,6 +14,7 @@ use crate::app::fmt_time;
 use crate::i18n::{tf, tr};
 use crate::icons::{self, Icon};
 use crate::library::{Collection, Folder, Library, Video};
+use crate::library_manage::{self, Manager};
 use crate::playlist::natural_cmp;
 use crate::theme::{self, ACCENT, TEXT};
 
@@ -43,6 +44,7 @@ enum View {
 enum Mode {
     Grid,
     Folders,
+    Manage,
 }
 
 #[derive(Clone, Copy, PartialEq)]
@@ -97,6 +99,13 @@ pub struct LibraryView {
     thumbs: HashMap<i64, (String, TextureHandle, u64)>,
     frame: u64,
     thumb_failed: HashSet<i64>,
+    manager: Manager,
+    /// Counts reloads of `videos`.
+    revision: u64,
+    /// A disk came or went, so the folders need scanning again.
+    rescan: bool,
+    /// Private mode: leaves out what was watched and how often.
+    pub hide_history: bool,
     /// (video id, text being typed, focus requested yet)
     tag_edit: Option<(i64, String, bool)>,
     tag_edit_pos: egui::Pos2,
@@ -131,6 +140,10 @@ impl LibraryView {
             thumbs: HashMap::new(),
             frame: 0,
             thumb_failed: HashSet::new(),
+            manager: Manager::new(),
+            revision: 0,
+            rescan: false,
+            hide_history: false,
             tag_edit: None,
             tag_edit_pos: pos2(0.0, 0.0),
             fav_picker: None,
@@ -139,6 +152,11 @@ impl LibraryView {
             new_collection: None,
             probing: None,
         }
+    }
+
+    /// True once when the folders should be scanned again.
+    pub fn take_rescan(&mut self) -> bool {
+        std::mem::take(&mut self.rescan)
     }
 
     pub fn mark_dirty(&mut self) {
@@ -178,6 +196,7 @@ impl LibraryView {
             return;
         }
         self.dirty = false;
+        self.revision += 1;
         if let Some(lib) = &self.lib {
             self.videos = lib.videos();
             self.folders = lib.folders();
@@ -238,7 +257,19 @@ impl LibraryView {
     }
 
     pub fn show(&mut self, ui: &mut egui::Ui, rect: Rect) -> Action {
+        if self.manager.poll(ui.ctx(), self.lib.as_ref(), &self.videos) {
+            self.dirty = true;
+        }
+        self.rescan |= self.manager.watch_disks(ui.ctx(), &self.folders);
         self.reload_if_dirty();
+        if self.hide_history {
+            if matches!(self.view, View::Continue | View::MostPlayed) {
+                self.view = View::All;
+            }
+            if matches!(self.sort, Sort::Played | Sort::Plays) {
+                self.sort = Sort::Added;
+            }
+        }
         let mut action = Action::None;
         let p = ui.painter_at(rect);
         p.rect_filled(rect, 0.0, theme::bg());
@@ -248,9 +279,15 @@ impl LibraryView {
             action = a;
         }
         let nav = Rect::from_min_max(pos2(rect.left(), top.bottom()), pos2(rect.left() + NAV_W, rect.bottom()));
+        let content = Rect::from_min_max(pos2(nav.right(), top.bottom()), rect.max);
+        if self.mode == Mode::Manage && !self.folders.is_empty() {
+            if let Some(a) = self.manage(ui, &p, nav, content) {
+                action = a;
+            }
+            return action;
+        }
         self.nav(ui, &p, nav);
 
-        let content = Rect::from_min_max(pos2(nav.right(), top.bottom()), rect.max);
         let content_action = if self.folders.is_empty() {
             empty_library(ui, &p, content)
         } else if self.mode == Mode::Folders {
@@ -266,6 +303,41 @@ impl LibraryView {
         action
     }
 
+    fn manage(&mut self, ui: &mut egui::Ui, p: &egui::Painter, nav: Rect, content: Rect) -> Option<Action> {
+        let mut loads = 0;
+        let mut waiting = false;
+        let mut thumbs = HashMap::new();
+        for id in self.manager.visible() {
+            waiting |= self.ensure_thumb(ui.ctx(), id, &mut loads);
+            if let Some(texture) = self.use_thumb(id) {
+                thumbs.insert(id, texture);
+            }
+        }
+        self.evict_thumbs();
+        if waiting {
+            ui.ctx().request_repaint();
+        }
+        let lib = self.lib.as_ref()?;
+        let data = library_manage::Data {
+            lib,
+            videos: &self.videos,
+            folders: &self.folders,
+            search: &self.search,
+            revision: self.revision,
+            collections: &self.collections,
+            thumbs: &thumbs,
+        };
+        self.manager.nav(ui, p, nav, &data);
+        let out = self.manager.show(ui, p, content, &data);
+        if self.manager.take_changed() {
+            self.dirty = true;
+        }
+        if out.clear_search {
+            self.search.clear();
+        }
+        out.play.map(Action::Play)
+    }
+
     // ---- Top bar -------------------------------------------------------
 
     fn top_bar(&mut self, ui: &mut egui::Ui, p: &egui::Painter, top: Rect) -> Option<Action> {
@@ -273,7 +345,7 @@ impl LibraryView {
         p.line_segment([top.left_bottom(), top.right_bottom()], Stroke::new(0.5, theme::line()));
         p.text(pos2(top.left() + 20.0, top.center().y), Align2::LEFT_CENTER, "TINYPLAYER", FontId::monospace(12.0), ACCENT);
 
-        let search_w = (top.width() - NAV_W - 560.0).clamp(160.0, 380.0);
+        let search_w = (top.width() - NAV_W - 624.0).clamp(160.0, 380.0);
         let search_rect = Rect::from_min_size(pos2(top.left() + NAV_W + 16.0, top.center().y - 15.0), vec2(search_w, 30.0));
         p.rect_filled(search_rect, 15.0, theme::panel());
         p.rect_stroke(search_rect, 15.0, Stroke::new(0.5, theme::line()), StrokeKind::Inside);
@@ -307,10 +379,10 @@ impl LibraryView {
             }
         }
 
-        // Mode switch: 媒体库 | 文件夹
-        let seg = Rect::from_min_size(pos2(search_rect.right() + 16.0, top.center().y - 14.0), vec2(132.0, 28.0));
+        // Mode switch: 媒体库 | 文件夹 | 管理
+        let seg = Rect::from_min_size(pos2(search_rect.right() + 16.0, top.center().y - 14.0), vec2(196.0, 28.0));
         p.rect_filled(seg, 14.0, theme::panel());
-        for (i, (mode, label)) in [(Mode::Grid, tr("媒体库")), (Mode::Folders, tr("文件夹"))].into_iter().enumerate() {
+        for (i, (mode, label)) in [(Mode::Grid, tr("媒体库")), (Mode::Folders, tr("文件夹")), (Mode::Manage, tr("管理"))].into_iter().enumerate() {
             let r = Rect::from_min_size(seg.min + vec2(2.0 + i as f32 * 64.0, 2.0), vec2(64.0, 24.0));
             let resp = ui.interact(r, ui.scope_id().with(("mode", i)), Sense::click());
             let on = self.mode == mode;
@@ -365,6 +437,9 @@ impl LibraryView {
             (View::Recent, tr("最近添加"), recent_n),
             (View::MostPlayed, tr("最常播放"), played_n),
         ] {
+            if self.hide_history && matches!(view, View::Continue | View::MostPlayed) {
+                continue;
+            }
             let r = Rect::from_min_size(pos2(nav.left(), y), vec2(NAV_W, 30.0));
             if nav_item(ui, &np, r, ("nav", label), label, Some(n), grid_mode && self.view == view) {
                 self.view = view;
@@ -485,13 +560,13 @@ impl LibraryView {
             let r = Rect::from_min_size(pos2(nav.left(), y), vec2(NAV_W, 28.0));
             let name = base_name(&f.path);
             let on = match self.mode {
-                Mode::Grid => self.folder_sel == Some(f.id),
+                Mode::Grid | Mode::Manage => self.folder_sel == Some(f.id),
                 Mode::Folders => self.folder_loc.as_ref().is_some_and(|l| l.root == f.id),
             };
             let hovered = ui.rect_contains_pointer(r);
             if nav_item(ui, &np, r, ("folder", f.id), &name, if hovered { None } else { Some(f.count as usize) }, on) {
                 match self.mode {
-                    Mode::Grid => self.folder_sel = if on { None } else { Some(f.id) },
+                    Mode::Grid | Mode::Manage => self.folder_sel = if on { None } else { Some(f.id) },
                     Mode::Folders => self.folder_loc = Some(FolderLoc { root: f.id, parts: Vec::new() }),
                 }
             }
@@ -562,6 +637,9 @@ impl LibraryView {
                 (Sort::Played, tr("最近播放")),
                 (Sort::Added, tr("最近添加")),
             ] {
+                if self.hide_history && matches!(sort, Sort::Plays | Sort::Played) {
+                    continue;
+                }
                 let g = p.layout_no_wrap(label.into(), FontId::proportional(12.0), theme::text());
                 let r = Rect::from_min_size(pos2(sx - g.size().x - 12.0, header.center().y - 12.0), vec2(g.size().x + 12.0, 24.0));
                 let resp = ui.interact(r, ui.scope_id().with(("sort", label)), Sense::click());
@@ -752,7 +830,8 @@ impl LibraryView {
             .collect();
         inside.sort_by(|a, b| natural_cmp(&a.path, &b.path));
         let total: f64 = inside.iter().map(|v| v.duration).sum();
-        let watched = inside.iter().filter(|v| v.progress().is_some_and(|p| p >= FINISHED)).count();
+        let finished = |v: &&&Video| !self.hide_history && v.progress().is_some_and(|p| p >= FINISHED);
+        let watched = inside.iter().filter(finished).count();
         let covers = inside.iter().take(4).map(|v| v.id).collect();
         (covers, inside.len(), total, watched)
     }
@@ -795,7 +874,7 @@ impl LibraryView {
                                 let tex = self.use_thumb(id);
                                 let Some(v) = self.video(id) else { continue };
                                 let rank = ranked.then_some(i + 1);
-                                if let Some(ev) = draw_card(ui, &p, card, thumb, v, tex, rank) {
+                                if let Some(ev) = draw_card(ui, &p, card, thumb, v, tex, rank, self.hide_history) {
                                     events.push(ev);
                                 }
                             }
@@ -1067,6 +1146,7 @@ fn draw_card(
     v: &Video,
     tex: Option<egui::TextureId>,
     rank: Option<usize>,
+    hide_history: bool,
 ) -> Option<CardEvent> {
     let mut ev = None;
     let resp = ui.interact(thumb, ui.scope_id().with(("card", v.id)), Sense::click());
@@ -1115,7 +1195,7 @@ fn draw_card(
         }
     }
 
-    let progress = v.progress();
+    let progress = v.progress().filter(|_| !hide_history);
     let finished = progress.is_some_and(|x| x >= FINISHED);
     let badge = if finished { tr("已看完").to_string() } else if v.duration > 0.0 { fmt_time(v.duration) } else { String::new() };
     if !badge.is_empty() {
@@ -1132,7 +1212,7 @@ fn draw_card(
 
     // Title + plays.
     let ty = thumb.bottom() + 15.0;
-    let plays = if v.plays > 0 { format!("▶ {}", v.plays) } else { String::new() };
+    let plays = if v.plays > 0 && !hide_history { format!("▶ {}", v.plays) } else { String::new() };
     let plays_font = FontId::monospace(if rank.is_some() { 11.0 } else { 10.0 });
     let plays_w = if plays.is_empty() { 0.0 } else { p.layout_no_wrap(plays.clone(), plays_font.clone(), theme::text()).size().x + 8.0 };
     let title = elide(p, &v.title, FontId::proportional(13.0), card.width() - plays_w);
@@ -1332,7 +1412,7 @@ fn text_btn(ui: &mut egui::Ui, p: &egui::Painter, right_center: egui::Pos2, id: 
     (r.left(), resp.clicked())
 }
 
-fn nav_item(
+pub(crate) fn nav_item(
     ui: &mut egui::Ui,
     p: &egui::Painter,
     r: Rect,
@@ -1381,7 +1461,7 @@ fn toggle_tag(sel: &mut Vec<String>, tag: &str) {
     }
 }
 
-fn base_name(path: &str) -> String {
+pub(crate) fn base_name(path: &str) -> String {
     Path::new(path).file_name().map(|n| n.to_string_lossy().into_owned()).unwrap_or_else(|| path.to_string())
 }
 
@@ -1390,7 +1470,7 @@ fn search_icon(p: &egui::Painter, c: egui::Pos2, color: Color32) {
     p.line_segment([c + vec2(2.2, 2.2), c + vec2(5.5, 5.5)], Stroke::new(1.6, color));
 }
 
-fn placeholder_color(id: i64) -> Color32 {
+pub(crate) fn placeholder_color(id: i64) -> Color32 {
     const C: [(u8, u8, u8); 6] = [(15, 34, 51), (42, 26, 46), (19, 38, 28), (43, 33, 19), (26, 31, 51), (16, 40, 42)];
     let (r, g, b) = C[(id.unsigned_abs() % C.len() as u64) as usize];
     Color32::from_rgb(r, g, b)
@@ -1404,7 +1484,7 @@ fn load_thumb(ctx: &egui::Context, id: i64, path: &str) -> Option<TextureHandle>
     Some(ctx.load_texture(format!("thumb-{id}"), color, egui::TextureOptions::LINEAR))
 }
 
-fn elide(p: &egui::Painter, text: &str, font: FontId, max_w: f32) -> String {
+pub(crate) fn elide(p: &egui::Painter, text: &str, font: FontId, max_w: f32) -> String {
     let fits = |t: &str| p.layout_no_wrap(t.to_string(), font.clone(), theme::text()).size().x <= max_w;
     if fits(text) {
         return text.to_string();
@@ -1419,7 +1499,7 @@ fn elide(p: &egui::Painter, text: &str, font: FontId, max_w: f32) -> String {
     chars[..lo].iter().collect::<String>() + "…"
 }
 
-fn reveal_in_file_manager(path: &str) {
+pub(crate) fn reveal_in_file_manager(path: &str) {
     #[cfg(target_os = "windows")]
     {
         let _ = std::process::Command::new("explorer").arg(format!("/select,{}", path.replace('/', "\\"))).spawn();

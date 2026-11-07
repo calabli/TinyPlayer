@@ -77,20 +77,22 @@ impl MediaKeys {
     }
 
     /// Tells the OS what's playing, only when that actually changed.
-    pub fn publish(&mut self, s: &State) {
+    /// `private` keeps the file's name out of the system's media controls.
+    pub fn publish(&mut self, s: &State, private: bool) {
+        let title = if private { "TinyPlayer" } else { s.title.as_str() };
         let expected = self.anchor.0 + self.anchor.1.elapsed().as_secs_f64() * if self.paused { 0.0 } else { s.speed };
         let drifted = !s.idle && (s.position - expected).abs() > MAX_DRIFT_SECS;
-        let meta_changed = s.title != self.title || s.duration != self.duration;
+        let meta_changed = title != self.title || s.duration != self.duration;
         if !meta_changed && !drifted && s.paused == self.paused && s.idle == self.idle {
             return;
         }
         if meta_changed {
             let _ = self.controls.set_metadata(MediaMetadata {
-                title: Some(&s.title),
+                title: Some(title),
                 duration: (s.duration > 0.0).then(|| Duration::from_secs_f64(s.duration)),
                 ..Default::default()
             });
-            self.title.clone_from(&s.title);
+            self.title = title.to_string();
             self.duration = s.duration;
         }
         let progress = Some(MediaPosition(Duration::from_secs_f64(s.position.max(0.0))));

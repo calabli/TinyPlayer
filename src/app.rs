@@ -822,7 +822,7 @@ impl App {
             return;
         };
         if self.tracker.incognito {
-            self.show_osd(ctx, tr("无痕模式下不保存书签"));
+            self.show_osd(ctx, tr("隐私模式下不保存书签"));
             return;
         }
         if self.marks.has_bookmark_near(pos) {
@@ -923,6 +923,7 @@ impl App {
         let mut want_zoom: Option<f64> = None;
         let mut want_view_reset = false;
         let mut want_vr = false;
+        let mut want_private = false;
         let mut want_chapter: Option<bool> = None;
 
         // The settings overlay is modal: only its own shortcuts apply.
@@ -955,6 +956,7 @@ impl App {
             }
             match key {
                 Key::O if cmd => open_dialog = true,
+                Key::P if cmd && shift => want_private = true,
                 Key::D if cmd && !s.idle => want_fav = true,
                 Key::Home if !s.idle => {
                     player.seek_to(0.0, true);
@@ -1093,6 +1095,10 @@ impl App {
         if want_vr {
             self.toggle_vr(ctx);
         }
+        if want_private {
+            self.tracker.incognito = !self.tracker.incognito;
+            self.show_osd(ctx, if self.tracker.incognito { tr("隐私模式已开启") } else { tr("隐私模式已关闭") });
+        }
         if want_on_top {
             self.toggle_on_top(ctx);
         }
@@ -1209,6 +1215,7 @@ impl eframe::App for App {
         self.sync_window_frame(&ctx);
         self.ensure_gl(&ctx, frame);
         self.handle_input(&ctx);
+        self.library.hide_history = self.tracker.incognito;
         self.sync_vr(&ctx);
         self.sync_device_volume(&ctx);
         self.flush_open(&ctx);
@@ -1335,7 +1342,8 @@ impl eframe::App for App {
                 LibAction::None => {}
             }
         } else if s.idle {
-            match draw_empty_state(ui, stage, &self.recent) {
+            let recent = if self.tracker.incognito { &[][..] } else { &self.recent };
+            match draw_empty_state(ui, stage, recent) {
                 EmptyAction::Open => self.open_dialog(),
                 EmptyAction::AddFolder => self.add_folder_dialog(),
                 EmptyAction::Recent(path) => self.pending_open.push(path),
@@ -1379,7 +1387,9 @@ impl eframe::App for App {
                 }
             } else if alpha > 0.0 {
                 let right_gap = if self.frameless { 44.0 } else { 16.0 };
-                draw_top_bar(&painter, stage, &s, self.tracker.current_play_count(), alpha, right_gap);
+                let private = self.tracker.incognito;
+                let plays = if private { 0 } else { self.tracker.current_play_count() };
+                draw_top_bar(&painter, stage, &s, plays, private, alpha, right_gap);
                 if self.frameless && close_button(ui, stage, alpha) {
                     ctx.send_viewport_cmd(ViewportCommand::Close);
                 }
@@ -1596,6 +1606,9 @@ impl eframe::App for App {
                 self.scroll_to_current = true;
             }
         }
+        if self.library.take_rescan() {
+            self.scanner.scan();
+        }
         while let Ok(msg) = self.scanner.rx.try_recv() {
             match msg {
                 ScanMsg::Changed => self.library.mark_dirty(),
@@ -1612,7 +1625,7 @@ impl eframe::App for App {
         let st = &player.state;
         self.keep_awake.set(hold_for(!st.idle && !st.paused && !st.eof, st.width > 0));
         if let Some(keys) = &mut self.media_keys {
-            keys.publish(st);
+            keys.publish(st, self.tracker.incognito);
         }
         let eof = player.state.eof && !player.state.idle;
         let eof_edge = eof && !self.was_eof;
@@ -2094,7 +2107,7 @@ fn back_button(ui: &mut egui::Ui, stage: Rect, alpha: f32) -> bool {
     resp.clicked()
 }
 
-fn draw_top_bar(p: &egui::Painter, full: Rect, s: &crate::player::State, plays: i64, alpha: f32, right_gap: f32) {
+fn draw_top_bar(p: &egui::Painter, full: Rect, s: &crate::player::State, plays: i64, private: bool, alpha: f32, right_gap: f32) {
     let a = |c: Color32| c.gamma_multiply(alpha);
     let band = Rect::from_min_max(full.min, pos2(full.right(), full.top() + 44.0));
     p.rect_filled(band, 0.0, theme::scrim((110.0 * alpha) as u8));
@@ -2102,6 +2115,9 @@ fn draw_top_bar(p: &egui::Painter, full: Rect, s: &crate::player::State, plays: 
     p.text(pos2(full.left() + 92.0, y), Align2::LEFT_CENTER, &s.title, FontId::proportional(13.0), a(TEXT));
 
     let mut tags: Vec<(String, Color32)> = Vec::new();
+    if private {
+        tags.push(("PRIVATE".into(), ACCENT));
+    }
     if plays > 0 {
         tags.push((format!("PLAYED {plays}×"), TEXT_2));
     }

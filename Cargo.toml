@@ -1,6 +1,6 @@
 [package]
 name = "tinyplayer"
-version = "0.1.8"
+version = "0.1.9"
 edition = "2024"
 description = "A fast, small, cross-platform video player built on libmpv"
 license = "GPL-3.0-or-later"
@@ -15,6 +15,7 @@ rfd = "0.17.2"
 rusqlite = { version = "0.41.1", features = ["bundled"] }
 sha2 = { version = "0.11", default-features = false }
 souvlaki = { version = "0.9.3", default-features = false }
+trash = { version = "5.3.0", default-features = false }
 
 [target.'cfg(target_os = "macos")'.dependencies]
 # Receives files opened from Finder; both are already in the tree through winit.

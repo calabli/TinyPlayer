@@ -16,6 +16,8 @@ pub struct Folder {
     pub id: i64,
     pub path: String,
     pub count: i64,
+    /// Videos that couldn't be found, such as on an unplugged disk.
+    pub missing: i64,
 }
 
 #[derive(Clone, Debug)]
@@ -43,6 +45,8 @@ pub struct Video {
     pub tags: Vec<String>,
     /// Ids of the collections (favorites lists) this video is in.
     pub collections: Vec<i64>,
+    pub size: i64,
+    pub mtime: i64,
 }
 
 impl Video {
@@ -52,6 +56,14 @@ impl Video {
             _ => None,
         }
     }
+}
+
+/// A named group of watched folders.
+#[derive(Clone, Debug)]
+pub struct FolderSet {
+    pub id: i64,
+    pub name: String,
+    pub folders: Vec<i64>,
 }
 
 pub struct Library {
@@ -98,6 +110,17 @@ pub const SCHEMA: &str = "
         added_at      INTEGER NOT NULL,
         PRIMARY KEY (collection_id, video_id)
     );
+    CREATE TABLE IF NOT EXISTS folder_sets (
+        id         INTEGER PRIMARY KEY,
+        name       TEXT NOT NULL,
+        created_at INTEGER NOT NULL
+    );
+    CREATE TABLE IF NOT EXISTS folder_set_items (
+        set_id    INTEGER NOT NULL,
+        folder_id INTEGER NOT NULL,
+        PRIMARY KEY (set_id, folder_id)
+    );
+    CREATE TABLE IF NOT EXISTS dup_ignored (key TEXT PRIMARY KEY);
     CREATE TABLE IF NOT EXISTS video_tags (
         video_id INTEGER NOT NULL,
         tag_id   INTEGER NOT NULL,
@@ -153,16 +176,92 @@ impl Library {
         );
         let _ = self.db.execute("DELETE FROM videos WHERE folder_id = ?1", [id]);
         let _ = self.db.execute("DELETE FROM folders WHERE id = ?1", [id]);
+        let _ = self.db.execute("DELETE FROM folder_set_items WHERE folder_id = ?1", [id]);
+    }
+
+    pub fn folder_sets(&self) -> Vec<FolderSet> {
+        let Ok(mut stmt) = self.db.prepare(
+            "SELECT s.id, s.name, (SELECT GROUP_CONCAT(i.folder_id) FROM folder_set_items i WHERE i.set_id = s.id)
+             FROM folder_sets s ORDER BY s.created_at, s.id",
+        ) else {
+            return Vec::new();
+        };
+        stmt.query_map([], |r| {
+            let folders: Option<String> = r.get(2)?;
+            Ok(FolderSet {
+                id: r.get(0)?,
+                name: r.get(1)?,
+                folders: folders.map(|f| f.split(',').filter_map(|x| x.parse().ok()).collect()).unwrap_or_default(),
+            })
+        })
+        .map(|it| it.flatten().collect())
+        .unwrap_or_default()
+    }
+
+    pub fn create_folder_set(&self, name: &str, folders: &[i64]) -> Option<i64> {
+        self.db.execute("INSERT INTO folder_sets (name, created_at) VALUES (?1, ?2)", params![name, now_secs()]).ok()?;
+        let id = self.db.last_insert_rowid();
+        for folder in folders {
+            let _ = self.db.execute("INSERT OR IGNORE INTO folder_set_items VALUES (?1, ?2)", params![id, folder]);
+        }
+        Some(id)
+    }
+
+    pub fn delete_folder_set(&self, id: i64) {
+        let _ = self.db.execute("DELETE FROM folder_set_items WHERE set_id = ?1", [id]);
+        let _ = self.db.execute("DELETE FROM folder_sets WHERE id = ?1", [id]);
+    }
+
+    /// Groups the viewer said aren't duplicates, by `duplicates::Group::key`.
+    pub fn ignored_duplicates(&self) -> std::collections::HashSet<String> {
+        let Ok(mut stmt) = self.db.prepare("SELECT key FROM dup_ignored") else {
+            return Default::default();
+        };
+        stmt.query_map([], |r| r.get(0)).map(|it| it.flatten().collect()).unwrap_or_default()
+    }
+
+    pub fn ignore_duplicate(&self, key: &str, ignored: bool) {
+        let sql = if ignored { "INSERT OR IGNORE INTO dup_ignored VALUES (?1)" } else { "DELETE FROM dup_ignored WHERE key = ?1" };
+        let _ = self.db.execute(sql, [key]);
+    }
+
+    /// Records that a file now lives at `to`. History is keyed by path, so
+    /// its progress, plays, bookmarks and VR format move with it.
+    pub fn record_move(&self, id: i64, to: &Path, folder_id: i64) {
+        let Ok(old) = self.db.query_row("SELECT key FROM videos WHERE id = ?1", [id], |r| r.get::<_, String>(0)) else {
+            return;
+        };
+        let path = display_path(to);
+        let size = std::fs::metadata(to).map_or(0, |m| m.len());
+        let key = crate::history::file_key(&path).unwrap_or_else(|| format!("{path}|{size}"));
+        let title = to.file_stem().map(|s| s.to_string_lossy().into_owned()).unwrap_or_else(|| path.clone());
+        let _ = self.db.execute_batch("BEGIN");
+        let _ = self.db.execute(
+            "UPDATE videos SET path = ?2, key = ?3, title = ?4, folder_id = ?5 WHERE id = ?1",
+            params![id, path, key, title, folder_id],
+        );
+        for table in ["history", "play_events", "bookmarks"] {
+            let verb = if table == "history" { "UPDATE OR REPLACE" } else { "UPDATE" };
+            let sql = format!("{verb} {table} SET key = ?1, path = ?2 WHERE key = ?3");
+            let _ = self.db.execute(&sql, params![key, path, old]);
+        }
+        let _ = self.db.execute("UPDATE history SET title = ?1 WHERE key = ?2", params![title, key]);
+        let _ = self.db.execute(
+            "UPDATE OR REPLACE settings SET k = ?1 WHERE k = ?2",
+            params![format!("vr:{key}"), format!("vr:{old}")],
+        );
+        let _ = self.db.execute_batch("COMMIT");
     }
 
     pub fn folders(&self) -> Vec<Folder> {
         let Ok(mut stmt) = self.db.prepare(
-            "SELECT f.id, f.path, (SELECT COUNT(*) FROM videos v WHERE v.folder_id = f.id AND v.missing = 0)
+            "SELECT f.id, f.path, (SELECT COUNT(*) FROM videos v WHERE v.folder_id = f.id AND v.missing = 0),
+                    (SELECT COUNT(*) FROM videos v WHERE v.folder_id = f.id AND v.missing != 0)
              FROM folders f ORDER BY f.path",
         ) else {
             return Vec::new();
         };
-        stmt.query_map([], |r| Ok(Folder { id: r.get(0)?, path: r.get(1)?, count: r.get(2)? }))
+        stmt.query_map([], |r| Ok(Folder { id: r.get(0)?, path: r.get(1)?, count: r.get(2)?, missing: r.get(3)? }))
             .map(|it| it.flatten().collect())
             .unwrap_or_default()
     }
@@ -264,7 +363,8 @@ impl Library {
                     (SELECT COUNT(*) FROM play_events p WHERE p.key = v.key),
                     (SELECT GROUP_CONCAT(t.name, char(31)) FROM video_tags vt JOIN tags t ON t.id = vt.tag_id
                       WHERE vt.video_id = v.id),
-                    (SELECT GROUP_CONCAT(ci.collection_id) FROM collection_items ci WHERE ci.video_id = v.id)
+                    (SELECT GROUP_CONCAT(ci.collection_id) FROM collection_items ci WHERE ci.video_id = v.id),
+                    v.size, v.mtime
              FROM videos v LEFT JOIN history h ON h.key = v.key
              WHERE v.missing = 0",
         ) else {
@@ -292,6 +392,8 @@ impl Library {
                     .get::<_, Option<String>>(13)?
                     .map(|c| c.split(',').filter_map(|x| x.parse().ok()).collect())
                     .unwrap_or_default(),
+                size: r.get(14)?,
+                mtime: r.get(15)?,
             })
         })
         .map(|it| it.flatten().collect())
@@ -416,6 +518,67 @@ pub fn display_path(p: &Path) -> String {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn moving_a_file_keeps_its_records() {
+        let dir = std::env::temp_dir().join(format!("tinyplayer-lib-move-{}", std::process::id()));
+        let _ = std::fs::remove_dir_all(&dir);
+        std::fs::create_dir_all(dir.join("a")).unwrap();
+        std::fs::create_dir_all(dir.join("b")).unwrap();
+        let db = dir.join("t.db");
+        let store = crate::history::Store::open(&db).unwrap();
+        let lib = Library::open(&db).unwrap();
+
+        let from = dir.join("a/film.mp4");
+        std::fs::write(&from, b"12345").unwrap();
+        let folder = lib.add_folder(dir.to_str().unwrap()).unwrap();
+        lib.upsert_file(folder, &from, 5, 1);
+        let old = crate::history::file_key(from.to_str().unwrap()).unwrap();
+        let id = lib.videos()[0].id;
+        store.save_position(&old, from.to_str().unwrap(), "film", 12.0, 60.0);
+        store.record_play(&old, from.to_str().unwrap(), 1);
+        store.add_bookmark(&old, from.to_str().unwrap(), 3.0, "x");
+        store.set_value(&format!("vr:{old}"), "360");
+        lib.add_tag(id, "keep");
+
+        let to = dir.join("b/film (2).mp4");
+        std::fs::rename(&from, &to).unwrap();
+        lib.record_move(id, &to, folder);
+
+        let new = crate::history::file_key(to.to_str().unwrap()).unwrap();
+        let v = &lib.videos()[0];
+        assert_eq!(v.id, id);
+        assert_eq!(v.title, "film (2)");
+        assert_eq!(v.position, Some(12.0));
+        assert_eq!(store.recent(1)[0].title, "film (2)");
+        assert_eq!(v.plays, 1);
+        assert_eq!(v.tags, ["keep"]);
+        assert_eq!(store.bookmarks(&new).len(), 1);
+        assert_eq!(store.get_value(&format!("vr:{new}")).as_deref(), Some("360"));
+        assert_eq!(store.get_value(&format!("vr:{old}")), None);
+        let _ = std::fs::remove_dir_all(&dir);
+    }
+
+    #[test]
+    fn folder_sets_and_ignored_groups_are_kept() {
+        let dir = std::env::temp_dir().join(format!("tinyplayer-lib-sets-{}", std::process::id()));
+        let _ = std::fs::remove_dir_all(&dir);
+        std::fs::create_dir_all(&dir).unwrap();
+        let lib = Library::open(&dir.join("t.db")).unwrap();
+        let folder = lib.add_folder(dir.to_str().unwrap()).unwrap();
+        let set = lib.create_folder_set("影视", &[folder]).unwrap();
+        assert_eq!(lib.folder_sets()[0].folders, [folder]);
+        lib.remove_folder(folder);
+        assert!(lib.folder_sets()[0].folders.is_empty());
+        lib.delete_folder_set(set);
+        assert!(lib.folder_sets().is_empty());
+
+        lib.ignore_duplicate("1-2", true);
+        assert!(lib.ignored_duplicates().contains("1-2"));
+        lib.ignore_duplicate("1-2", false);
+        assert!(lib.ignored_duplicates().is_empty());
+        let _ = std::fs::remove_dir_all(&dir);
+    }
 
     fn temp_lib() -> (Library, PathBuf) {
         let dir = std::env::temp_dir().join(format!("tp-lib-test-{}", std::process::id()));

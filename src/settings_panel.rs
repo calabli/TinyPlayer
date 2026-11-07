@@ -295,6 +295,7 @@ pub fn show(
             (", / .".into(), tr("上一帧 / 下一帧")),
             ("B".into(), tr("A-B 循环")),
             ("V".into(), tr("VR 全景")),
+            (format!("{cmd}Shift + P"), tr("隐私模式")),
             ("T".into(), tr("窗口置顶")),
             ("I".into(), tr("画中画")),
             ("H".into(), tr("无边框播放")),
@@ -367,7 +368,7 @@ pub fn show(
     y += ROW_H;
 
     let r = row(y);
-    label(r, tr("无痕模式"), tr("本次运行不写入任何记录，重启后恢复"), true);
+    label(r, tr("隐私模式"), tr("不写入记录，隐藏观看记录和系统媒体信息里的片名，重启后恢复"), true);
     if toggle(ui, &p, r, "incognito", *incognito, true) {
         *incognito = !*incognito;
     }
