@@ -158,6 +158,16 @@ impl Library {
     // ---- Folders ----
 
     /// Adds a watched folder. Returns its id (existing id if already added).
+    /// Groups writes until [`Self::commit`], which is far faster than
+    /// committing each of thousands on its own.
+    pub fn begin(&self) {
+        let _ = self.db.execute_batch("BEGIN IMMEDIATE");
+    }
+
+    pub fn commit(&self) {
+        let _ = self.db.execute_batch("COMMIT");
+    }
+
     pub fn add_folder(&self, path: &str) -> Option<i64> {
         let canon = std::fs::canonicalize(path).ok()?;
         let p = display_path(&canon);
@@ -272,7 +282,8 @@ impl Library {
     /// file is new or changed (and so needs probing).
     pub fn upsert_file(&self, folder_id: i64, path: &Path, size: u64, mtime: i64) -> bool {
         let p = display_path(path);
-        let key = crate::history::file_key(&p).unwrap_or_else(|| format!("{p}|{size}"));
+        // Reads the disk, so only for files that need it.
+        let key = || crate::history::file_key(&p).unwrap_or_else(|| format!("{p}|{size}"));
         let existing: Option<(i64, i64, i64)> = self
             .db
             .query_row("SELECT id, size, mtime FROM videos WHERE path = ?1", [&p], |r| {
@@ -289,7 +300,7 @@ impl Library {
             Some((id, ..)) => {
                 let _ = self.db.execute(
                     "UPDATE videos SET size = ?2, mtime = ?3, key = ?4, probed = 0, missing = 0 WHERE id = ?1",
-                    params![id, size as i64, mtime, key],
+                    params![id, size as i64, mtime, key()],
                 );
                 true
             }
@@ -298,7 +309,7 @@ impl Library {
                 let _ = self.db.execute(
                     "INSERT INTO videos (folder_id, path, key, title, size, mtime, added_at)
                      VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7)",
-                    params![folder_id, p, key, title, size as i64, mtime, now_secs()],
+                    params![folder_id, p, key(), title, size as i64, mtime, now_secs()],
                 );
                 true
             }

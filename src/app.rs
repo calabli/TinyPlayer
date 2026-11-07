@@ -1612,8 +1612,9 @@ impl eframe::App for App {
         while let Ok(msg) = self.scanner.rx.try_recv() {
             match msg {
                 ScanMsg::Changed => self.library.mark_dirty(),
-                ScanMsg::Probing(done, total) => self.library.probing = Some((done, total)),
-                ScanMsg::Idle => self.library.probing = None,
+                ScanMsg::Scanning(found) => self.library.scanned(found),
+                ScanMsg::Probing(done, total) => self.library.probed(done, total),
+                ScanMsg::Idle => self.library.scan_finished(),
             }
         }
         self.hover_thumbs.receive(ctx);

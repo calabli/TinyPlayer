@@ -5,6 +5,8 @@
 
 use std::collections::{BTreeMap, HashMap, HashSet};
 use std::path::{Path, PathBuf};
+use std::rc::Rc;
+use std::time::Instant;
 
 use eframe::egui::{
     self, Align2, Color32, CursorIcon, FontId, Rect, Sense, Stroke, StrokeKind, TextureHandle, pos2, vec2,
@@ -75,13 +77,49 @@ enum Cell {
 }
 
 /// A place in the folder browser: a watched root plus sub-directories.
-#[derive(Clone, PartialEq)]
+#[derive(Clone, PartialEq, Eq, Hash)]
 struct FolderLoc {
     root: i64,
     parts: Vec<String>,
 }
 
+/// What decides the grid's contents; the list is rebuilt when this changes.
+#[derive(PartialEq)]
+struct GridKey {
+    revision: u64,
+    view: View,
+    sort: Sort,
+    search: String,
+    tags: Vec<String>,
+    folder: Option<i64>,
+}
+
+/// Sorting and counting thousands of videos on every frame would make the
+/// page sluggish, so the results are kept until the library or view changes.
+#[derive(Default)]
+struct Cached {
+    grid: Option<(GridKey, Rc<Vec<Cell>>, f64)>,
+    folder: Option<(u64, Option<FolderLoc>, Rc<Vec<Cell>>, Rc<Vec<String>>)>,
+    folder_stats: HashMap<FolderLoc, (Vec<i64>, usize, f64, usize)>,
+    nav: Option<(u64, [usize; 3], Vec<(String, usize)>)>,
+    /// Private mode was on for `folder_stats`.
+    hidden: bool,
+}
+
+/// Background work on the library, for the progress bar.
+#[derive(Default)]
+struct Work {
+    scanned: Option<usize>,
+    probing: Option<(usize, usize)>,
+    /// When thumbnails started and how many were done then, for the estimate.
+    started: Option<(Instant, usize)>,
+}
+
 pub struct LibraryView {
+    /// Position of each video in `videos`.
+    index: HashMap<i64, usize>,
+    cached: Cached,
+    work: Work,
     lib: Option<Library>,
     videos: Vec<Video>,
     folders: Vec<Folder>,
@@ -118,8 +156,6 @@ pub struct LibraryView {
     fav_new_name: String,
     /// Name typed for a new collection (nav "+" or the picker).
     new_collection: Option<String>,
-    /// Thumbnail generation progress (done, total).
-    pub probing: Option<(usize, usize)>,
 }
 
 impl LibraryView {
@@ -150,8 +186,24 @@ impl LibraryView {
             fav_picker_fresh: false,
             fav_new_name: String::new(),
             new_collection: None,
-            probing: None,
+            index: HashMap::new(),
+            cached: Cached::default(),
+            work: Work::default(),
         }
+    }
+
+    pub fn scanned(&mut self, found: usize) {
+        self.work.scanned = Some(found);
+    }
+
+    pub fn probed(&mut self, done: usize, total: usize) {
+        self.work.scanned = None;
+        self.work.probing = Some((done, total));
+        self.work.started.get_or_insert((Instant::now(), done));
+    }
+
+    pub fn scan_finished(&mut self) {
+        self.work = Work::default();
     }
 
     /// True once when the folders should be scanned again.
@@ -199,6 +251,7 @@ impl LibraryView {
         self.revision += 1;
         if let Some(lib) = &self.lib {
             self.videos = lib.videos();
+            self.index = self.videos.iter().enumerate().map(|(i, v)| (v.id, i)).collect();
             self.folders = lib.folders();
             self.collections = lib.collections();
         }
@@ -220,7 +273,46 @@ impl LibraryView {
     }
 
     fn video(&self, id: i64) -> Option<&Video> {
-        self.videos.iter().find(|v| v.id == id)
+        self.videos.get(*self.index.get(&id)?)
+    }
+
+    fn refresh_nav_counts(&mut self) {
+        if self.cached.nav.as_ref().is_some_and(|(revision, ..)| *revision == self.revision) {
+            return;
+        }
+        let continue_n = self.videos.iter().filter(|v| v.progress().is_some_and(|x| x < FINISHED)).count();
+        let week_ago = crate::history::now_secs() - 7 * 24 * 3600;
+        let recent_n = self.videos.iter().filter(|v| v.added_at >= week_ago).count();
+        let played_n = self.videos.iter().filter(|v| v.plays > 0).count();
+        let mut tags: HashMap<String, (String, usize)> = HashMap::new();
+        for t in self.videos.iter().flat_map(|v| &v.tags) {
+            tags.entry(t.to_lowercase()).or_insert_with(|| (t.clone(), 0)).1 += 1;
+        }
+        let mut tag_counts: Vec<(String, usize)> = tags.into_values().collect();
+        tag_counts.sort_by(|a, b| b.1.cmp(&a.1).then_with(|| natural_cmp(&a.0, &b.0)));
+        self.cached.nav = Some((self.revision, [continue_n, recent_n, played_n], tag_counts));
+    }
+
+    /// The grid's cells and their total length.
+    fn grid_cells(&mut self) -> (Rc<Vec<Cell>>, f64) {
+        let key = GridKey {
+            revision: self.revision,
+            view: self.view,
+            sort: self.sort,
+            search: self.search.clone(),
+            tags: self.tags_sel.clone(),
+            folder: self.folder_sel,
+        };
+        if let Some((cached, cells, total)) = &self.cached.grid {
+            if *cached == key {
+                return (cells.clone(), *total);
+            }
+        }
+        let videos = self.filtered();
+        let total = videos.iter().map(|v| v.duration).sum();
+        let cells: Rc<Vec<Cell>> = Rc::new(videos.iter().map(|v| Cell::Video(v.id)).collect());
+        self.cached.grid = Some((key, cells.clone(), total));
+        (cells, total)
     }
 
     fn filtered(&self) -> Vec<&Video> {
@@ -262,6 +354,10 @@ impl LibraryView {
         }
         self.rescan |= self.manager.watch_disks(ui.ctx(), &self.folders);
         self.reload_if_dirty();
+        if self.cached.hidden != self.hide_history {
+            self.cached.hidden = self.hide_history;
+            self.cached.folder_stats.clear();
+        }
         if self.hide_history {
             if matches!(self.view, View::Continue | View::MostPlayed) {
                 self.view = View::All;
@@ -279,7 +375,8 @@ impl LibraryView {
             action = a;
         }
         let nav = Rect::from_min_max(pos2(rect.left(), top.bottom()), pos2(rect.left() + NAV_W, rect.bottom()));
-        let content = Rect::from_min_max(pos2(nav.right(), top.bottom()), rect.max);
+        let status = self.status_bar(ui, &p, rect);
+        let content = Rect::from_min_max(pos2(nav.right(), top.bottom()), pos2(rect.right(), rect.bottom() - status));
         if self.mode == Mode::Manage && !self.folders.is_empty() {
             if let Some(a) = self.manage(ui, &p, nav, content) {
                 action = a;
@@ -303,7 +400,48 @@ impl LibraryView {
         action
     }
 
+    /// Shows what's running in the background. Returns the height it took.
+    fn status_bar(&self, ui: &mut egui::Ui, p: &egui::Painter, rect: Rect) -> f32 {
+        const H: f32 = 30.0;
+        let (text, fraction) = match (self.work.scanned, self.work.probing) {
+            (_, Some((done, total))) if done < total => {
+                let left = self.work.started.and_then(|(at, first)| {
+                    let (secs, finished) = (at.elapsed().as_secs_f64(), done.saturating_sub(first));
+                    (secs >= 3.0 && finished >= 3).then(|| (total - done) as f64 * secs / finished as f64)
+                });
+                let percent = done * 100 / total.max(1);
+                let text = tf("正在处理视频 {} / {} · {}%", &[&done, &total, &percent]);
+                let text = left.map_or(text.clone(), |secs| format!("{text} · {}", time_left(secs)));
+                (text, Some(done as f32 / total.max(1) as f32))
+            }
+            (Some(found), _) => (tf("正在扫描文件夹，已找到 {} 个视频", &[&found]), None),
+            _ => return 0.0,
+        };
+        let bar = Rect::from_min_max(pos2(rect.left(), rect.bottom() - H), rect.max);
+        p.rect_filled(bar, 0.0, theme::panel());
+        p.line_segment([bar.left_top(), bar.right_top()], Stroke::new(0.5, theme::line()));
+        p.text(pos2(bar.left() + 18.0, bar.center().y), Align2::LEFT_CENTER, text, FontId::proportional(12.0), theme::text_2());
+        let track = Rect::from_min_max(pos2(bar.right() - 260.0, bar.center().y - 2.0), pos2(bar.right() - 18.0, bar.center().y + 2.0));
+        p.rect_filled(track, 2.0, theme::line());
+        match fraction {
+            Some(f) => {
+                let fill = Rect::from_min_max(track.min, pos2(track.left() + track.width() * f, track.bottom()));
+                p.rect_filled(fill, 2.0, ACCENT);
+            }
+            None => {
+                // No total yet, so a piece of the bar slides along instead.
+                let t = ui.input(|i| i.time) as f32 % 1.6 / 1.6;
+                let width = track.width() * 0.25;
+                let left = track.left() + (track.width() - width) * t;
+                p.rect_filled(Rect::from_min_size(pos2(left, track.top()), vec2(width, track.height())), 2.0, ACCENT);
+                ui.ctx().request_repaint_after_secs(0.05);
+            }
+        }
+        H
+    }
+
     fn manage(&mut self, ui: &mut egui::Ui, p: &egui::Painter, nav: Rect, content: Rect) -> Option<Action> {
+        self.cached.folder_stats.clear();
         let mut loads = 0;
         let mut waiting = false;
         let mut thumbs = HashMap::new();
@@ -324,6 +462,7 @@ impl LibraryView {
             folders: &self.folders,
             search: &self.search,
             revision: self.revision,
+            index: &self.index,
             collections: &self.collections,
             thumbs: &thumbs,
         };
@@ -408,14 +547,9 @@ impl LibraryView {
         if open_clicked {
             action = Some(Action::OpenFile);
         }
-        let (add_left, add_clicked) = text_btn(ui, p, pos2(open_left - 24.0, top.center().y), "lib_add", tr("+ 添加文件夹"), ACCENT);
+        let (_, add_clicked) = text_btn(ui, p, pos2(open_left - 24.0, top.center().y), "lib_add", tr("+ 添加文件夹"), ACCENT);
         if add_clicked {
             action = Some(Action::AddFolder);
-        }
-        if let Some((done, total)) = self.probing {
-            if add_left - 20.0 > seg.right() + 140.0 {
-                p.text(pos2(add_left - 20.0, top.center().y), Align2::RIGHT_CENTER, tf("生成缩略图 {}/{}", &[&done, &total]), FontId::monospace(11.0), theme::text_3());
-            }
         }
         action
     }
@@ -427,10 +561,9 @@ impl LibraryView {
         let np = ui.painter_at(nav);
         let mut y = nav.top() + 12.0;
         let grid_mode = self.mode == Mode::Grid;
-        let continue_n = self.videos.iter().filter(|v| v.progress().is_some_and(|x| x < FINISHED)).count();
-        let week_ago = crate::history::now_secs() - 7 * 24 * 3600;
-        let recent_n = self.videos.iter().filter(|v| v.added_at >= week_ago).count();
-        let played_n = self.videos.iter().filter(|v| v.plays > 0).count();
+        self.refresh_nav_counts();
+        let Some((_, [continue_n, recent_n, played_n], tag_counts)) = &self.cached.nav else { return };
+        let ([continue_n, recent_n, played_n], tag_counts) = ([*continue_n, *recent_n, *played_n], tag_counts.clone());
         for (view, label, n) in [
             (View::All, tr("全部"), self.videos.len()),
             (View::Continue, tr("继续观看"), continue_n),
@@ -523,16 +656,6 @@ impl LibraryView {
         }
 
         // Tags
-        let mut tag_counts: Vec<(String, usize)> = Vec::new();
-        for v in &self.videos {
-            for t in &v.tags {
-                match tag_counts.iter_mut().find(|(n, _)| n.eq_ignore_ascii_case(t)) {
-                    Some((_, c)) => *c += 1,
-                    None => tag_counts.push((t.clone(), 1)),
-                }
-            }
-        }
-        tag_counts.sort_by(|a, b| b.1.cmp(&a.1).then_with(|| natural_cmp(&a.0, &b.0)));
         if !tag_counts.is_empty() {
             y += 12.0;
             np.text(pos2(nav.left() + 18.0, y + 8.0), Align2::LEFT_CENTER, "TAGS", FontId::monospace(10.0), theme::text_3());
@@ -591,7 +714,7 @@ impl LibraryView {
     // ---- Grid view -----------------------------------------------------
 
     fn grid_view(&mut self, ui: &mut egui::Ui, p: &egui::Painter, content: Rect) -> Action {
-        let ids: Vec<i64> = self.filtered().iter().map(|v| v.id).collect();
+        let (cells, total) = self.grid_cells();
         let header = Rect::from_min_size(content.min + vec2(24.0, 12.0), vec2(content.width() - 48.0, 30.0));
         let mut hx = header.left();
 
@@ -620,11 +743,10 @@ impl LibraryView {
             }
             hx = r.right() + 8.0;
         }
-        let total: f64 = ids.iter().filter_map(|id| self.video(*id)).map(|v| v.duration).sum();
         p.text(
             pos2(hx, header.center().y),
             Align2::LEFT_CENTER,
-            tf("{} 个视频 · {}", &[&ids.len(), &fmt_time(total)]),
+            tf("{} 个视频 · {}", &[&cells.len(), &fmt_time(total)]),
             FontId::monospace(11.0),
             theme::text_3(),
         );
@@ -657,7 +779,7 @@ impl LibraryView {
         }
 
         let grid_rect = Rect::from_min_max(pos2(content.left() + 24.0, header.bottom() + 8.0), pos2(content.right() - 12.0, content.bottom()));
-        if ids.is_empty() {
+        if cells.is_empty() {
             let msg = match self.view {
                 View::Favorites(_) => tr("还没有收藏。悬停视频，点右上角的星标即可收藏"),
                 View::MostPlayed => tr("还没有播放记录"),
@@ -668,7 +790,6 @@ impl LibraryView {
             return Action::None;
         }
         let ranked = self.view == View::MostPlayed;
-        let cells: Vec<Cell> = ids.into_iter().map(Cell::Video).collect();
         self.grid(ui, grid_rect, &cells, ranked, "library_grid")
     }
 
@@ -732,7 +853,7 @@ impl LibraryView {
         }
 
         // Cells: sub-folders first, then videos directly in this folder.
-        let (cells, play_all) = self.folder_cells();
+        let (cells, play_all) = self.folder_list();
         let video_n = cells.iter().filter(|c| matches!(c, Cell::Video(_))).count();
         let folder_n = cells.len() - video_n;
         let stat = tf("{} 个文件夹 · {} 个视频", &[&folder_n, &video_n]);
@@ -746,13 +867,26 @@ impl LibraryView {
         }
         let action = self.grid(ui, grid_rect, &cells, false, "folder_grid");
         if pa_clicked && !play_all.is_empty() {
-            return Action::PlayAll(play_all);
+            return Action::PlayAll((*play_all).clone());
         }
         action
     }
 
     /// Cells for the current folder location, plus every video below it
     /// (recursive, natural order) for "全部播放".
+    fn folder_list(&mut self) -> (Rc<Vec<Cell>>, Rc<Vec<String>>) {
+        if let Some((revision, loc, cells, play_all)) = &self.cached.folder {
+            if *revision == self.revision && *loc == self.folder_loc {
+                return (cells.clone(), play_all.clone());
+            }
+        }
+        let (cells, play_all) = self.folder_cells();
+        let (cells, play_all) = (Rc::new(cells), Rc::new(play_all));
+        self.cached.folder = Some((self.revision, self.folder_loc.clone(), cells.clone(), play_all.clone()));
+        self.cached.folder_stats.clear();
+        (cells, play_all)
+    }
+
     fn folder_cells(&self) -> (Vec<Cell>, Vec<String>) {
         let Some(loc) = &self.folder_loc else {
             // Top level: one card per watched root.
@@ -879,7 +1013,15 @@ impl LibraryView {
                                 }
                             }
                             Cell::Folder { name, loc } => {
-                                let (covers, count, total, watched) = self.folder_stats(loc);
+                                let stats = match self.cached.folder_stats.get(loc) {
+                                    Some(stats) => stats.clone(),
+                                    None => {
+                                        let stats = self.folder_stats(loc);
+                                        self.cached.folder_stats.insert(loc.clone(), stats.clone());
+                                        stats
+                                    }
+                                };
+                                let (covers, count, total, watched) = stats;
                                 for &id in &covers {
                                     if self.ensure_thumb(ui.ctx(), id, &mut loads) {
                                         pending_thumbs = true;
@@ -1410,6 +1552,17 @@ fn text_btn(ui: &mut egui::Ui, p: &egui::Painter, right_center: egui::Pos2, id: 
         ui.ctx().set_cursor_icon(CursorIcon::PointingHand);
     }
     (r.left(), resp.clicked())
+}
+
+fn time_left(secs: f64) -> String {
+    let minutes = (secs / 60.0).ceil() as u64;
+    if minutes < 1 {
+        tr("还剩不到 1 分钟").to_string()
+    } else if minutes < 60 {
+        tf("还剩约 {} 分钟", &[&minutes])
+    } else {
+        tf("还剩约 {} 小时 {} 分钟", &[&(minutes / 60), &(minutes % 60)])
+    }
 }
 
 pub(crate) fn nav_item(

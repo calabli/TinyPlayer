@@ -3,12 +3,15 @@
 
 use std::collections::{BTreeMap, HashMap, HashSet};
 use std::path::{Path, PathBuf};
+use std::rc::Rc;
+use std::sync::Arc;
+use std::sync::atomic::Ordering;
 use std::sync::mpsc::{self, Receiver};
 
 use eframe::egui::{self, Align2, Color32, CursorIcon, FontId, Rect, Sense, Stroke, StrokeKind, pos2, vec2};
 
 use crate::app::fmt_time;
-use crate::duplicates::{self, Group, Item, Level, Options};
+use crate::duplicates::{self, Group, Item, Level, Options, Progress as Comparing};
 use crate::file_move::{self, FolderJob, Job, Mover, Msg, Task};
 use crate::i18n::{tf, tr};
 use crate::library::{Collection, Folder, FolderSet, Library, Video};
@@ -34,6 +37,12 @@ const MARKED: Color32 = Color32::from_rgb(0xF0, 0x71, 0x67);
 
 const LEVELS: [(Level, &str); 3] = [(Level::Strict, "严格"), (Level::Normal, "标准"), (Level::Loose, "宽松")];
 
+impl Data<'_> {
+    fn video(&self, id: i64) -> Option<&Video> {
+        self.videos.get(*self.index.get(&id)?)
+    }
+}
+
 pub struct Data<'a> {
     pub lib: &'a Library,
     pub videos: &'a [Video],
@@ -41,6 +50,8 @@ pub struct Data<'a> {
     pub search: &'a str,
     /// Changes whenever `videos` is reloaded.
     pub revision: u64,
+    /// Position of each video in `videos`.
+    pub index: &'a HashMap<i64, usize>,
     pub collections: &'a [Collection],
     /// Thumbnails loaded for the videos that were on screen.
     pub thumbs: &'a HashMap<i64, egui::TextureId>,
@@ -71,6 +82,18 @@ enum Show {
     All,
     Strong,
     Weak,
+}
+
+/// What decides the list's rows.
+#[derive(PartialEq)]
+struct RowsKey {
+    revision: u64,
+    set: Option<i64>,
+    cwd: Option<PathBuf>,
+    search: String,
+    col: Col,
+    descending: bool,
+    offline: HashSet<i64>,
 }
 
 #[derive(Default, Clone, Copy)]
@@ -148,6 +171,7 @@ pub struct Manager {
     descending: bool,
     selected: HashSet<i64>,
     selected_dirs: HashSet<PathBuf>,
+    rows: Option<(RowsKey, Rc<Vec<Row>>)>,
     /// Videos drawn last frame, whose thumbnails are wanted.
     visible: Vec<i64>,
     disks: Disks,
@@ -166,7 +190,7 @@ pub struct Manager {
     marked: HashSet<i64>,
     /// What `groups` was found from; None until the first search.
     searched: Option<(Options, u64, Option<i64>, usize)>,
-    searching: Option<Receiver<Vec<Group>>>,
+    searching: Option<(Receiver<Vec<Group>>, Arc<Comparing>)>,
     changed: bool,
 }
 
@@ -182,6 +206,7 @@ impl Manager {
             descending: true,
             selected: HashSet::new(),
             selected_dirs: HashSet::new(),
+            rows: None,
             visible: Vec::new(),
             disks: Disks::default(),
             dialog: None,
@@ -419,6 +444,27 @@ impl Manager {
         out
     }
 
+    /// Building the rows walks every video's path, so it isn't done per frame.
+    fn cached_rows(&mut self, d: &Data) -> Rc<Vec<Row>> {
+        let key = RowsKey {
+            revision: d.revision,
+            set: self.set,
+            cwd: self.cwd.clone(),
+            search: d.search.to_string(),
+            col: self.col,
+            descending: self.descending,
+            offline: self.disks.offline.clone(),
+        };
+        if let Some((cached, rows)) = &self.rows {
+            if *cached == key {
+                return rows.clone();
+            }
+        }
+        let rows = Rc::new(self.rows(d));
+        self.rows = Some((key, rows.clone()));
+        rows
+    }
+
     fn rows(&self, d: &Data) -> Vec<Row> {
         let roots = self.root_ids(d.folders);
         let folder_path: HashMap<i64, &str> = d.folders.iter().map(|f| (f.id, f.path.as_str())).collect();
@@ -513,7 +559,7 @@ impl Manager {
     fn videos_page(&mut self, ui: &mut egui::Ui, p: &egui::Painter, rect: Rect, d: &Data, out: &mut Outcome) {
         let rect = rect.shrink2(vec2(16.0, 0.0));
         let searching = !d.search.trim().is_empty();
-        let rows = self.rows(d);
+        let rows = self.cached_rows(d);
         let head = Rect::from_min_size(rect.min, vec2(rect.width(), BAR_H));
         if searching {
             let folders = rows.iter().filter(|r| matches!(r, Row::Folder { .. })).count();
@@ -671,7 +717,7 @@ impl Manager {
                 }
             }
             Row::Video { id, with_path } => {
-                let Some(v) = d.videos.iter().find(|v| v.id == *id) else { return };
+                let Some(v) = d.video(*id) else { return };
                 let on = self.selected.contains(id);
                 if on {
                     p.rect_filled(r, 0.0, theme::accent_alpha(26));
@@ -827,7 +873,7 @@ impl Manager {
     // ---- Duplicates ----------------------------------------------------
 
     fn refresh_groups(&mut self, ctx: &egui::Context, d: &Data) {
-        if let Some(rx) = &self.searching {
+        if let Some((rx, _)) = &self.searching {
             match rx.try_recv() {
                 Ok(groups) => {
                     self.groups = groups;
@@ -849,14 +895,22 @@ impl Manager {
             .filter(|v| roots.contains(&v.folder_id))
             .map(|v| Item { id: v.id, name: v.title.clone(), duration: v.duration, size: v.size })
             .collect();
+        if let Some((_, old)) = &self.searching {
+            old.cancel.store(true, Ordering::Relaxed);
+        }
         let options = self.options;
         let (tx, rx) = mpsc::channel();
         let wake = ctx.clone();
+        let comparing = Arc::new(Comparing::default());
+        let progress = comparing.clone();
         let started = std::thread::Builder::new().name("duplicates".into()).spawn(move || {
-            let _ = tx.send(duplicates::find(&items, options));
+            let groups = duplicates::find_with(&items, options, &progress);
+            if !progress.cancel.load(Ordering::Relaxed) {
+                let _ = tx.send(groups);
+            }
             wake.request_repaint();
         });
-        self.searching = started.is_ok().then_some(rx);
+        self.searching = started.is_ok().then_some((rx, comparing));
     }
 
     fn duplicates_page(&mut self, ui: &mut egui::Ui, p: &egui::Painter, rect: Rect, d: &Data, out: &mut Outcome) {
@@ -870,8 +924,9 @@ impl Manager {
         let head = Rect::from_min_size(rect.min, vec2(rect.width(), BAR_H));
         let marked: Vec<&Video> = d.videos.iter().filter(|v| self.marked.contains(&v.id)).collect();
         let size: i64 = marked.iter().map(|v| v.size).sum();
-        let summary = if self.searching.is_some() {
-            tr("正在比较…").to_string()
+        let summary = if let Some((_, comparing)) = &self.searching {
+            let percent = (comparing.fraction() * 100.0) as u32;
+            tf("正在比较 {}%", &[&percent])
         } else {
             tf("{} 组可能重复，已标记 {} 个，可释放 {}", &[&groups.len(), &marked.len(), &format_size(size)])
         };
@@ -952,7 +1007,7 @@ impl Manager {
 
     fn draw_group(&mut self, ui: &mut egui::Ui, group: &Group, d: &Data, out: &mut Outcome) {
         let width = ui.available_width();
-        let mut videos: Vec<&Video> = group.ids.iter().filter_map(|id| d.videos.iter().find(|v| v.id == *id)).collect();
+        let mut videos: Vec<&Video> = group.ids.iter().filter_map(|id| d.video(*id)).collect();
         videos.sort_by_key(|v| std::cmp::Reverse(v.size));
         let (head, _) = ui.allocate_exact_size(vec2(width, 34.0), Sense::hover());
         let p = ui.painter_at(head);
@@ -981,6 +1036,9 @@ impl Manager {
 
         for v in &videos {
             let (r, resp) = ui.allocate_exact_size(vec2(width, ROW_H), Sense::click());
+            if !ui.is_rect_visible(r) {
+                continue;
+            }
             let p = ui.painter_at(r);
             p.line_segment([r.left_top(), r.right_top()], Stroke::new(0.5, theme::line()));
             if resp.hovered() {
@@ -1215,7 +1273,7 @@ impl Manager {
                         }
                         go |= ui.button(tr("重命名")).clicked();
                     });
-                    if let (true, Some(v)) = (go, d.videos.iter().find(|v| v.id == *id)) {
+                    if let (true, Some(v)) = (go, d.video(*id)) {
                         match rename_video(Path::new(&v.path), stem) {
                             Err(e) => *error = Some(e),
                             Ok(to) => {
