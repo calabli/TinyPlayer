@@ -267,6 +267,7 @@ impl Search<'_> {
                         let mut best = vec![0u8; self.items.len()];
                         let mut links = Vec::new();
                         loop {
+                            crate::background::wait(&p.cancel);
                             let first = next.fetch_add(CHUNK, Ordering::Relaxed);
                             if first >= positions || p.cancel.load(Ordering::Relaxed) {
                                 return links;

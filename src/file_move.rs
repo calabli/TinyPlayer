@@ -80,6 +80,7 @@ fn hash_file(path: &Path, cancel: &AtomicBool) -> io::Result<Vec<u8>> {
     let mut hasher = Sha256::new();
     let mut buf = vec![0u8; CHUNK];
     loop {
+        crate::background::wait(cancel);
         if cancel.load(Ordering::Relaxed) {
             return Err(io::ErrorKind::Interrupted.into());
         }
@@ -99,6 +100,7 @@ fn copy_then_verify(from: &Path, part: &Path, cancel: &AtomicBool, tx: &Sender<M
     let mut buf = vec![0u8; CHUNK];
     let mut done = 0;
     loop {
+        crate::background::wait(cancel);
         if cancel.load(Ordering::Relaxed) {
             return Err(io::ErrorKind::Interrupted.into());
         }

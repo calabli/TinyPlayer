@@ -5,6 +5,7 @@
 use std::collections::{HashSet, VecDeque};
 use std::path::{Path, PathBuf};
 use std::sync::Mutex;
+use std::sync::atomic::{AtomicBool, Ordering};
 use std::sync::mpsc::{self, Receiver, RecvTimeoutError, Sender, TryRecvError};
 use std::time::{Duration, Instant, UNIX_EPOCH};
 
@@ -99,14 +100,15 @@ fn probe_all(lib: &Library, pending: Vec<(i64, String)>, cmds: &Receiver<Cmd>, s
     let queue = Mutex::new(VecDeque::from(pending));
     let (tx, results) = mpsc::channel();
     let data = crate::history::data_dir();
-    let mut quit = false;
+    let quit = AtomicBool::new(false);
 
     std::thread::scope(|scope| {
         for n in 0..workers {
-            let (tx, queue, thumbs, work_dir) = (tx.clone(), &queue, &thumbs, data.join(format!("probe-{n}")));
+            let (tx, queue, thumbs, quit, work_dir) = (tx.clone(), &queue, &thumbs, &quit, data.join(format!("probe-{n}")));
             scope.spawn(move || {
                 let Ok(prober) = Prober::new(&work_dir) else { return };
                 loop {
+                    crate::background::wait(&quit);
                     let next = queue.lock().ok().and_then(|mut q| q.pop_front());
                     let Some((id, path)) = next else { break };
                     let info = prober.probe(Path::new(&path), &thumbs.join(format!("{id}.jpg")));
@@ -134,7 +136,7 @@ fn probe_all(lib: &Library, pending: Vec<(i64, String)>, cmds: &Receiver<Cmd>, s
             }
             match cmds.try_recv() {
                 Ok(Cmd::Quit) | Err(TryRecvError::Disconnected) => {
-                    quit = true;
+                    quit.store(true, Ordering::Relaxed);
                     if let Ok(mut q) = queue.lock() {
                         q.clear();
                     }
@@ -159,7 +161,7 @@ fn probe_all(lib: &Library, pending: Vec<(i64, String)>, cmds: &Receiver<Cmd>, s
         save_probes(lib, &mut unsaved);
         send(Msg::Probing(done, total));
     });
-    quit
+    quit.load(Ordering::Relaxed)
 }
 
 /// Writes in one short burst: holding the database between files would keep
@@ -219,6 +221,7 @@ fn walk(dir: &Path, depth: usize, f: &mut dyn FnMut(&Path, &std::fs::Metadata)) 
     }
     let Ok(rd) = std::fs::read_dir(dir) else { return };
     for entry in rd.flatten() {
+        crate::background::wait(&AtomicBool::new(false));
         let name = entry.file_name();
         let name = name.to_string_lossy();
         if name.starts_with('.') || name.starts_with('$') || name == "System Volume Information" {

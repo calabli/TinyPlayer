@@ -10,6 +10,7 @@ use eframe::glow;
 
 use crate::ab_loop::AbLoop;
 use crate::audio_output::{DeviceVolumes, OutputDevice, OutputMonitor};
+use crate::background;
 use crate::crop_detect::CropDetect;
 use crate::float_window;
 use crate::history::Entry;
@@ -60,6 +61,7 @@ const REFRESH_CHECK_SECS: f64 = 2.0;
 const UPDATE_CHECK_DELAY_SECS: f64 = 5.0;
 const NORMAL_MIN_SIZE: [f32; 2] = [480.0, 300.0];
 const PIP_MIN_SIZE: [f32; 2] = [200.0, 120.0];
+const OPENING_SECS: f64 = 3.0;
 const EXIT_TIMEOUT: std::time::Duration = std::time::Duration::from_secs(3);
 
 /// A step that needs the library's password, or a confirmation.
@@ -121,6 +123,8 @@ pub struct App {
     ab: AbLoop,
     marks: Marks,
     view: View,
+    /// Background work stays paused until this time, while a file opens.
+    opening_until: f64,
     /// The idle page is the library, rather than the player's start page.
     show_library: bool,
     /// The stored password; None if the library has none.
@@ -189,7 +193,9 @@ impl App {
         theme::apply(&cc.egui_ctx, light);
         update::clean_up();
         let (fill_tx, fill_rx) = std::sync::mpsc::channel();
-        // Pick up new/changed files in watched folders on every start.
+        // Pick up new/changed files in watched folders on every start. Nothing
+        // starts before the first frame, which knows if a video is opening.
+        background::set_playing(true);
         let scanner = Scanner::spawn(cc.egui_ctx.clone());
         scanner.scan();
         let playlist = Playlist::new(tracker.settings.loop_mode, tracker.settings.shuffle);
@@ -236,6 +242,7 @@ impl App {
             ab: AbLoop::default(),
             marks: Marks::default(),
             view: View::default(),
+            opening_until: 0.0,
             show_library: false,
             library_lock,
             library_unlocked: false,
@@ -1314,6 +1321,9 @@ impl App {
     /// right away. The rest of the folder is scanned on a background thread
     /// and merged into the queue when ready, so opening never waits on disk.
     fn flush_open(&mut self, ctx: &egui::Context) {
+        if !self.pending_open.is_empty() {
+            self.opening_until = ctx.input(|i| i.time) + OPENING_SECS;
+        }
         if self.pending_open.is_empty() {
             return;
         }
@@ -1455,6 +1465,9 @@ impl eframe::App for App {
         }
         let Some(player) = &self.player else { return };
         let s = player.state.clone();
+        // A file takes a moment to load, and the player reads as idle until then.
+        let opening = ctx.input(|i| i.time) < self.opening_until;
+        background::set_playing(!s.idle || opening || !self.pending_open.is_empty());
 
         // The window title stays "TinyPlayer"; the file name is shown in the
         // in-app top bar instead. Still track the media title to detect a

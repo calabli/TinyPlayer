@@ -189,7 +189,9 @@ pub struct Manager {
     ignored: Option<HashSet<String>>,
     marked: HashSet<i64>,
     /// What `groups` was found from; None until the first search.
-    searched: Option<(Options, u64, Option<i64>, usize)>,
+    searched: Option<(Options, u64, Option<i64>, usize, Option<PathBuf>)>,
+    /// Only look for duplicates under this folder, and in its subfolders.
+    dup_scope: Option<PathBuf>,
     searching: Option<(Receiver<Vec<Group>>, Arc<Comparing>)>,
     changed: bool,
 }
@@ -222,6 +224,7 @@ impl Manager {
             ignored: None,
             marked: HashSet::new(),
             searched: None,
+            dup_scope: None,
             searching: None,
             changed: false,
         }
@@ -412,6 +415,7 @@ impl Manager {
         y += 22.0;
         let r = Rect::from_min_size(pos2(nav.left(), y), vec2(nav.width(), 30.0));
         if nav_item(ui, &np, r, "dups", tr("可能重复"), None, !videos_page) {
+            self.dup_scope = None;
             self.page = Page::Duplicates;
             self.clear_selection();
         }
@@ -568,6 +572,12 @@ impl Manager {
             p.text(pos2(head.left(), head.center().y), Align2::LEFT_CENTER, text, FontId::proportional(13.0), theme::text_2());
         } else {
             self.breadcrumb(ui, p, head, d);
+            if let Some(cwd) = self.cwd.clone() {
+                let mut x = head.right();
+                if button(ui, p, &mut x, head.center().y, "check_here", tr("检查这个文件夹的重复"), false) {
+                    self.check_folder(cwd);
+                }
+            }
         }
 
         let cols = Rect::from_min_size(pos2(rect.left(), head.bottom()), vec2(rect.width(), 24.0));
@@ -704,6 +714,14 @@ impl Manager {
                 if !*offline {
                     self.row_columns(&p, r, right, stats.duration, stats.size, stats.mtime);
                 }
+                if !*offline {
+                    resp.context_menu(|ui| {
+                        if ui.button(tr("检查这个文件夹的重复")).clicked() {
+                            self.check_folder(path.clone());
+                            ui.close();
+                        }
+                    });
+                }
                 if resp.clicked() {
                     if *offline {
                         self.say(ui.ctx(), tr("硬盘未连接，接上后会自动恢复").to_string(), None);
@@ -790,6 +808,12 @@ impl Manager {
     /// The thumbnails to load for the next frame.
     pub fn visible(&self) -> Vec<i64> {
         self.visible.clone()
+    }
+
+    fn check_folder(&mut self, path: PathBuf) {
+        self.dup_scope = Some(path);
+        self.page = Page::Duplicates;
+        self.clear_selection();
     }
 
     fn toggle_dir(&mut self, path: &Path) {
@@ -884,8 +908,8 @@ impl Manager {
             }
         }
         let roots = self.root_ids(d.folders);
-        let wanted = (self.options, d.revision, self.set, roots.len());
-        if self.searched == Some(wanted) {
+        let wanted = (self.options, d.revision, self.set, roots.len(), self.dup_scope.clone());
+        if self.searched.as_ref() == Some(&wanted) {
             return;
         }
         self.searched = Some(wanted);
@@ -893,6 +917,7 @@ impl Manager {
             .videos
             .iter()
             .filter(|v| roots.contains(&v.folder_id))
+            .filter(|v| in_scope(&v.path, self.dup_scope.as_deref()))
             .map(|v| Item { id: v.id, name: v.title.clone(), duration: v.duration, size: v.size })
             .collect();
         if let Some((_, old)) = &self.searching {
@@ -940,7 +965,19 @@ impl Manager {
             }
         }
 
-        let bar = Rect::from_min_size(pos2(rect.left(), head.bottom()), vec2(rect.width(), 30.0));
+        let mut top = head.bottom();
+        if let Some(scope) = self.dup_scope.clone() {
+            let line = Rect::from_min_size(pos2(rect.left(), top), vec2(rect.width(), 28.0));
+            let text = tf("只检查：{}", &[&scope.to_string_lossy()]);
+            let shown = elide(p, &text, FontId::proportional(12.0), line.width() - 130.0);
+            p.text(line.left_center(), Align2::LEFT_CENTER, shown, FontId::proportional(12.0), ACCENT);
+            let mut x = line.right();
+            if button(ui, p, &mut x, line.center().y, "dup_all", tr("检查全部"), false) {
+                self.dup_scope = None;
+            }
+            top = line.bottom() + 4.0;
+        }
+        let bar = Rect::from_min_size(pos2(rect.left(), top), vec2(rect.width(), 30.0));
         self.duplicate_filters(ui, p, bar, &groups);
 
         let list = Rect::from_min_max(pos2(rect.left(), bar.bottom() + 6.0), rect.max);
@@ -1419,6 +1456,11 @@ impl Manager {
     }
 }
 
+/// Whether a video counts for a check limited to `scope` and what's under it.
+fn in_scope(path: &str, scope: Option<&Path>) -> bool {
+    scope.is_none_or(|dir| Path::new(path).starts_with(dir))
+}
+
 fn column(r: Rect, right: f32, width: f32) -> Rect {
     Rect::from_min_max(pos2(right - width, r.top()), pos2(right, r.bottom()))
 }
@@ -1577,6 +1619,16 @@ fn chip(ui: &mut egui::Ui, p: &egui::Painter, x: &mut f32, y: f32, id: impl std:
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn a_folder_check_includes_subfolders_only() {
+        let dir = Path::new("/v/电影");
+        assert!(in_scope("/v/电影/a.mp4", Some(dir)));
+        assert!(in_scope("/v/电影/科幻/a.mp4", Some(dir)));
+        assert!(!in_scope("/v/电影二/a.mp4", Some(dir)));
+        assert!(!in_scope("/v/a.mp4", Some(dir)));
+        assert!(in_scope("/v/a.mp4", None));
+    }
 
     #[test]
     fn names_must_work_on_every_system() {

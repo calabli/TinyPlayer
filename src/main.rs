@@ -4,6 +4,7 @@ mod ab_loop;
 mod app;
 mod audio_fx;
 mod audio_output;
+mod background;
 mod crop_detect;
 mod duplicates;
 mod file_move;
