@@ -712,6 +712,7 @@ impl LibraryView {
         np.text(pos2(nav.left() + 18.0, y + 8.0), Align2::LEFT_CENTER, "FOLDERS", FontId::monospace(10.0), theme::text_3());
         y += 22.0;
         let mut remove_folder = None;
+        let mut check_folder = None;
         for f in &self.folders {
             if y > nav.bottom() - 28.0 {
                 break;
@@ -729,6 +730,12 @@ impl LibraryView {
                     Mode::Folders => self.folder_loc = Some(FolderLoc { root: f.id, parts: Vec::new() }),
                 }
             }
+            ui.interact(r, ui.scope_id().with(("folder", f.id)), Sense::click()).context_menu(|ui| {
+                if ui.button(tr("检查这个文件夹的重复")).clicked() {
+                    check_folder = Some(PathBuf::from(&f.path));
+                    ui.close();
+                }
+            });
             if hovered {
                 let x = Rect::from_center_size(pos2(r.right() - 18.0, r.center().y), vec2(22.0, 22.0));
                 let xr = ui.interact(x, ui.scope_id().with(("folder_rm", f.id)), Sense::click());
@@ -745,6 +752,15 @@ impl LibraryView {
             lib.remove_folder(id);
             self.dirty = true;
         }
+        if let Some(path) = check_folder {
+            self.check_duplicates(path);
+        }
+    }
+
+    /// Opens the manage page's duplicate check for one folder.
+    fn check_duplicates(&mut self, path: PathBuf) {
+        self.mode = Mode::Manage;
+        self.manager.check_library_folder(path);
     }
 
     // ---- Grid view -----------------------------------------------------
@@ -1091,6 +1107,11 @@ impl LibraryView {
                         action = Action::PlayAll(paths);
                     }
                 }
+                CardEvent::CheckFolder(loc) => {
+                    if let Some(path) = self.loc_path(&loc) {
+                        self.check_duplicates(path);
+                    }
+                }
                 CardEvent::TagFilter(t) => {
                     toggle_tag(&mut self.tags_sel, &t);
                     self.mode = Mode::Grid;
@@ -1300,6 +1321,7 @@ enum CardEvent {
     Play(String),
     OpenFolder(FolderLoc),
     PlayFolder(FolderLoc),
+    CheckFolder(FolderLoc),
     TagFilter(String),
     EditTags(i64, egui::Pos2),
     RemoveTag(i64, String),
@@ -1528,6 +1550,10 @@ fn draw_folder_card(
         }
         if ui.button(tr("播放全部")).clicked() {
             ev = Some(CardEvent::PlayFolder(loc.clone()));
+            ui.close();
+        }
+        if ui.button(tr("检查这个文件夹的重复")).clicked() {
+            ev = Some(CardEvent::CheckFolder(loc.clone()));
             ui.close();
         }
     });

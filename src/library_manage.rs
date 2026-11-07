@@ -810,6 +810,14 @@ impl Manager {
         self.visible.clone()
     }
 
+    /// The same check, from outside this page: any library folder can be
+    /// asked for, whichever set was open here.
+    pub fn check_library_folder(&mut self, path: PathBuf) {
+        self.set = None;
+        self.cwd = None;
+        self.check_folder(path);
+    }
+
     fn check_folder(&mut self, path: PathBuf) {
         self.dup_scope = Some(path);
         self.page = Page::Duplicates;
