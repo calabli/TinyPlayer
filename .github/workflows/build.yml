@@ -2,7 +2,6 @@ name: Build
 
 on:
   push:
-    branches: [main]
     tags: ["v*"]
   workflow_dispatch:
 
@@ -23,10 +22,15 @@ jobs:
         run: cargo test --locked
       - name: Package
         run: scripts/package-macos.sh
+      - name: Collect third-party sources
+        run: python3 scripts/collect-sources-macos.py
       - uses: actions/upload-artifact@v4
         with:
           name: TinyPlayer-macos-arm64
-          path: dist/*.dmg
+          path: |
+            dist/*.dmg
+            dist/third-party-sources-*.tar
+          compression-level: 0
           if-no-files-found: error
 
   windows:
@@ -36,18 +40,21 @@ jobs:
       - uses: actions/checkout@v4
       - uses: dtolnay/rust-toolchain@stable
       - uses: Swatinem/rust-cache@v2
-      - name: Download libmpv
+      # Both come from one release, so the sources collected below match the DLL.
+      - name: Download libmpv and ffmpeg
         env:
           GH_TOKEN: ${{ github.token }}
         run: |
-          gh release download --repo shinchiro/mpv-winbuild-cmake --pattern "mpv-dev-x86_64-2*.7z" --output mpv-dev.7z
-          7z e mpv-dev.7z libmpv-2.dll -othird_party\mpv\windows
+          $tag = gh release view --repo shinchiro/mpv-winbuild-cmake --json tagName --jq .tagName
+          "MPV_BUILD=$tag" >> $env:GITHUB_ENV
+          gh release download $tag --repo shinchiro/mpv-winbuild-cmake --pattern "mpv-dev-x86_64-2*.7z" --pattern "ffmpeg-x86_64-git-*.7z"
+          7z e mpv-dev-x86_64-*.7z libmpv-2.dll -othird_party\mpv\windows
+          7z e ffmpeg-x86_64-git-*.7z ffmpeg.exe -otools
       - name: Unit tests
         run: cargo test --locked
       - name: Load libmpv and read a real video
         run: |
-          choco install ffmpeg --no-progress -y
-          ffmpeg -v error -f lavfi -i testsrc2=size=320x180:rate=24:duration=4 -pix_fmt yuv420p sample.mp4
+          tools\ffmpeg.exe -v error -f lavfi -i testsrc2=size=320x180:rate=24:duration=4 -pix_fmt yuv420p sample.mp4
           $env:TP_PROBE_FILE = "$PWD\sample.mp4"
           cargo test --locked probe -- --ignored
       # scripts/ChineseSimplified.isl comes from this version; update them together.
@@ -77,12 +84,18 @@ jobs:
             if (Test-Path $key) { throw "left behind: $key" }
           }
           if (Get-ItemProperty "$classes\.rmvb\OpenWithProgids" -Name TinyPlayer.Media -ErrorAction SilentlyContinue) { throw "rmvb still offered" }
+      - name: Collect third-party sources
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: powershell -ExecutionPolicy Bypass -File scripts\collect-sources-windows.ps1 -Tag $env:MPV_BUILD -Ffmpeg tools\ffmpeg.exe
       - uses: actions/upload-artifact@v4
         with:
           name: TinyPlayer-windows-x64
           path: |
             dist/*-setup.exe
             dist/*.zip
+            dist/third-party-sources-*.tar
+          compression-level: 0
           if-no-files-found: error
 
   release:

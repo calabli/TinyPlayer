@@ -26,5 +26,14 @@ TinyPlayer 自身以 [GPL-3.0-or-later](LICENSE) 发布。
 常见的预编译 libmpv（如 shinchiro/mpv-winbuild-cmake、Homebrew 的 mpv）默认按 **GPL** 编译。Homebrew 的 FFmpeg 带 `--enable-gpl --enable-version3`，因此 macOS 安装包整体受 GPLv3 约束。
 随附这样的 libmpv 分发 TinyPlayer 时，需要遵守 GPL 的要求（例如提供源代码，包括 libmpv 和 FFmpeg 对应版本的源代码）。
 
+## 第三方源代码
+
+从 0.1.14 起，每个 Release 都附带所含第三方库的源代码：
+
+- `third-party-sources-<版本>-macos-arm64.tar`：安装包里每个 Homebrew 库的源码、构建时用的补丁和资源，以及说明构建方式的 formula。由 `scripts/collect-sources-macos.py` 生成。
+- `third-party-sources-<版本>-windows-x64.tar`：libmpv-2.dll 对应的 mpv 和 FFmpeg 源码，以及 [shinchiro/mpv-winbuild-cmake](https://github.com/shinchiro/mpv-winbuild-cmake) 的构建脚本。构建脚本列出了其余静态链接进 DLL 的库和它们的来源。由 `scripts/collect-sources-windows.ps1` 生成。
+
+包内的 `SOURCES.txt` 记录了对应的版本。Windows 版 DLL 里的其余库（包括 x264 等 GPL 库）大多按构建当时的上游最新提交编译，构建方没有记录具体提交，因此这些库目前无法确定确切版本。
+
 如果需要以闭源方式分发，请使用以 `-Dgpl=false` 编译的 LGPL 版 libmpv（FFmpeg 也需按 LGPL 编译），
 并保持动态链接（TinyPlayer 本来就是在运行时加载 libmpv 的）。
