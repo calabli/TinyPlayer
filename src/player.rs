@@ -93,6 +93,7 @@ pub struct Player {
     interpolation: std::cell::Cell<bool>,
     /// The hardware decoding setting; see `apply_hwdec`.
     hwdec: std::cell::Cell<bool>,
+    panorama: std::cell::Cell<bool>,
     /// Horizontal and vertical flip.
     flip: std::cell::Cell<(bool, bool)>,
 }
@@ -164,6 +165,7 @@ impl Player {
             audio_filter: Default::default(),
             interpolation: Default::default(),
             hwdec: std::cell::Cell::new(true),
+            panorama: std::cell::Cell::new(false),
             flip: Default::default(),
         })
     }
@@ -286,26 +288,35 @@ impl Player {
         let _ = self.mpv.command(&["cycle", "sub"]);
     }
 
+    /// A panorama must fill the whole frame, whatever the aspect setting.
+    fn apply_aspect(&self, aspect: &str) {
+        let (keep, ratio) = match aspect {
+            _ if self.panorama.get() => ("no", "-1"),
+            "stretch" => ("no", "-1"),
+            "auto" | "" => ("yes", "-1"),
+            ratio => ("yes", ratio),
+        };
+        self.mpv.set_property_string("keepaspect", keep);
+        self.mpv.set_property_string("video-aspect-override", ratio);
+    }
+
+    /// mpv draws subtitles into the frame, where a panorama would bend them
+    /// out of view, so they're hidden. `aspect` is the saved setting.
+    pub fn set_panorama(&self, on: bool, aspect: &str) {
+        self.panorama.set(on);
+        self.apply_aspect(aspect);
+        let subtitles = if on { "no" } else { "yes" };
+        self.mpv.set_property_string("sub-visibility", subtitles);
+        self.mpv.set_property_string("secondary-sub-visibility", subtitles);
+    }
+
     /// Pushes the user's video/subtitle preferences to mpv. Safe to call at
     /// any time; most take effect immediately, sub-auto/slang on the next file.
     pub fn apply_settings(&self, s: &crate::history::Settings) {
         let m = &self.mpv;
         self.hwdec.set(s.hwdec);
         self.apply_hwdec();
-        match s.aspect.as_str() {
-            "stretch" => {
-                m.set_property_string("keepaspect", "no");
-                m.set_property_string("video-aspect-override", "-1");
-            }
-            "auto" | "" => {
-                m.set_property_string("keepaspect", "yes");
-                m.set_property_string("video-aspect-override", "-1");
-            }
-            ratio => {
-                m.set_property_string("keepaspect", "yes");
-                m.set_property_string("video-aspect-override", ratio);
-            }
-        }
+        self.apply_aspect(&s.aspect);
         // 画质增强: debanding plus a sharper (heavier) upscaler.
         m.set_property_string("deband", if s.enhance { "yes" } else { "no" });
         m.set_property_string("scale", if s.enhance { "ewa_lanczossharp" } else { "lanczos" });

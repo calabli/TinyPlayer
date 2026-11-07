@@ -30,6 +30,7 @@ mod theme;
 mod update;
 mod video;
 mod view;
+mod vr;
 
 use eframe::egui;
 

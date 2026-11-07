@@ -29,8 +29,9 @@ use crate::session::{Resume, Tracker};
 use crate::update::{self, Dialog, PollResult, Updater};
 use crate::settings_panel::{self, PanelState};
 use crate::theme::{self, ACCENT, TEXT, TEXT_2, TEXT_3};
-use crate::video::VideoTarget;
+use crate::video::{Panorama, VideoTarget};
 use crate::view::{self, View, ZOOM_STEP};
+use crate::vr;
 
 const HIDE_AFTER: f64 = 2.0;
 const OSD_SECS: f64 = 1.5;
@@ -108,6 +109,13 @@ pub struct App {
     ab: AbLoop,
     marks: Marks,
     view: View,
+    /// The playing file's panoramic format; None for an ordinary video.
+    vr: Option<vr::Format>,
+    vr_look: vr::Look,
+    /// A new file's format is decided once its frame size is known.
+    vr_pending: bool,
+    /// The panorama pass failed; turned off before the next frame.
+    vr_error: Option<String>,
     /// The title bar is currently hidden.
     frameless: bool,
     /// When the video was clicked, while waiting to see if a second click follows.
@@ -209,6 +217,10 @@ impl App {
             ab: AbLoop::default(),
             marks: Marks::default(),
             view: View::default(),
+            vr: None,
+            vr_look: vr::Look::default(),
+            vr_pending: false,
+            vr_error: None,
             frameless: false,
             pending_click: None,
             updater: Updater::new(),
@@ -662,6 +674,90 @@ impl App {
         }
     }
 
+    /// `delta` is in log2 steps. A panorama changes its field of view instead.
+    fn zoom_view(&mut self, ctx: &egui::Context, delta: f64, osd: bool) {
+        if self.vr.is_some() {
+            self.vr_look.zoom_by(delta);
+            if osd {
+                self.show_osd(ctx, tf("视野  {}°", &[&self.vr_look.fov_degrees()]));
+            }
+        } else {
+            self.view.zoom_by(delta);
+            self.apply_view(ctx, osd);
+        }
+    }
+
+    fn reset_view(&mut self, ctx: &egui::Context, osd: bool) {
+        if self.vr.is_some() {
+            self.vr_look = vr::Look::default();
+            if osd {
+                self.show_osd(ctx, tf("视野  {}°", &[&self.vr_look.fov_degrees()]));
+            }
+        } else {
+            self.view = View::default();
+            self.apply_view(ctx, osd);
+        }
+    }
+
+    /// `remember` keeps the choice for this file. Zoom and crop don't apply
+    /// to a panorama, so they're dropped.
+    fn set_vr(&mut self, ctx: &egui::Context, format: Option<vr::Format>, remember: bool) {
+        if self.vr.is_none() {
+            self.vr_look = vr::Look::default();
+        }
+        self.vr = format;
+        self.view = View::default();
+        self.quick.crop = Crop::Off;
+        let Some(p) = &self.player else { return };
+        p.set_view(self.view);
+        p.set_crop(None);
+        p.set_panorama(format.is_some(), &self.tracker.settings.aspect);
+        if remember && !self.tracker.incognito {
+            if let (Some(store), Some(key)) = (&self.tracker.store, crate::history::file_key(&p.state.path)) {
+                store.set_value(&format!("vr:{key}"), vr::Format::stored(format));
+            }
+        }
+        let text = format.map_or_else(|| tr("VR 全景已关闭").to_string(), |f| format!("VR  {}", f.label()));
+        self.show_osd(ctx, text);
+    }
+
+    fn toggle_vr(&mut self, ctx: &egui::Context) {
+        let Some(p) = &self.player else { return };
+        let (w, h) = (p.state.width, p.state.height);
+        let format = match self.vr {
+            Some(_) => None,
+            None => Some(vr::from_name(&p.state.path, w, h).unwrap_or_else(|| vr::guess(w, h))),
+        };
+        self.set_vr(ctx, format, true);
+    }
+
+    /// The choice saved for a file wins over what its name suggests.
+    fn sync_vr(&mut self, ctx: &egui::Context) {
+        if let Some(e) = self.vr_error.take() {
+            eprintln!("VR: {e}");
+            self.set_vr(ctx, None, false);
+            self.show_osd(ctx, tr("这台电脑的显卡不支持 VR 全景"));
+        }
+        if !self.vr_pending {
+            return;
+        }
+        let Some(p) = &self.player else { return };
+        let size = |name| p.mpv.get_string(name).and_then(|v| v.parse::<i64>().ok());
+        let (Some(w), Some(h)) = (size("video-params/w"), size("video-params/h")) else { return };
+        self.vr_pending = false;
+        let saved = match (&self.tracker.store, crate::history::file_key(&p.state.path)) {
+            (Some(store), Some(key)) => store.get_value(&format!("vr:{key}")),
+            _ => None,
+        };
+        let format = match saved {
+            Some(text) => vr::Format::from_stored(&text),
+            None => vr::from_name(&p.state.path, w, h),
+        };
+        if format.is_some() {
+            self.set_vr(ctx, format, false);
+        }
+    }
+
     fn apply_crop(&mut self, ctx: &egui::Context) {
         let Some(p) = &self.player else { return };
         match self.quick.crop {
@@ -826,6 +922,7 @@ impl App {
         let mut want_frameless: Option<bool> = None;
         let mut want_zoom: Option<f64> = None;
         let mut want_view_reset = false;
+        let mut want_vr = false;
         let mut want_chapter: Option<bool> = None;
 
         // The settings overlay is modal: only its own shortcuts apply.
@@ -911,6 +1008,7 @@ impl App {
                 Key::Equals | Key::Plus if !cmd && !s.idle => want_zoom = Some(ZOOM_STEP),
                 Key::Minus if !cmd && !s.idle => want_zoom = Some(-ZOOM_STEP),
                 Key::Num0 if !cmd && !s.idle => want_view_reset = true,
+                Key::V if !cmd && !s.idle => want_vr = true,
                 Key::B if cmd && !s.idle => want_bookmark = true,
                 Key::B if !s.idle => want_ab = true,
                 Key::G if !cmd && !s.idle && !self.pip => want_marks = true,
@@ -943,6 +1041,8 @@ impl App {
             && ctx.input(|i| i.pointer.hover_pos()).is_some_and(|p| self.side_rect.contains(p));
         if over_side {
             self.side_scroll -= scroll;
+        } else if scroll != 0.0 && !s.idle && self.vr.is_some() {
+            want_zoom = Some(scroll.signum() as f64 * vr::WHEEL_STEP);
         } else if scroll != 0.0 && !s.idle && cmd {
             want_zoom = Some(scroll.signum() as f64 * ZOOM_STEP);
         } else if scroll != 0.0 && !s.idle {
@@ -985,12 +1085,13 @@ impl App {
             self.set_frameless(ctx, on);
         }
         if let Some(d) = want_zoom {
-            self.view.zoom_by(d);
-            self.apply_view(ctx, true);
+            self.zoom_view(ctx, d, true);
         }
         if want_view_reset {
-            self.view = View::default();
-            self.apply_view(ctx, true);
+            self.reset_view(ctx, true);
+        }
+        if want_vr {
+            self.toggle_vr(ctx);
         }
         if want_on_top {
             self.toggle_on_top(ctx);
@@ -1108,6 +1209,7 @@ impl eframe::App for App {
         self.sync_window_frame(&ctx);
         self.ensure_gl(&ctx, frame);
         self.handle_input(&ctx);
+        self.sync_vr(&ctx);
         self.sync_device_volume(&ctx);
         self.flush_open(&ctx);
 
@@ -1156,12 +1258,21 @@ impl eframe::App for App {
 
         // ---- Video ----
         // Without a title bar, the video drags the window.
-        // A zoomed picture is dragged around instead.
+        // A zoomed picture is dragged around instead, and a panorama turned.
         let zoomed = self.view.zoomed() && !self.pip;
-        let draggable = self.frameless || zoomed;
+        let panorama = self.vr.filter(|_| !self.pip);
+        let draggable = self.frameless || zoomed || panorama.is_some();
         let sense = if draggable { Sense::click_and_drag() } else { Sense::click() };
         let surface = ui.interact(full, ui.scope_id().with("surface"), sense);
-        if self.frameless && !zoomed && surface.drag_started() {
+        if let Some(format) = panorama {
+            if surface.dragged() {
+                let d = surface.drag_delta();
+                self.vr_look.drag(d.x as f64, d.y as f64, full.height() as f64, format.span);
+            }
+            if surface.hovered() {
+                ctx.set_cursor_icon(if surface.dragged() { CursorIcon::Grabbing } else { CursorIcon::Grab });
+            }
+        } else if self.frameless && !zoomed && surface.drag_started() {
             ctx.send_viewport_cmd(ViewportCommand::StartDrag);
         } else if zoomed {
             if surface.dragged() {
@@ -1179,13 +1290,22 @@ impl eframe::App for App {
             if let (Some(video), Some(render), Some(gl)) = (&mut self.video, &self.render, frame.gl()) {
                 let ppp = ctx.pixels_per_point();
                 let px = [(full.width() * ppp).round() as i32, (full.height() * ppp).round() as i32];
-                video.update(gl, render, px);
-                painter.image(
-                    video.texture_id,
-                    full,
-                    Rect::from_min_max(pos2(0.0, 0.0), pos2(1.0, 1.0)),
-                    Color32::WHITE,
-                );
+                let aspect = px[0].max(1) as f64 / px[1].max(1) as f64;
+                let pano = self.vr.map(|f| Panorama {
+                    view: self.vr_look.projection(f, aspect),
+                    frame_size: [s.width as i32, s.height as i32],
+                });
+                match video.update(gl, render, px, pano) {
+                    Ok(texture) => {
+                        painter.image(
+                            texture,
+                            full,
+                            Rect::from_min_max(pos2(0.0, 0.0), pos2(1.0, 1.0)),
+                            Color32::WHITE,
+                        );
+                    }
+                    Err(e) => self.vr_error = Some(e),
+                }
             }
         }
         if self.pip && !s.idle {
@@ -1281,6 +1401,8 @@ impl eframe::App for App {
 
             if self.quick.open {
                 if let Some(player) = &self.player {
+                    self.quick.vr = self.vr;
+                    self.quick.fov = self.vr_look.fov_degrees();
                     let act = self.quick.show(ui, stage, BAR_H, player, &mut self.tracker.settings, self.view);
                     if act.settings_changed {
                         self.tracker.save_settings();
@@ -1304,12 +1426,13 @@ impl eframe::App for App {
                         self.apply_crop(&ctx);
                     }
                     if let Some(d) = act.zoom {
-                        self.view.zoom_by(d);
-                        self.apply_view(&ctx, false);
+                        self.zoom_view(&ctx, d, false);
                     }
                     if act.view_reset {
-                        self.view = View::default();
-                        self.apply_view(&ctx, false);
+                        self.reset_view(&ctx, false);
+                    }
+                    if let Some(format) = act.vr {
+                        self.set_vr(&ctx, format, true);
                     }
                 }
             }
@@ -1425,6 +1548,10 @@ impl eframe::App for App {
                     player.set_ab_loop(self.ab);
                     self.view = View::default();
                     player.set_view(self.view);
+                    if self.vr.take().is_some() {
+                        player.set_panorama(false, &self.tracker.settings.aspect);
+                    }
+                    self.vr_pending = true;
                     self.quick.crop = Crop::Off;
                     player.set_crop(None);
                     let key = crate::history::file_key(&player.state.path);

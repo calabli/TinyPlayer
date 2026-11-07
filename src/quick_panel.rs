@@ -1,9 +1,10 @@
 //! In-player quick settings, opened from the control bar's gear:
-//! 字幕 / 字幕样式 / 声音 / 均衡器 / 画面 / 画面增强 / 色彩. Anchored above the bar at the bottom-right.
+//! 字幕 / 字幕样式 / 声音 / 均衡器 / 画面 / 画面增强 / 色彩 / VR 全景. Anchored above the bar at the bottom-right.
 //!
 //! Aspect, hardware decoding, enhancement, tone mapping, interpolation,
 //! subtitle size/position/style, normalization and the equalizer are saved
-//! settings; crop and zoom last for the file; rotation, flips, colors and delays last for this run.
+//! settings; crop and zoom last for the file; rotation, flips, colors and delays last for this run;
+//! the VR format is remembered for each file.
 
 use eframe::egui::{self, Align2, Color32, CursorIcon, FontId, Pos2, Rect, Sense, Stroke, StrokeKind, pos2, vec2};
 
@@ -13,6 +14,7 @@ use crate::i18n::{tf, tr};
 use crate::player::{Player, Track};
 use crate::theme::ACCENT;
 use crate::view::{View, ZOOM_STEP};
+use crate::vr::{self, Format, Layout, Span};
 
 const W: f32 = 500.0;
 const H: f32 = 392.0;
@@ -34,6 +36,7 @@ enum Page {
     Video,
     Enhance,
     Color,
+    Vr,
 }
 
 #[derive(Clone, Copy, PartialEq, Default, Debug)]
@@ -64,6 +67,9 @@ pub struct QuickPanel {
     sub_delay: f64,
     audio_delay: f64,
     pub crop: Crop,
+    /// The playing file's format and field of view, set before each `show`.
+    pub vr: Option<Format>,
+    pub fov: i64,
 }
 
 #[derive(Default)]
@@ -75,6 +81,8 @@ pub struct Actions {
     /// Zoom change in mpv's log2 steps.
     pub zoom: Option<f64>,
     pub view_reset: bool,
+    /// The user picked this VR format.
+    pub vr: Option<Option<Format>>,
 }
 
 impl QuickPanel {
@@ -115,7 +123,7 @@ impl QuickPanel {
         p.rect_filled(nav, egui::CornerRadius { nw: 8, sw: 8, ne: 0, se: 0 }, NAV_BG);
 
         // Nav
-        let items = [(Page::Subtitles, tr("字幕")), (Page::SubStyle, tr("字幕样式")), (Page::Audio, tr("声音")), (Page::Equalizer, tr("均衡器")), (Page::Video, tr("画面")), (Page::Enhance, tr("画面增强")), (Page::Color, tr("色彩"))];
+        let items = [(Page::Subtitles, tr("字幕")), (Page::SubStyle, tr("字幕样式")), (Page::Audio, tr("声音")), (Page::Equalizer, tr("均衡器")), (Page::Video, tr("画面")), (Page::Enhance, tr("画面增强")), (Page::Color, tr("色彩")), (Page::Vr, tr("VR 全景"))];
         let top = nav.center().y - items.len() as f32 * 48.0 / 2.0;
         for (i, (page, label)) in items.into_iter().enumerate() {
             let r = Rect::from_min_size(pos2(nav.left(), top + i as f32 * 48.0), vec2(NAV_W, 40.0));
@@ -153,6 +161,7 @@ impl QuickPanel {
             Page::Video => self.video(&mut c, player, s, &mut out),
             Page::Enhance => self.enhance(&mut c, player, s, view, &mut out),
             Page::Color => self.color(&mut c, player),
+            Page::Vr => self.vr_page(&mut c, player, &mut out),
         }
 
         // "更多设置" bottom-left of the body.
@@ -377,7 +386,61 @@ impl QuickPanel {
         }
     }
 
+    fn vr_page(&mut self, c: &mut Cursor, player: &Player, out: &mut Actions) {
+        c.section(tr("全景模式"));
+        let spans = [(tr("关闭"), None), ("180°", Some(Span::Half)), ("360°", Some(Span::Full))];
+        if let Some(span) = c.choice("qp_vr_span", &spans, self.vr.map(|f| f.span)) {
+            let (w, h) = (player.state.width, player.state.height);
+            let layout = |span| self.vr.map_or_else(|| vr::layout_for(span, w, h), |f| f.layout);
+            out.vr = Some(span.map(|span| Format { span, layout: layout(span) }));
+        }
+        let Some(format) = self.vr else {
+            c.gap(8.0);
+            c.note(tr("用于 180° 或 360° 全景视频，普通视频不用开"));
+            return;
+        };
+        c.gap(10.0);
+        c.section(tr("画面排列"));
+        let layouts = [(tr("单画面"), Layout::Mono), (tr("左右"), Layout::SideBySide), (tr("上下"), Layout::TopBottom)];
+        if let Some(layout) = c.choice("qp_vr_layout", &layouts, format.layout) {
+            out.vr = Some(Some(Format { layout, ..format }));
+        }
+        c.gap(10.0);
+        c.section(&tf("视野  {}°", &[&self.fov]));
+        match c.buttons("qp_vr_view", &[tr("缩小"), tr("放大"), tr("回正")]) {
+            Some(0) => out.zoom = Some(-ZOOM_STEP),
+            Some(1) => out.zoom = Some(ZOOM_STEP),
+            Some(2) => out.view_reset = true,
+            _ => {}
+        }
+        c.gap(8.0);
+        c.note(tr("拖动画面转视角，滚轮缩放。全景模式下不显示字幕"));
+    }
+
     fn enhance(&mut self, c: &mut Cursor, player: &Player, s: &mut Settings, view: View, out: &mut Actions) {
+        // A panorama always uses the whole frame.
+        if self.vr.is_none() {
+            self.frame_area(c, view, out);
+        }
+        c.section(tr("HDR 色调映射"));
+        if let Some(v) = c.choice("qp_tone", &[(tr("自动"), "auto"), ("BT.2390", "bt.2390"), ("Hable", "hable"), ("Mobius", "mobius")], s.tone_mapping.as_str()) {
+            s.tone_mapping = v.to_string();
+            out.settings_changed = true;
+        }
+        c.note(if player.is_hdr() { tr("当前视频是 HDR") } else { tr("当前视频不是 HDR，此项不起作用") });
+        c.gap(6.0);
+        if c.toggle_row("qp_interp", tr("插帧"), s.interpolation) {
+            s.interpolation = !s.interpolation;
+            out.settings_changed = true;
+        }
+        c.gap(4.0);
+        if c.toggle_row("qp_frameless", tr("无边框"), s.frameless) {
+            s.frameless = !s.frameless;
+            out.settings_changed = true;
+        }
+    }
+
+    fn frame_area(&mut self, c: &mut Cursor, view: View, out: &mut Actions) {
         c.section(tr("裁剪"));
         let crops = [
             (tr("关闭"), Crop::Off),
@@ -401,22 +464,6 @@ impl QuickPanel {
             _ => {}
         }
         c.gap(6.0);
-        c.section(tr("HDR 色调映射"));
-        if let Some(v) = c.choice("qp_tone", &[(tr("自动"), "auto"), ("BT.2390", "bt.2390"), ("Hable", "hable"), ("Mobius", "mobius")], s.tone_mapping.as_str()) {
-            s.tone_mapping = v.to_string();
-            out.settings_changed = true;
-        }
-        c.note(if player.is_hdr() { tr("当前视频是 HDR") } else { tr("当前视频不是 HDR，此项不起作用") });
-        c.gap(6.0);
-        if c.toggle_row("qp_interp", tr("插帧"), s.interpolation) {
-            s.interpolation = !s.interpolation;
-            out.settings_changed = true;
-        }
-        c.gap(4.0);
-        if c.toggle_row("qp_frameless", tr("无边框"), s.frameless) {
-            s.frameless = !s.frameless;
-            out.settings_changed = true;
-        }
     }
 
     fn color(&mut self, c: &mut Cursor, player: &Player) {

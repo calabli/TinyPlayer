@@ -294,6 +294,7 @@ pub fn show(
             (format!("{cmd}B"), tr("添加书签")),
             (", / .".into(), tr("上一帧 / 下一帧")),
             ("B".into(), tr("A-B 循环")),
+            ("V".into(), tr("VR 全景")),
             ("T".into(), tr("窗口置顶")),
             ("I".into(), tr("画中画")),
             ("H".into(), tr("无边框播放")),
