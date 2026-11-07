@@ -23,6 +23,7 @@ enum Page {
     Video,
     Subtitles,
     Interface,
+    Library,
     History,
     Shortcuts,
 }
@@ -36,6 +37,8 @@ pub struct Actions {
     pub check_update: bool,
     pub device_volume: Option<(String, f64)>,
     pub forget_device: Option<String>,
+    pub toggle_lock: bool,
+    pub clear_library: bool,
 }
 
 const W: f32 = 660.0;
@@ -53,6 +56,7 @@ pub fn show(
     stats: (i64, i64),
     update_status: &str,
     devices: &[DeviceRow],
+    locked: bool,
 ) -> Actions {
     let mut out = Actions::default();
     let p = ui.painter().clone();
@@ -82,6 +86,7 @@ pub fn show(
         (Page::Video, tr("画面")),
         (Page::Subtitles, tr("字幕")),
         (Page::Interface, tr("界面")),
+        (Page::Library, tr("媒体库")),
         (Page::History, tr("播放记录")),
         (Page::Shortcuts, tr("快捷键")),
     ];
@@ -268,6 +273,21 @@ pub fn show(
         label(r, &tf("当前版本 {}", &[&crate::update::CURRENT_VERSION]), update_status, true);
         if text_link(ui, &p, r.right_center(), "check_update", tr("检查更新"), ACCENT).clicked {
             out.check_update = true;
+        }
+        return out;
+    }
+
+    if st.page == Page::Library {
+        let r = row(y);
+        label(r, tr("媒体库密码"), tr("进入媒体库前需要输入密码，重启后重新验证"), true);
+        if toggle(ui, &p, r, "library_lock", locked, true) {
+            out.toggle_lock = true;
+        }
+        y += ROW_H;
+        let r = row(y);
+        label(r, tr("清除媒体库"), tr("移除全部文件夹、标签和集合，不删除视频文件"), true);
+        if text_link(ui, &p, pos2(right, r.center().y), "clear_library", tr("清除"), Color32::from_rgb(0xF8, 0x51, 0x49)).clicked {
+            out.clear_library = true;
         }
         return out;
     }

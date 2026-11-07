@@ -101,7 +101,7 @@ mod tests {
     /// `const`s are translated where they're shown, so they're listed here.
     #[test]
     fn chinese_strings_go_through_translation() {
-        const SHOWN_ELSEWHERE: [&str; 30] = [
+        const SHOWN_ELSEWHERE: [&str; 32] = [
             "关闭", "低音", "人声", "高音", "影院", "默认收藏", "亮度", "对比度", "饱和度", "伽马", "色调",
             // Reasons for a failed update, translated in the dialog.
             "下载失败，请检查网络", "当前系统没有可用的更新包", "无法写入更新文件", "更新校验信息不可用",
@@ -109,7 +109,7 @@ mod tests {
             // Duplicate check levels and dialog errors in the library's 管理 page.
             "严格", "标准", "宽松", "输入集合名称", "至少选一个文件夹", "选一个目标文件夹", "视频已经在这个文件夹里",
             "名称不能为空，也不能包含特殊字符", "已有同名文件或文件夹", "无法在这里新建文件夹", "不能把文件夹剪切到它自己里面",
-            "无法重命名这个文件", "输入标签名称",
+            "无法重命名这个文件", "输入标签名称", "密码至少 4 位", "两次输入不一致",
         ];
         let mut bare = Vec::new();
         for (name, src) in SOURCES {

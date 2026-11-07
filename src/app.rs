@@ -17,6 +17,7 @@ use crate::hover_thumbs::HoverThumbs;
 use crate::icons::{self, Icon};
 use crate::i18n::{tf, tr};
 use crate::keep_awake::{KeepAwake, hold_for};
+use crate::library_lock;
 use crate::library_ui::{Action as LibAction, LibraryView};
 use crate::marks::{self, Marks};
 use crate::media_keys::{Cmd as MediaCmd, MediaKeys};
@@ -59,6 +60,17 @@ const REFRESH_CHECK_SECS: f64 = 2.0;
 const UPDATE_CHECK_DELAY_SECS: f64 = 5.0;
 const NORMAL_MIN_SIZE: [f32; 2] = [480.0, 300.0];
 const PIP_MIN_SIZE: [f32; 2] = [200.0, 120.0];
+const EXIT_TIMEOUT: std::time::Duration = std::time::Duration::from_secs(3);
+
+/// A step that needs the library's password, or a confirmation.
+enum LockDialog {
+    Unlock { password: String, error: bool },
+    Set { first: String, second: String, error: Option<&'static str> },
+    Disable { password: String, error: bool },
+    Clear { password: String, error: bool },
+    /// Clears the library and the password, for a forgotten one.
+    Forgot,
+}
 
 type ProcAddr = Arc<dyn Fn(&std::ffi::CStr) -> *const std::ffi::c_void + Send + Sync>;
 
@@ -109,6 +121,12 @@ pub struct App {
     ab: AbLoop,
     marks: Marks,
     view: View,
+    /// The idle page is the library, rather than the player's start page.
+    show_library: bool,
+    /// The stored password; None if the library has none.
+    library_lock: Option<String>,
+    library_unlocked: bool,
+    lock_dialog: Option<LockDialog>,
     /// The playing file's panoramic format; None for an ordinary video.
     vr: Option<vr::Format>,
     vr_look: vr::Look,
@@ -164,6 +182,7 @@ impl App {
         });
         let tracker = Tracker::new();
         let device_volumes = DeviceVolumes::new(tracker.store.as_ref().map(|s| s.device_volumes()).unwrap_or_default());
+        let library_lock = tracker.store.as_ref().and_then(|s| s.get_value(library_lock::SETTING)).filter(|v| !v.is_empty());
         crate::i18n::set_language(&tracker.settings.language);
         let system = cc.egui_ctx.input(|i| i.raw.system_theme);
         let light = theme::wants_light(&tracker.settings.theme, system);
@@ -217,6 +236,10 @@ impl App {
             ab: AbLoop::default(),
             marks: Marks::default(),
             view: View::default(),
+            show_library: false,
+            library_lock,
+            library_unlocked: false,
+            lock_dialog: None,
             vr: None,
             vr_look: vr::Look::default(),
             vr_pending: false,
@@ -876,7 +899,187 @@ impl App {
         if let Some(dir) = rfd::FileDialog::new().set_title(tr("添加到媒体库")).pick_folder() {
             if self.library.add_folder(&dir.to_string_lossy()) {
                 self.scanner.scan();
+                self.show_library = true;
             }
+        }
+    }
+
+    fn library_locked(&self) -> bool {
+        self.library_lock.is_some() && !self.library_unlocked
+    }
+
+    /// Goes to the library, asking for its password first if it has one.
+    fn open_library(&mut self) {
+        if self.library_locked() {
+            self.lock_dialog = Some(LockDialog::Unlock { password: String::new(), error: false });
+        } else {
+            self.show_library = true;
+        }
+    }
+
+    fn save_lock(&mut self, sealed: Option<String>) {
+        if let Some(store) = &self.tracker.store {
+            store.set_value(library_lock::SETTING, sealed.as_deref().unwrap_or(""));
+        }
+        self.library_lock = sealed;
+    }
+
+    fn clear_library(&mut self, ctx: &egui::Context) {
+        self.library.clear();
+        self.scanner.scan();
+        self.show_library = false;
+        self.show_osd(ctx, tr("媒体库已清除"));
+    }
+
+    fn lock_dialogs(&mut self, ctx: &egui::Context, id: egui::Id) {
+        let Some(mut dialog) = self.lock_dialog.take() else { return };
+        let sealed = self.library_lock.clone().unwrap_or_default();
+        let right = |password: &str| library_lock::verify(&sealed, password);
+        let mut close = false;
+        let mut enter = false;
+        let mut then: Option<Box<dyn FnOnce(&mut Self)>> = None;
+        let password_field = |ui: &mut egui::Ui, text: &mut String, hint: &str, focus: bool, enter: &mut bool| {
+            let edit = ui.add(egui::TextEdit::singleline(text).password(true).hint_text(hint).desired_width(f32::INFINITY));
+            if focus && !edit.has_focus() && !edit.lost_focus() {
+                edit.request_focus();
+            }
+            *enter |= edit.lost_focus() && ui.input(|i| i.key_pressed(Key::Enter));
+        };
+        egui::Modal::new(id).show(ctx, |ui| {
+            ui.set_width(340.0);
+            let wrong = tr("密码不对");
+            match &mut dialog {
+                LockDialog::Unlock { password, error } => {
+                    ui.label(tr("输入媒体库密码"));
+                    ui.add_space(6.0);
+                    password_field(ui, password, tr("密码"), true, &mut enter);
+                    if *error {
+                        ui.colored_label(Color32::from_rgb(0xF0, 0x71, 0x67), wrong);
+                    }
+                    ui.add_space(6.0);
+                    ui.horizontal(|ui| {
+                        close = ui.button(tr("取消")).clicked();
+                        if ui.button(tr("进入媒体库")).clicked() || enter {
+                            if right(password) {
+                                close = true;
+                                then = Some(Box::new(|app| {
+                                    app.library_unlocked = true;
+                                    app.show_library = true;
+                                }));
+                            } else {
+                                *error = true;
+                                password.clear();
+                            }
+                        }
+                        if ui.button(tr("忘记密码")).clicked() {
+                            then = Some(Box::new(|app| app.lock_dialog = Some(LockDialog::Forgot)));
+                            close = true;
+                        }
+                    });
+                }
+                LockDialog::Set { first, second, error } => {
+                    ui.label(tr("设置媒体库密码"));
+                    ui.add_space(6.0);
+                    password_field(ui, first, tr("密码，至少 4 位"), false, &mut enter);
+                    password_field(ui, second, tr("再输入一次"), false, &mut enter);
+                    ui.colored_label(theme::text_2(), tr("密码只用于进入媒体库，不会加密视频文件"));
+                    if let Some(e) = error {
+                        ui.colored_label(Color32::from_rgb(0xF0, 0x71, 0x67), tr(e));
+                    }
+                    ui.add_space(6.0);
+                    ui.horizontal(|ui| {
+                        close = ui.button(tr("取消")).clicked();
+                        if ui.button(tr("设置密码")).clicked() || enter {
+                            if first.chars().count() < library_lock::MIN_LENGTH {
+                                *error = Some("密码至少 4 位");
+                            } else if first != second {
+                                *error = Some("两次输入不一致");
+                            } else {
+                                let sealed = library_lock::seal(first);
+                                close = true;
+                                then = Some(Box::new(move |app| {
+                                    app.save_lock(Some(sealed));
+                                    app.library_unlocked = true;
+                                }));
+                            }
+                        }
+                    });
+                }
+                LockDialog::Disable { password, error } => {
+                    ui.label(tr("关闭媒体库密码"));
+                    ui.add_space(6.0);
+                    password_field(ui, password, tr("密码"), true, &mut enter);
+                    if *error {
+                        ui.colored_label(Color32::from_rgb(0xF0, 0x71, 0x67), wrong);
+                    }
+                    ui.add_space(6.0);
+                    ui.horizontal(|ui| {
+                        close = ui.button(tr("取消")).clicked();
+                        if ui.button(tr("关闭密码")).clicked() || enter {
+                            if right(password) {
+                                close = true;
+                                then = Some(Box::new(|app| app.save_lock(None)));
+                            } else {
+                                *error = true;
+                                password.clear();
+                            }
+                        }
+                    });
+                }
+                LockDialog::Clear { password, error } => {
+                    ui.label(tr("清除媒体库？"));
+                    ui.add_space(4.0);
+                    ui.colored_label(theme::text_2(), tr("移除全部文件夹、标签和集合。视频文件和播放记录不受影响。"));
+                    let needs_password = !sealed.is_empty() && !self.library_unlocked;
+                    if needs_password {
+                        ui.add_space(6.0);
+                        password_field(ui, password, tr("密码"), true, &mut enter);
+                    }
+                    if *error {
+                        ui.colored_label(Color32::from_rgb(0xF0, 0x71, 0x67), wrong);
+                    }
+                    ui.add_space(6.0);
+                    ui.horizontal(|ui| {
+                        close = ui.button(tr("取消")).clicked();
+                        if ui.button(tr("清除")).clicked() || enter {
+                            if !needs_password || right(password) {
+                                close = true;
+                                let ctx = ctx.clone();
+                                then = Some(Box::new(move |app| app.clear_library(&ctx)));
+                            } else {
+                                *error = true;
+                                password.clear();
+                            }
+                        }
+                    });
+                }
+                LockDialog::Forgot => {
+                    ui.label(tr("忘记密码？"));
+                    ui.add_space(4.0);
+                    ui.colored_label(theme::text_2(), tr("只能清除媒体库并取消密码。视频文件不受影响，之后可以重新添加文件夹。"));
+                    ui.add_space(8.0);
+                    ui.horizontal(|ui| {
+                        close = ui.button(tr("取消")).clicked();
+                        if ui.button(tr("清除媒体库")).clicked() {
+                            close = true;
+                            let ctx = ctx.clone();
+                            then = Some(Box::new(move |app| {
+                                app.clear_library(&ctx);
+                                app.save_lock(None);
+                            }));
+                        }
+                    });
+                }
+            }
+        });
+        if ctx.input(|i| i.key_pressed(Key::Escape)) {
+            close = true;
+        }
+        if !close {
+            self.lock_dialog = Some(dialog);
+        }
+        if let Some(step) = then {
+            step(self);
         }
     }
 
@@ -1332,20 +1535,28 @@ impl eframe::App for App {
         if s.idle {
             self.quick.close();
         }
-        if s.idle && self.library.has_folders() {
+        if s.idle && self.show_library && !self.library_locked() && self.library.has_folders() {
+            self.library.lockable = self.library_lock.is_some();
             match self.library.show(ui, stage) {
                 LibAction::Play(path) => self.pending_open.push(path),
                 LibAction::PlayAll(paths) => self.play_all(&paths),
                 LibAction::AddFolder => self.add_folder_dialog(),
                 LibAction::OpenFile => self.open_dialog(),
                 LibAction::Settings => self.settings_open = true,
+                LibAction::Home => self.show_library = false,
+                LibAction::Lock => {
+                    self.library_unlocked = false;
+                    self.show_library = false;
+                }
                 LibAction::None => {}
             }
         } else if s.idle {
-            let recent = if self.tracker.incognito { &[][..] } else { &self.recent };
-            match draw_empty_state(ui, stage, recent) {
+            let hide = self.tracker.incognito || self.library_locked();
+            let recent = if hide { &[][..] } else { &self.recent };
+            match draw_empty_state(ui, stage, recent, self.library.has_folders()) {
                 EmptyAction::Open => self.open_dialog(),
                 EmptyAction::AddFolder => self.add_folder_dialog(),
+                EmptyAction::Library => self.open_library(),
                 EmptyAction::Recent(path) => self.pending_open.push(path),
                 EmptyAction::Settings => self.settings_open = true,
                 EmptyAction::None => {}
@@ -1404,6 +1615,7 @@ impl eframe::App for App {
                     if let Some(p) = &self.player {
                         p.stop();
                     }
+                    self.open_library();
                 }
                 self.draw_controls(ui, stage, alpha);
             }
@@ -1496,7 +1708,18 @@ impl eframe::App for App {
                 stats,
                 &update_status,
                 &devices,
+                self.library_lock.is_some(),
             );
+            if act.toggle_lock {
+                self.lock_dialog = Some(if self.library_lock.is_some() {
+                    LockDialog::Disable { password: String::new(), error: false }
+                } else {
+                    LockDialog::Set { first: String::new(), second: String::new(), error: None }
+                });
+            }
+            if act.clear_library {
+                self.lock_dialog = Some(LockDialog::Clear { password: String::new(), error: false });
+            }
             if let Some((id, volume)) = act.device_volume {
                 self.set_device_volume(&ctx, &id, volume);
             }
@@ -1536,6 +1759,8 @@ impl eframe::App for App {
                 self.settings_open = false;
             }
         }
+
+        self.lock_dialogs(&ctx, ui.scope_id().with("lock_dialog"));
 
         // Never in front of a video, unless the viewer asked just now.
         let quiet = s.idle || self.settings_open;
@@ -1662,6 +1887,14 @@ impl eframe::App for App {
                 update::install(&prepared, false);
             }
         }
+        // Everything that might still be running stops here. Should something
+        // hang, the watchdog ends the process anyway.
+        std::thread::spawn(|| {
+            std::thread::sleep(EXIT_TIMEOUT);
+            std::process::exit(0);
+        });
+        update::stop_all();
+        self.library.shut_down(&egui::Context::default());
         self.scanner.quit();
         self.tracker.shutdown();
         if let (Some(v), Some(gl)) = (self.video.take(), gl) {
@@ -2167,11 +2400,12 @@ enum EmptyAction {
     None,
     Open,
     AddFolder,
+    Library,
     Recent(String),
     Settings,
 }
 
-fn draw_empty_state(ui: &mut egui::Ui, full: Rect, recent: &[Entry]) -> EmptyAction {
+fn draw_empty_state(ui: &mut egui::Ui, full: Rect, recent: &[Entry], has_library: bool) -> EmptyAction {
     let p = ui.painter().clone();
     let list_h = if recent.is_empty() { 0.0 } else { 34.0 + 26.0 * recent.len() as f32 };
     let c = full.center() - vec2(0.0, list_h / 2.0);
@@ -2197,7 +2431,7 @@ fn draw_empty_state(ui: &mut egui::Ui, full: Rect, recent: &[Entry]) -> EmptyAct
     p.text(
         lib_rect.center(),
         Align2::CENTER_CENTER,
-        tr("+ 建立媒体库"),
+        if has_library { tr("进入媒体库") } else { tr("+ 建立媒体库") },
         FontId::proportional(12.0),
         if lresp.hovered() { theme::text() } else { ACCENT },
     );
@@ -2213,7 +2447,7 @@ fn draw_empty_state(ui: &mut egui::Ui, full: Rect, recent: &[Entry]) -> EmptyAct
     let mut action = if resp.clicked() {
         EmptyAction::Open
     } else if lresp.clicked() {
-        EmptyAction::AddFolder
+        if has_library { EmptyAction::Library } else { EmptyAction::AddFolder }
     } else {
         EmptyAction::None
     };

@@ -1405,6 +1405,14 @@ impl Manager {
         }
     }
 
+    /// Stops any move and records the files that had already got there.
+    pub fn shut_down(&mut self, ctx: &egui::Context, lib: Option<&Library>, videos: &[Video]) {
+        if let Some(mover) = &mut self.mover {
+            mover.finish();
+        }
+        self.poll(ctx, lib, videos);
+    }
+
     /// True once after a dialog changed the library.
     pub fn take_changed(&mut self) -> bool {
         std::mem::take(&mut self.changed)

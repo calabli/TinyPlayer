@@ -66,6 +66,9 @@ pub enum Action {
     AddFolder,
     OpenFile,
     Settings,
+    /// Back to the player's start page.
+    Home,
+    Lock,
 }
 
 /// What one grid cell shows.
@@ -142,6 +145,8 @@ pub struct LibraryView {
     revision: u64,
     /// A disk came or went, so the folders need scanning again.
     rescan: bool,
+    /// The library has a password, so it can be locked again.
+    pub lockable: bool,
     /// Private mode: leaves out what was watched and how often.
     pub hide_history: bool,
     /// (video id, text being typed, focus requested yet)
@@ -179,6 +184,7 @@ impl LibraryView {
             manager: Manager::new(),
             revision: 0,
             rescan: false,
+            lockable: false,
             hide_history: false,
             tag_edit: None,
             tag_edit_pos: pos2(0.0, 0.0),
@@ -204,6 +210,26 @@ impl LibraryView {
 
     pub fn scan_finished(&mut self) {
         self.work = Work::default();
+    }
+
+    /// Forgets every folder, video, tag, collection and set. Files stay.
+    pub fn clear(&mut self) {
+        self.manager.shut_down(&egui::Context::default(), self.lib.as_ref(), &self.videos);
+        if let Some(lib) = &self.lib {
+            lib.clear();
+        }
+        let _ = std::fs::remove_dir_all(Library::thumbs_dir());
+        self.manager = Manager::new();
+        self.mode = Mode::Grid;
+        self.search.clear();
+        self.tags_sel.clear();
+        self.folder_sel = None;
+        self.folder_loc = None;
+        self.dirty = true;
+    }
+
+    pub fn shut_down(&mut self, ctx: &egui::Context) {
+        self.manager.shut_down(ctx, self.lib.as_ref(), &self.videos);
     }
 
     /// True once when the folders should be scanned again.
@@ -484,7 +510,7 @@ impl LibraryView {
         p.line_segment([top.left_bottom(), top.right_bottom()], Stroke::new(0.5, theme::line()));
         p.text(pos2(top.left() + 20.0, top.center().y), Align2::LEFT_CENTER, "TINYPLAYER", FontId::monospace(12.0), ACCENT);
 
-        let search_w = (top.width() - NAV_W - 624.0).clamp(160.0, 380.0);
+        let search_w = (top.width() - NAV_W - 730.0).clamp(120.0, 380.0);
         let search_rect = Rect::from_min_size(pos2(top.left() + NAV_W + 16.0, top.center().y - 15.0), vec2(search_w, 30.0));
         p.rect_filled(search_rect, 15.0, theme::panel());
         p.rect_stroke(search_rect, 15.0, Stroke::new(0.5, theme::line()), StrokeKind::Inside);
@@ -547,9 +573,19 @@ impl LibraryView {
         if open_clicked {
             action = Some(Action::OpenFile);
         }
-        let (_, add_clicked) = text_btn(ui, p, pos2(open_left - 24.0, top.center().y), "lib_add", tr("+ 添加文件夹"), ACCENT);
+        let (add_left, add_clicked) = text_btn(ui, p, pos2(open_left - 24.0, top.center().y), "lib_add", tr("+ 添加文件夹"), ACCENT);
         if add_clicked {
             action = Some(Action::AddFolder);
+        }
+        let (home_left, home_clicked) = text_btn(ui, p, pos2(add_left - 20.0, top.center().y), "lib_home", tr("播放页"), theme::text_2());
+        if home_clicked {
+            action = Some(Action::Home);
+        }
+        if self.lockable {
+            let (_, lock_clicked) = text_btn(ui, p, pos2(home_left - 20.0, top.center().y), "lib_lock", tr("锁定"), theme::text_2());
+            if lock_clicked {
+                action = Some(Action::Lock);
+            }
         }
         action
     }

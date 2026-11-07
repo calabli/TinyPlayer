@@ -168,6 +168,20 @@ impl Library {
         let _ = self.db.execute_batch("COMMIT");
     }
 
+    /// Forgets the whole library, in one step. Play history stays.
+    pub fn clear(&self) {
+        self.begin();
+        for table in ["video_tags", "tags", "collection_items", "folder_set_items", "folder_sets", "dup_ignored", "videos", "folders"] {
+            let _ = self.db.execute(&format!("DELETE FROM {table}"), []);
+        }
+        self.commit();
+    }
+
+    /// Drops rows a scan added for a folder that's since been removed.
+    pub fn remove_orphans(&self) {
+        let _ = self.db.execute("DELETE FROM videos WHERE folder_id NOT IN (SELECT id FROM folders)", []);
+    }
+
     pub fn add_folder(&self, path: &str) -> Option<i64> {
         let canon = std::fs::canonicalize(path).ok()?;
         let p = display_path(&canon);
@@ -377,7 +391,7 @@ impl Library {
                     (SELECT GROUP_CONCAT(ci.collection_id) FROM collection_items ci WHERE ci.video_id = v.id),
                     v.size, v.mtime
              FROM videos v LEFT JOIN history h ON h.key = v.key
-             WHERE v.missing = 0",
+             WHERE v.missing = 0 AND v.folder_id IN (SELECT id FROM folders)",
         ) else {
             return Vec::new();
         };
@@ -567,6 +581,34 @@ mod tests {
         assert_eq!(store.bookmarks(&new).len(), 1);
         assert_eq!(store.get_value(&format!("vr:{new}")).as_deref(), Some("360"));
         assert_eq!(store.get_value(&format!("vr:{old}")), None);
+        let _ = std::fs::remove_dir_all(&dir);
+    }
+
+    #[test]
+    fn clearing_forgets_the_library_but_not_the_files() {
+        let dir = std::env::temp_dir().join(format!("tinyplayer-lib-clear-{}", std::process::id()));
+        let _ = std::fs::remove_dir_all(&dir);
+        std::fs::create_dir_all(&dir).unwrap();
+        let lib = Library::open(&dir.join("t.db")).unwrap();
+        let file = dir.join("a.mp4");
+        std::fs::write(&file, b"x").unwrap();
+        let folder = lib.add_folder(dir.to_str().unwrap()).unwrap();
+        lib.upsert_file(folder, &file, 1, 1);
+        lib.add_tag(lib.videos()[0].id, "t");
+        lib.create_folder_set("s", &[folder]);
+        lib.clear();
+        assert!(lib.videos().is_empty());
+        assert!(lib.folders().is_empty());
+        assert!(lib.folder_sets().is_empty());
+        assert!(file.exists());
+
+        // A scan still running when the library was cleared.
+        lib.upsert_file(folder, &file, 1, 1);
+        assert!(lib.videos().is_empty());
+        lib.remove_orphans();
+        lib.upsert_file(99, &file, 1, 1);
+        lib.remove_orphans();
+        assert!(lib.pending_probe().is_empty());
         let _ = std::fs::remove_dir_all(&dir);
     }
 

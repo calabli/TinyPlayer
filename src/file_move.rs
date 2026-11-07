@@ -250,15 +250,20 @@ impl Mover {
     pub fn cancel(&self) {
         self.cancel.store(true, Ordering::Relaxed);
     }
+
+    /// Stops after the current step and waits for it.
+    pub fn finish(&mut self) {
+        self.cancel();
+        if let Some(worker) = self.worker.take() {
+            let _ = worker.join();
+        }
+    }
 }
 
 /// Quitting mid-copy shouldn't leave a partial file behind.
 impl Drop for Mover {
     fn drop(&mut self) {
-        self.cancel();
-        if let Some(worker) = self.worker.take() {
-            let _ = worker.join();
-        }
+        self.finish();
     }
 }
 

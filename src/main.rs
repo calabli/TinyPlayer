@@ -15,6 +15,7 @@ mod i18n_en;
 mod icons;
 mod keep_awake;
 mod library;
+mod library_lock;
 mod library_manage;
 mod library_ui;
 mod mac_open;

@@ -11,8 +11,8 @@
 
 use std::io::Read;
 use std::path::{Path, PathBuf};
-use std::process::{Command, Stdio};
-use std::sync::Arc;
+use std::process::{Child, Command, Stdio};
+use std::sync::{Arc, Mutex};
 use std::sync::atomic::{AtomicBool, Ordering};
 use std::sync::mpsc::{self, Receiver, Sender};
 use std::time::Duration;
@@ -127,15 +127,91 @@ fn curl(timeout: &str) -> Command {
     background(cmd)
 }
 
+/// Running curl processes, so none is left behind when the app quits.
+static RUNNING: Mutex<Vec<Child>> = Mutex::new(Vec::new());
+
+enum Run {
+    Going,
+    Finished(bool),
+    Stopped,
+}
+
+fn track(child: Child) -> u32 {
+    let pid = child.id();
+    if let Ok(mut running) = RUNNING.lock() {
+        running.push(child);
+    }
+    pid
+}
+
+fn check(pid: u32) -> Run {
+    let Ok(mut running) = RUNNING.lock() else { return Run::Stopped };
+    let Some(at) = running.iter().position(|c| c.id() == pid) else { return Run::Stopped };
+    match running[at].try_wait() {
+        Ok(None) => Run::Going,
+        Ok(Some(status)) => {
+            running.remove(at);
+            Run::Finished(status.success())
+        }
+        Err(_) => {
+            running.remove(at);
+            Run::Stopped
+        }
+    }
+}
+
+fn kill(pid: u32) {
+    let Ok(mut running) = RUNNING.lock() else { return };
+    if let Some(at) = running.iter().position(|c| c.id() == pid) {
+        let mut child = running.remove(at);
+        let _ = child.kill();
+        let _ = child.wait();
+    }
+}
+
+/// Stops every download and check. The install script isn't one of these: it
+/// has to outlive the app to replace it.
+pub fn stop_all() {
+    if let Ok(mut running) = RUNNING.lock() {
+        for child in running.iter_mut() {
+            let _ = child.kill();
+            let _ = child.wait();
+        }
+        running.clear();
+    }
+}
+
+/// Runs curl and returns what it printed, if it worked.
+fn capture(mut cmd: Command) -> Option<Vec<u8>> {
+    let mut child = cmd.stdout(Stdio::piped()).stderr(Stdio::null()).spawn().ok()?;
+    let mut stdout = child.stdout.take()?;
+    let reader = std::thread::spawn(move || {
+        let mut bytes = Vec::new();
+        let _ = stdout.read_to_end(&mut bytes);
+        bytes
+    });
+    let pid = track(child);
+    let worked = loop {
+        match check(pid) {
+            Run::Going => std::thread::sleep(Duration::from_millis(20)),
+            Run::Finished(worked) => break worked,
+            Run::Stopped => break false,
+        }
+    };
+    let bytes = reader.join().ok()?;
+    worked.then_some(bytes)
+}
+
 fn fetch_latest() -> Option<String> {
-    let url = format!("{RELEASES_URL}/latest");
-    let output = curl(CHECK_TIMEOUT_SECS).arg("--head").arg(url).output().ok()?;
-    output.status.success().then(|| parse_latest(&String::from_utf8_lossy(&output.stdout)))?
+    let mut cmd = curl(CHECK_TIMEOUT_SECS);
+    cmd.arg("--head").arg(format!("{RELEASES_URL}/latest"));
+    parse_latest(&String::from_utf8_lossy(&capture(cmd)?))
 }
 
 fn fetch_text(url: &str) -> Option<String> {
-    let output = curl(CHECK_TIMEOUT_SECS).args(["--fail", "--location", url]).output().ok()?;
-    output.status.success().then(|| String::from_utf8_lossy(&output.stdout).into_owned())
+    let mut cmd = curl(CHECK_TIMEOUT_SECS);
+    cmd.args(["--fail", "--location", url]);
+    Some(String::from_utf8_lossy(&capture(cmd)?).into_owned())
 }
 
 /// Only asks for the commit when it can make a difference.
@@ -148,9 +224,11 @@ fn outdated(latest: &str) -> bool {
 }
 
 fn download_size(url: &str) -> u64 {
-    let Ok(output) = curl(CHECK_TIMEOUT_SECS).args(["--head", "--location", url]).output() else { return 0 };
+    let mut cmd = curl(CHECK_TIMEOUT_SECS);
+    cmd.args(["--head", "--location", url]);
+    let Some(output) = capture(cmd) else { return 0 };
     // Each redirect has its own headers; the last answer is the file.
-    String::from_utf8_lossy(&output.stdout)
+    String::from_utf8_lossy(&output)
         .lines()
         .filter_map(|l| l.split_once(':'))
         .filter(|(name, _)| name.eq_ignore_ascii_case("content-length"))
@@ -232,7 +310,7 @@ fn download(version: &str, tx: &Sender<Msg>, cancel: &AtomicBool) -> Result<Prep
     let url = format!("{base}/{name}");
     let total = download_size(&url);
     let file = dir.join(&name);
-    let mut child = curl(DOWNLOAD_TIMEOUT_SECS)
+    let child = curl(DOWNLOAD_TIMEOUT_SECS)
         .args(["--fail", "--location", "--output"])
         .arg(&file)
         .arg(&url)
@@ -240,17 +318,17 @@ fn download(version: &str, tx: &Sender<Msg>, cancel: &AtomicBool) -> Result<Prep
         .stderr(Stdio::null())
         .spawn()
         .map_err(|_| Some(NETWORK))?;
+    let pid = track(child);
     loop {
         if cancel.load(Ordering::Relaxed) {
-            let _ = child.kill();
-            let _ = child.wait();
+            kill(pid);
             let _ = std::fs::remove_dir_all(&dir);
             return Err(None);
         }
-        match child.try_wait() {
-            Ok(Some(status)) if status.success() => break,
-            Ok(Some(_)) | Err(_) => return Err(Some(NETWORK)),
-            Ok(None) => {}
+        match check(pid) {
+            Run::Finished(true) => break,
+            Run::Finished(false) | Run::Stopped => return Err(Some(NETWORK)),
+            Run::Going => {}
         }
         let done = std::fs::metadata(&file).map_or(0, |m| m.len());
         let _ = tx.send(Msg::Progress(done, total));

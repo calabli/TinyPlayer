@@ -173,6 +173,7 @@ fn save_probes(lib: &Library, results: &mut Vec<(i64, Option<Info>)>) {
 }
 
 fn walk_all(lib: &Library, send: &dyn Fn(Msg)) {
+    lib.remove_orphans();
     let mut count = 0;
     let mut last_report = Instant::now();
     for folder in lib.folders() {
@@ -198,6 +199,7 @@ fn walk_all(lib: &Library, send: &dyn Fn(Msg)) {
         save_files(lib, folder.id, &mut found);
         lib.mark_missing(folder.id, &seen);
     }
+    lib.remove_orphans();
     send(Msg::Scanning(count));
 }
 
