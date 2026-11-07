@@ -1,5 +1,6 @@
 //! In-app updates: looks for a newer release on GitHub, downloads it, checks
-//! it and installs it, with the usual dialog steps around that.
+//! it and installs it, with the usual dialog steps around that. A build of
+//! the same version from a different commit counts as out of date too.
 //!
 //! The installer can't replace a running app, so a small script waits for this
 //! process to exit and does the swap. On macOS it keeps the old app until the
@@ -30,10 +31,14 @@ pub const CHECK_EVERY_SECS: i64 = 24 * 60 * 60;
 const CHECK_TIMEOUT_SECS: &str = "15";
 const DOWNLOAD_TIMEOUT_SECS: &str = "3600";
 const SUMS_NAME: &str = "SHA256SUMS";
+/// Holds the commit a release was built from.
+const COMMIT_NAME: &str = "COMMIT";
 /// The dialog only has room for the highlights.
 const MAX_NOTE_LINES: usize = 8;
 
 pub const CURRENT_VERSION: &str = env!("CARGO_PKG_VERSION");
+/// Set by GitHub Actions. Local builds don't have one, and go by version.
+const CURRENT_COMMIT: Option<&str> = option_env!("GITHUB_SHA");
 
 fn numbers(version: &str) -> Vec<u64> {
     version.split('.').map(|part| part.parse().unwrap_or(0)).collect()
@@ -41,6 +46,21 @@ fn numbers(version: &str) -> Vec<u64> {
 
 pub fn is_newer(candidate: &str, current: &str) -> bool {
     numbers(candidate) > numbers(current)
+}
+
+/// Whether to offer `latest`. Builds of the same version are told apart by
+/// their commit, where both are known; a build ahead of it is left alone.
+fn is_outdated(latest: &str, current: &str, latest_commit: Option<&str>, own_commit: Option<&str>) -> bool {
+    if is_newer(current, latest) {
+        return false;
+    }
+    is_newer(latest, current) || latest_commit.zip(own_commit).is_some_and(|(a, b)| !a.eq_ignore_ascii_case(b))
+}
+
+/// A COMMIT file's content, if it holds a full commit hash.
+fn parse_commit(text: &str) -> Option<&str> {
+    let text = text.trim();
+    (text.len() == 40 && text.bytes().all(|b| b.is_ascii_hexdigit())).then_some(text)
 }
 
 /// Reads the version out of the redirect `releases/latest` answers with. A
@@ -118,6 +138,15 @@ fn fetch_text(url: &str) -> Option<String> {
     output.status.success().then(|| String::from_utf8_lossy(&output.stdout).into_owned())
 }
 
+/// Only asks for the commit when it can make a difference.
+fn outdated(latest: &str) -> bool {
+    let commit = CURRENT_COMMIT.filter(|_| latest == CURRENT_VERSION).and_then(|_| {
+        let text = fetch_text(&format!("{RELEASES_URL}/download/v{latest}/{COMMIT_NAME}"))?;
+        parse_commit(&text).map(str::to_string)
+    });
+    is_outdated(latest, CURRENT_VERSION, commit.as_deref(), CURRENT_COMMIT)
+}
+
 fn download_size(url: &str) -> u64 {
     let Ok(output) = curl(CHECK_TIMEOUT_SECS).args(["--head", "--location", url]).output() else { return 0 };
     // Each redirect has its own headers; the last answer is the file.
@@ -181,7 +210,8 @@ pub struct Prepared {
 }
 
 enum Msg {
-    Checked(Option<String>),
+    /// The latest version, and whether this build should update to it.
+    Checked(Option<(String, bool)>),
     Notes(String),
     Progress(u64, u64),
     Prepared(Prepared),
@@ -365,11 +395,14 @@ impl Updater {
         std::thread::Builder::new()
             .name("update-check".into())
             .spawn(move || {
-                let latest = fetch_latest();
+                let latest = fetch_latest().map(|version| {
+                    let update = outdated(&version);
+                    (version, update)
+                });
                 let _ = tx.send(Msg::Checked(latest.clone()));
                 ctx.request_repaint();
-                let Some(version) = latest else { return };
-                if is_newer(&version, CURRENT_VERSION) {
+                let Some((version, update)) = latest else { return };
+                if update {
                     if let Some(text) = fetch_text(&format!("{RAW_URL}/v{version}/CHANGELOG.md")) {
                         let _ = tx.send(Msg::Notes(parse_notes(&text, &version)));
                         ctx.request_repaint();
@@ -412,7 +445,7 @@ impl Updater {
     }
 
     /// Applies finished background work. Returns the version a check found,
-    /// when it's newer than this build.
+    /// when this build should update to it.
     pub fn poll(&mut self, ctx: &egui::Context) -> Option<PollResult> {
         let mut result = None;
         while let Ok(msg) = self.rx.try_recv() {
@@ -421,10 +454,9 @@ impl Updater {
                     self.phase = Phase::CheckFailed;
                     result = Some(PollResult::CheckFinished(None));
                 }
-                Msg::Checked(Some(version)) => {
-                    let newer = is_newer(&version, CURRENT_VERSION);
-                    self.phase = if newer { Phase::Available(version.clone()) } else { Phase::UpToDate };
-                    result = Some(PollResult::CheckFinished(newer.then_some(version)));
+                Msg::Checked(Some((version, update))) => {
+                    self.phase = if update { Phase::Available(version.clone()) } else { Phase::UpToDate };
+                    result = Some(PollResult::CheckFinished(update.then_some(version)));
                 }
                 Msg::Notes(notes) => self.notes = notes,
                 Msg::Progress(done, total) => {
@@ -487,7 +519,7 @@ impl Updater {
 }
 
 pub enum PollResult {
-    /// A check ended; holds the version if it's newer than this build.
+    /// A check ended; holds the version if this build should update to it.
     CheckFinished(Option<String>),
     Ready,
     Failed,
@@ -511,6 +543,38 @@ mod tests {
         assert!(is_newer("1.0", "0.9.9"));
         assert!(!is_newer("0.1.1", "0.1.1"));
         assert!(!is_newer("0.1.0", "0.1.1"));
+    }
+
+    #[test]
+    fn a_different_commit_of_the_same_version_is_outdated() {
+        let (a, b) = (Some("a".repeat(40)), Some("b".repeat(40)));
+        let (a, b) = (a.as_deref(), b.as_deref());
+        assert!(is_outdated("0.2.0", "0.2.0", a, b));
+        assert!(!is_outdated("0.2.0", "0.2.0", a, a));
+        assert!(!is_outdated("0.2.0", "0.2.0", Some(&"A".repeat(40)), a));
+    }
+
+    #[test]
+    fn versions_decide_when_a_commit_is_unknown() {
+        let a = Some("a".repeat(40));
+        assert!(is_outdated("0.2.0", "0.1.0", None, None));
+        assert!(!is_outdated("0.2.0", "0.2.0", None, a.as_deref()));
+        assert!(!is_outdated("0.2.0", "0.2.0", a.as_deref(), None));
+    }
+
+    #[test]
+    fn a_build_ahead_of_the_release_is_left_alone() {
+        let (a, b) = (Some("a".repeat(40)), Some("b".repeat(40)));
+        assert!(!is_outdated("0.2.0", "0.3.0", a.as_deref(), b.as_deref()));
+    }
+
+    #[test]
+    fn reads_only_full_commit_hashes() {
+        let hash = "0123456789abcdef0123456789abcdef01234567";
+        assert_eq!(parse_commit(&format!("{hash}\n")), Some(hash));
+        assert_eq!(parse_commit("abc123"), None);
+        assert_eq!(parse_commit(&"z".repeat(40)), None);
+        assert_eq!(parse_commit("<html>not found</html>"), None);
     }
 
     #[test]

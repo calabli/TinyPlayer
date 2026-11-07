@@ -96,13 +96,15 @@ jobs:
       - uses: actions/download-artifact@v4
         with:
           path: packages
-      # The app refuses an update that doesn't match this list.
+      # The app refuses an update that doesn't match this list, and compares
+      # the commit to tell builds of the same version apart.
       - name: Write checksums
         run: |
           mkdir release
           cp packages/*/* release/
           cd release
           sha256sum TinyPlayer-* > SHA256SUMS
+          echo "$GITHUB_SHA" > COMMIT
       - env:
           GH_TOKEN: ${{ github.token }}
         run: gh release create "$GITHUB_REF_NAME" release/* --repo "$GITHUB_REPOSITORY" --generate-notes
