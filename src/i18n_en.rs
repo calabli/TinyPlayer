@@ -23,6 +23,7 @@ pub const EN: &[(&str, &str)] = &[
     ("多屏已开启：点空白格添加视频", "Multi-view on: click an empty slot to add a video"),
     ("还原（Esc）", "Restore (Esc)"),
     ("在窗口内放大", "Enlarge in the window"),
+    ("关闭视频", "Close video"),
     ("全屏（双击）", "Full screen (double-click)"),
     ("退出全屏（Esc）", "Exit full screen (Esc)"),
     ("进度条", "Bars"),

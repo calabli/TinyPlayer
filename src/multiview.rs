@@ -308,8 +308,8 @@ impl MultiView {
         }
     }
 
-    pub fn video_count(&self) -> usize {
-        self.layout.contents().iter().filter(|c| **c != Content::Empty).count()
+    pub fn video_count(&self, main: &Player) -> usize {
+        self.layout.contents().into_iter().filter(|c| !self.is_empty(*c, main)).count()
     }
 
     /// Progress tracking and events for the extra players.
@@ -336,6 +336,34 @@ impl MultiView {
             Content::Pane(id) => self.panes.get(&id).map(|p| &p.player),
             Content::Empty => None,
         }
+    }
+
+    /// A slot showing the empty "add video" screen: no video, or the main
+    /// player with nothing open (its slot keeps its place for the next one).
+    fn is_empty(&self, content: Content, main: &Player) -> bool {
+        match content {
+            Content::Empty => true,
+            Content::Main => main.state.idle,
+            Content::Pane(id) => !self.panes.contains_key(&id),
+        }
+    }
+
+    /// Back to the empty screen: the video stops, the slot stays.
+    fn clear_slot(&mut self, slot: u32, content: Content, main: &Player) {
+        match content {
+            Content::Main => main.stop(),
+            Content::Pane(id) => {
+                if let Some(p) = self.panes.remove(&id) {
+                    self.dead.push(p);
+                }
+                self.layout.set_content(slot, Content::Empty);
+            }
+            Content::Empty => {}
+        }
+        if self.maximized == Some(content) {
+            self.maximized = None;
+        }
+        self.menu = None;
     }
 
     /// Every player currently on screen.
@@ -423,7 +451,7 @@ impl MultiView {
                 }
                 Key::Tab => {
                     // Move focus to the next slot with a video.
-                    let shown: Vec<Content> = self.layout.contents().into_iter().filter(|c| *c != Content::Empty).collect();
+                    let shown: Vec<Content> = self.layout.contents().into_iter().filter(|c| !self.is_empty(*c, main)).collect();
                     if let Some(i) = shown.iter().position(|c| *c == focus) {
                         self.focus = shown[(i + 1) % shown.len()];
                     }
@@ -519,7 +547,8 @@ impl MultiView {
         // ---- One video alone, full screen ----
         if let Some((id, content)) = self.solo_slot() {
             self.focus = content;
-            self.draw_video(&p, frame, content, stage, main_texture, ppp);
+            let empty = self.is_empty(content, main);
+            self.draw_video(&p, frame, content, stage, main_texture, ppp, empty);
             self.slot_chrome(ui, &p, id, content, stage, false, main, chrome, pointer, &mut out);
             self.hide_cursor(&ctx, stage, main, chrome, pointer);
             return out;
@@ -531,9 +560,10 @@ impl MultiView {
         }
         if let Some((id, content)) = self.max_slot() {
             self.focus = content;
-            self.draw_video(&p, frame, content, grid, main_texture, ppp);
+            let empty = self.is_empty(content, main);
+            self.draw_video(&p, frame, content, grid, main_texture, ppp, empty);
             self.slot_chrome(ui, &p, id, content, grid, false, main, chrome, pointer, &mut out);
-            self.top_bar(ui, &p, stage, &mut out);
+            self.top_bar(ui, &p, stage, main, &mut out);
             self.hide_cursor(&ctx, grid, main, chrome, pointer);
             return out;
         }
@@ -543,14 +573,16 @@ impl MultiView {
         let mut chrome_jobs: Vec<(u32, Content, Rect, bool)> = Vec::new();
         for (id, content, r) in &leaves {
             let r = inner(*r);
-            self.draw_video(&p, frame, *content, r, main_texture, ppp);
+            let empty = self.is_empty(*content, main);
+            self.draw_video(&p, frame, *content, r, main_texture, ppp, empty);
             chrome_jobs.push((*id, *content, r, false));
         }
         // ---- Floats (videos) ----
         for f in &self.layout.floats.clone() {
             let r = Layout::float_rect(f, grid);
             p.rect_filled(r.expand(1.0), 4.0, Color32::from_white_alpha(70));
-            self.draw_video(&p, frame, f.content, r, main_texture, ppp);
+            let empty = self.is_empty(f.content, main);
+            self.draw_video(&p, frame, f.content, r, main_texture, ppp, empty);
             chrome_jobs.push((f.id, f.content, r, true));
         }
 
@@ -574,7 +606,7 @@ impl MultiView {
         }
 
         self.handle_drag(&ctx, &p, grid, pointer);
-        self.top_bar(ui, &p, stage, &mut out);
+        self.top_bar(ui, &p, stage, main, &mut out);
         self.add_menu(ui, playlist, &mut out);
         self.hide_cursor(&ctx, grid, main, chrome, pointer);
         out
@@ -592,8 +624,9 @@ impl MultiView {
         }
     }
 
-    fn draw_video(&mut self, p: &egui::Painter, frame: &mut eframe::Frame, content: Content, r: Rect, main_tex: Option<TextureId>, ppp: f32) {
+    fn draw_video(&mut self, p: &egui::Painter, frame: &mut eframe::Frame, content: Content, r: Rect, main_tex: Option<TextureId>, ppp: f32, empty: bool) {
         let uv = Rect::from_min_max(pos2(0.0, 0.0), pos2(1.0, 1.0));
+        let content = if empty { Content::Empty } else { content };
         match content {
             Content::Main => {
                 if let Some(t) = main_tex {
@@ -643,8 +676,9 @@ impl MultiView {
         let ctx = ui.ctx().clone();
         let body = ui.interact(r, ui.scope_id().with(("mv_slot", id)), Sense::click());
         let hovered = pointer.is_some_and(|q| r.contains(q));
+        let empty = self.is_empty(content, main);
         if body.clicked() {
-            if content == Content::Empty {
+            if empty {
                 if self.menu.map(|(s, _)| s) == Some(id) {
                     self.menu = None;
                 } else {
@@ -660,16 +694,21 @@ impl MultiView {
             }
         }
         // Double-click: this video alone, full screen, or back.
-        if body.double_clicked() && content != Content::Empty {
+        if body.double_clicked() && !empty {
             self.toggle_solo(&ctx, content);
         }
-        if content == Content::Empty {
+        if empty {
+            // Full screen or enlarged, an empty slot has nothing to show.
+            if self.solo == Some(content) {
+                self.exit_solo(&ctx);
+            }
             if hovered {
                 p.rect_stroke(r, 3.0, Stroke::new(1.0, ACCENT), StrokeKind::Inside);
                 ctx.set_cursor_icon(CursorIcon::PointingHand);
             }
-            // An empty slot can still be closed (if it isn't the last).
-            if self.layout.slot_count() > 1 && hovered {
+            // An empty slot can still be closed (if it isn't the last). The
+            // main player's slot stays, to show its next video.
+            if self.layout.slot_count() > 1 && hovered && content != Content::Main {
                 let x = Rect::from_min_size(pos2(r.right() - 28.0, r.top() + 4.0), vec2(24.0, 20.0));
                 if tool_button(ui, p, x, ("mv_close", id), Tool::Close, tr("关闭")) {
                     self.close_slot(id);
@@ -729,7 +768,7 @@ impl MultiView {
                             let beside = self.layout.find(self.focus).filter(|_| self.focus != content);
                             self.layout.dock(id, beside);
                         }
-                        Tool::Close => self.close_slot(id),
+                        Tool::Close => self.clear_slot(id, content, main),
                         Tool::Max | Tool::Restore => self.toggle_max(content),
                         Tool::Fullscreen | Tool::ExitFullscreen => self.toggle_solo(&ctx, content),
                     }
@@ -853,11 +892,13 @@ impl MultiView {
         let mut v = Vec::new();
         if self.solo.is_some() {
             v.push((Tool::ExitFullscreen, tr("退出全屏（Esc）")));
+            v.push((Tool::Close, tr("关闭视频")));
             return v;
         }
         if self.maximized.is_some() {
             v.push((Tool::Restore, tr("还原（Esc）")));
             v.push((Tool::Fullscreen, tr("全屏（双击）")));
+            v.push((Tool::Close, tr("关闭视频")));
             return v;
         }
         if content != Content::Empty {
@@ -875,10 +916,8 @@ impl MultiView {
                 v.push((Tool::Float, tr("画中画小窗")));
             }
         }
-        // The main video can't be closed here; turn multi-view off instead.
-        if content != Content::Main {
-            v.push((Tool::Close, tr("关闭")));
-        }
+        // Stops the video; the slot goes back to "add video".
+        v.push((Tool::Close, tr("关闭视频")));
         v
     }
 
@@ -946,7 +985,7 @@ impl MultiView {
         }
     }
 
-    fn top_bar(&mut self, ui: &mut egui::Ui, p: &egui::Painter, stage: Rect, out: &mut Actions) {
+    fn top_bar(&mut self, ui: &mut egui::Ui, p: &egui::Painter, stage: Rect, main: &Player, out: &mut Actions) {
         let ctx = ui.ctx().clone();
         let band = Rect::from_min_size(stage.min, vec2(stage.width(), TOP_H));
         let _blocker = ui.interact(band, ui.scope_id().with("mv_bar"), Sense::click());
@@ -1008,7 +1047,7 @@ impl MultiView {
             out.osd = Some(if self.hide_bars { tr("进度条已隐藏：鼠标移到画面底部显示").into() } else { tr("进度条  显示").into() });
         }
         rx = bars_left - 16.0;
-        let count = tf("{} / {} 个画面", &[&self.video_count(), &MAX_SLOTS]);
+        let count = tf("{} / {} 个画面", &[&self.video_count(main), &MAX_SLOTS]);
         if rx - 120.0 > x {
             p.text(pos2(rx, cy), Align2::RIGHT_CENTER, count, FontId::monospace(11.0), theme::text_3());
         }

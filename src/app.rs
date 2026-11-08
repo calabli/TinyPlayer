@@ -1133,7 +1133,7 @@ impl App {
             return;
         }
         // In multi-view, keys (full screen too) go to the focused slot.
-        if self.multi.on && !player.state.idle {
+        if self.multi.on {
             if let Some(text) = self.multi.handle_keys(ctx, &keys, player) {
                 self.show_osd(ctx, text);
             }
@@ -1556,10 +1556,8 @@ impl eframe::App for App {
                 ctx.set_cursor_icon(if surface.dragged() { CursorIcon::Grabbing } else { CursorIcon::Grab });
             }
         }
-        // Multi-view lays several videos out; the main one goes in its slot.
-        if s.idle && self.multi.on {
-            self.multi.disable(&ctx);
-        }
+        // Multi-view lays several videos out; the main one goes in its slot,
+        // which shows "add video" while the main player has nothing open.
         let multi = self.multi.on && !self.pip;
         let video_rect = if multi {
             self.multi.main_rect(stage).unwrap_or(Rect::NOTHING)
@@ -1590,7 +1588,7 @@ impl eframe::App for App {
                 }
             }
         }
-        if multi && !s.idle {
+        if multi {
             let now = ctx.input(|i| i.time);
             let chrome = now - self.last_activity < HIDE_AFTER;
             if chrome {
@@ -1630,7 +1628,7 @@ impl eframe::App for App {
         }
         if self.pip && (s.idle || surface.double_clicked()) {
             self.toggle_pip(&ctx);
-        } else if surface.double_clicked() && !s.idle {
+        } else if surface.double_clicked() && !s.idle && !multi {
             let fs = ctx.input(|i| i.viewport().fullscreen.unwrap_or(false));
             ctx.send_viewport_cmd(ViewportCommand::Fullscreen(!fs));
         }
@@ -1641,7 +1639,11 @@ impl eframe::App for App {
         if s.idle {
             self.quick.close();
         }
-        if s.idle && self.show_library && !self.library_locked() && self.library.has_folders() {
+        if multi {
+            // Multi-view draws its own bar and per-slot controls.
+            self.quick.close();
+            self.sidebar_open = false;
+        } else if s.idle && self.show_library && !self.library_locked() && self.library.has_folders() {
             self.library.lockable = self.library_lock.is_some();
             match self.library.show(ui, stage) {
                 LibAction::Play(path) => self.pending_open.push(path),
@@ -1667,10 +1669,6 @@ impl eframe::App for App {
                 EmptyAction::Settings => self.settings_open = true,
                 EmptyAction::None => {}
             }
-        } else if multi {
-            // Multi-view draws its own bar and per-slot controls.
-            self.quick.close();
-            self.sidebar_open = false;
         } else {
             let now = ctx.input(|i| i.time);
             let pointer_in_bar = ctx
