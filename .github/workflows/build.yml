@@ -11,6 +11,9 @@ permissions:
 jobs:
   macos:
     name: macOS arm64
+    # macOS packages are paused for now; releases ship Windows only.
+    # To bring them back, remove this line and add macos to the release job's needs.
+    if: false
     runs-on: macos-15
     steps:
       - uses: actions/checkout@v4
@@ -103,7 +106,7 @@ jobs:
   release:
     name: Publish release
     if: startsWith(github.ref, 'refs/tags/v')
-    needs: [macos, windows]
+    needs: [windows]
     runs-on: ubuntu-latest
     permissions:
       contents: write
