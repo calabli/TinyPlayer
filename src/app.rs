@@ -1132,17 +1132,9 @@ impl App {
         if ctx.egui_wants_keyboard_input() {
             return;
         }
-        // In multi-view, keys go to the focused slot. Full screen still works.
+        // In multi-view, keys (full screen too) go to the focused slot.
         if self.multi.on && !player.state.idle {
-            let fullscreen = ctx.input(|i| i.viewport().fullscreen.unwrap_or(false));
-            for key in &keys {
-                match key {
-                    Key::F | Key::Enter => ctx.send_viewport_cmd(ViewportCommand::Fullscreen(!fullscreen)),
-                    Key::Escape if fullscreen => ctx.send_viewport_cmd(ViewportCommand::Fullscreen(false)),
-                    _ => {}
-                }
-            }
-            if let Some(text) = self.multi.handle_keys(&keys, player) {
+            if let Some(text) = self.multi.handle_keys(ctx, &keys, player) {
                 self.show_osd(ctx, text);
             }
             return;
@@ -1566,11 +1558,11 @@ impl eframe::App for App {
         }
         // Multi-view lays several videos out; the main one goes in its slot.
         if s.idle && self.multi.on {
-            self.multi.disable();
+            self.multi.disable(&ctx);
         }
         let multi = self.multi.on && !self.pip;
         let video_rect = if multi {
-            self.multi.main_rect(MultiView::grid_rect(stage)).unwrap_or(Rect::NOTHING)
+            self.multi.main_rect(stage).unwrap_or(Rect::NOTHING)
         } else {
             full
         };
@@ -1621,15 +1613,11 @@ impl eframe::App for App {
             if let Some((slot, path)) = acts.load {
                 self.load_into_slot(&ctx, slot, path);
             }
-            if acts.toggle_fullscreen {
-                let fs = ctx.input(|i| i.viewport().fullscreen.unwrap_or(false));
-                ctx.send_viewport_cmd(ViewportCommand::Fullscreen(!fs));
-            }
             if let Some(text) = acts.osd {
                 self.show_osd(&ctx, text);
             }
             if acts.back {
-                self.multi.disable();
+                self.multi.disable(&ctx);
                 if let Some(p) = &self.player {
                     p.stop();
                 }

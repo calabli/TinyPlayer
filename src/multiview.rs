@@ -4,12 +4,13 @@
 //!
 //! In multi-view each slot has a small control bar of its own, and keys go
 //! to the focused slot (blue outline). The big control bar is hidden; turning
-//! multi-view off brings back the full single-video player.
+//! multi-view off brings back the full single-video player. Full screen is
+//! per slot: that one video takes the whole screen while the others play on.
 
 use std::collections::HashMap;
 use std::sync::Arc;
 
-use eframe::egui::{self, Align2, Color32, CursorIcon, FontId, Key, Pos2, Rect, Sense, Stroke, StrokeKind, TextureId, pos2, vec2};
+use eframe::egui::{self, ViewportCommand, Align2, Color32, CursorIcon, FontId, Key, Pos2, Rect, Sense, Stroke, StrokeKind, TextureId, pos2, vec2};
 use eframe::glow;
 
 use crate::app::fmt_time;
@@ -118,7 +119,6 @@ pub struct Actions {
     pub open_file_for: Option<u32>,
     /// Load this file into this slot (from the playlist menu).
     pub load: Option<(u32, String)>,
-    pub toggle_fullscreen: bool,
     pub back: bool,
     pub osd: Option<String>,
 }
@@ -143,6 +143,14 @@ pub struct MultiView {
     pub maximized: Option<Content>,
     /// Per-slot control bars only show when the pointer is at a slot's bottom.
     pub hide_bars: bool,
+    /// One video alone on the whole screen; the others keep playing.
+    solo: Option<Content>,
+    /// Whether the window was already full screen, to go back to it after.
+    solo_was_fullscreen: bool,
+    /// Full screen has taken effect, so leaving it some other way ends `solo`.
+    solo_seen_fullscreen: bool,
+    /// The whole area multi-view drew in last frame.
+    stage: Rect,
 }
 
 impl Default for MultiView {
@@ -161,6 +169,10 @@ impl Default for MultiView {
             grid: Rect::NOTHING,
             maximized: None,
             hide_bars: false,
+            solo: None,
+            solo_was_fullscreen: false,
+            solo_seen_fullscreen: false,
+            stage: Rect::NOTHING,
         }
     }
 }
@@ -174,7 +186,8 @@ impl MultiView {
     }
 
     /// Back to one video: extra players stop, the main one keeps playing.
-    pub fn disable(&mut self) {
+    pub fn disable(&mut self, ctx: &egui::Context) {
+        self.exit_solo(ctx);
         self.on = false;
         self.dead.extend(self.panes.drain().map(|(_, p)| p));
         self.layout = Layout::single(Content::Main);
@@ -191,6 +204,39 @@ impl MultiView {
         self.layout.find(c).map(|id| (id, c))
     }
 
+    /// The video on its own on the whole screen, if any (and still in the layout).
+    fn solo_slot(&self) -> Option<(u32, Content)> {
+        let c = self.solo.filter(|c| *c != Content::Empty)?;
+        self.layout.find(c).map(|id| (id, c))
+    }
+
+    /// Shows one video alone, full screen, or goes back to the layout.
+    fn toggle_solo(&mut self, ctx: &egui::Context, content: Content) {
+        if self.solo.is_some() {
+            self.exit_solo(ctx);
+            return;
+        }
+        if content == Content::Empty {
+            return;
+        }
+        let fullscreen = ctx.input(|i| i.viewport().fullscreen.unwrap_or(false));
+        self.solo = Some(content);
+        self.focus = content;
+        self.menu = None;
+        self.drag = None;
+        self.solo_was_fullscreen = fullscreen;
+        self.solo_seen_fullscreen = fullscreen;
+        if !fullscreen {
+            ctx.send_viewport_cmd(ViewportCommand::Fullscreen(true));
+        }
+    }
+
+    fn exit_solo(&mut self, ctx: &egui::Context) {
+        if self.solo.take().is_some() && !self.solo_was_fullscreen {
+            ctx.send_viewport_cmd(ViewportCommand::Fullscreen(false));
+        }
+    }
+
     fn toggle_max(&mut self, content: Content) {
         self.maximized = if self.maximized == Some(content) { None } else { Some(content) };
         self.menu = None;
@@ -202,8 +248,12 @@ impl MultiView {
         Rect::from_min_max(pos2(stage.left(), stage.top() + TOP_H), stage.max).shrink(2.0)
     }
 
-    /// Where the main video goes (a leaf or a floating window).
-    pub fn main_rect(&self, grid: Rect) -> Option<Rect> {
+    /// Where the main video goes (a leaf, a floating window or the whole stage).
+    pub fn main_rect(&self, stage: Rect) -> Option<Rect> {
+        if let Some((_, c)) = self.solo_slot() {
+            return (c == Content::Main).then_some(stage);
+        }
+        let grid = Self::grid_rect(stage);
         if let Some((_, c)) = self.max_slot() {
             return (c == Content::Main).then_some(grid);
         }
@@ -219,6 +269,9 @@ impl MultiView {
 
     /// The slot under a point (floating windows first).
     pub fn slot_at(&self, pos: Pos2) -> Option<(u32, Content)> {
+        if let Some(slot) = self.solo_slot() {
+            return self.stage.contains(pos).then_some(slot);
+        }
         if let Some(slot) = self.max_slot() {
             return self.grid.contains(pos).then_some(slot);
         }
@@ -328,13 +381,26 @@ impl MultiView {
     }
 
     /// Keys for the focused slot. Returns an OSD message, if any.
-    pub fn handle_keys(&mut self, keys: &[Key], main: &Player) -> Option<String> {
+    pub fn handle_keys(&mut self, ctx: &egui::Context, keys: &[Key], main: &Player) -> Option<String> {
         let mut osd = None;
         for key in keys {
-            if *key == Key::Escape && self.maximized.take().is_some() {
-                continue;
-            }
             let focus = self.focus;
+            match key {
+                // Full screen is the focused video's alone.
+                Key::F | Key::Enter => {
+                    self.toggle_solo(ctx, focus);
+                    continue;
+                }
+                Key::Escape => {
+                    if self.solo.is_some() {
+                        self.exit_solo(ctx);
+                    } else if self.maximized.take().is_none() && ctx.input(|i| i.viewport().fullscreen.unwrap_or(false)) {
+                        ctx.send_viewport_cmd(ViewportCommand::Fullscreen(false));
+                    }
+                    continue;
+                }
+                _ => {}
+            }
             let Some(p) = self.player(focus, main) else { continue };
             match key {
                 Key::Space | Key::K => {
@@ -427,6 +493,18 @@ impl MultiView {
         self.reap(frame.gl().map(|g| g.as_ref()));
         let grid = Self::grid_rect(stage);
         self.grid = grid;
+        self.stage = stage;
+        // Leaving full screen another way (the window's own button) ends it.
+        if self.solo.is_some() {
+            let fullscreen = ctx.input(|i| i.viewport().fullscreen.unwrap_or(false));
+            if self.solo_slot().is_none() {
+                self.exit_solo(&ctx);
+            } else if fullscreen {
+                self.solo_seen_fullscreen = true;
+            } else if self.solo_seen_fullscreen {
+                self.solo = None;
+            }
+        }
         let p = ui.painter().clone();
         p.rect_filled(stage, 0.0, Color32::BLACK);
 
@@ -438,6 +516,15 @@ impl MultiView {
         let ppp = ctx.pixels_per_point();
         let pointer = ctx.input(|i| i.pointer.hover_pos());
 
+        // ---- One video alone, full screen ----
+        if let Some((id, content)) = self.solo_slot() {
+            self.focus = content;
+            self.draw_video(&p, frame, content, stage, main_texture, ppp);
+            self.slot_chrome(ui, &p, id, content, stage, false, main, chrome, pointer, &mut out);
+            self.hide_cursor(&ctx, stage, main, chrome, pointer);
+            return out;
+        }
+
         // ---- One video filling the area ----
         if self.maximized.is_some() && self.max_slot().is_none() {
             self.maximized = None;
@@ -447,6 +534,7 @@ impl MultiView {
             self.draw_video(&p, frame, content, grid, main_texture, ppp);
             self.slot_chrome(ui, &p, id, content, grid, false, main, chrome, pointer, &mut out);
             self.top_bar(ui, &p, stage, &mut out);
+            self.hide_cursor(&ctx, grid, main, chrome, pointer);
             return out;
         }
 
@@ -488,7 +576,20 @@ impl MultiView {
         self.handle_drag(&ctx, &p, grid, pointer);
         self.top_bar(ui, &p, stage, &mut out);
         self.add_menu(ui, playlist, &mut out);
+        self.hide_cursor(&ctx, grid, main, chrome, pointer);
         out
+    }
+
+    /// Hides the pointer over a playing video once the mouse rests.
+    fn hide_cursor(&self, ctx: &egui::Context, area: Rect, main: &Player, chrome: bool, pointer: Option<Pos2>) {
+        if chrome || self.drag.is_some() || self.menu.is_some() {
+            return;
+        }
+        let Some(q) = pointer.filter(|q| area.contains(*q)) else { return };
+        let playing = self.slot_at(q).and_then(|(_, c)| self.player(c, main)).is_some_and(|pl| !pl.state.paused && !pl.state.eof);
+        if playing {
+            ctx.set_cursor_icon(CursorIcon::None);
+        }
     }
 
     fn draw_video(&mut self, p: &egui::Painter, frame: &mut eframe::Frame, content: Content, r: Rect, main_tex: Option<TextureId>, ppp: f32) {
@@ -558,9 +659,9 @@ impl MultiView {
                 self.toggle_pause(content, main);
             }
         }
-        // Double-click: this video fills the whole area, or goes back.
+        // Double-click: this video alone, full screen, or back.
         if body.double_clicked() && content != Content::Empty {
-            self.toggle_max(content);
+            self.toggle_solo(&ctx, content);
         }
         if content == Content::Empty {
             if hovered {
@@ -578,12 +679,14 @@ impl MultiView {
         }
         let Some(s) = self.player(content, main).map(|pl| pl.state.clone()) else { return };
         let focused = self.focus == content;
-        if focused {
+        // Alone on the screen there's nothing to tell it apart from.
+        if focused && self.solo.is_none() {
             p.rect_stroke(r, 3.0, Stroke::new(2.0, ACCENT), StrokeKind::Inside);
         }
 
         // ---- Header: title (drag to swap / move) and tools ----
-        let show_header = hovered || floating;
+        // Like the bar, it hides while the mouse rests.
+        let show_header = (hovered && chrome) || (floating && self.solo.is_none());
         if show_header {
             let head = Rect::from_min_size(r.min, vec2(r.width(), HEADER_H));
             p.rect_filled(head, 0.0, theme::scrim(150));
@@ -628,6 +731,7 @@ impl MultiView {
                         }
                         Tool::Close => self.close_slot(id),
                         Tool::Max | Tool::Restore => self.toggle_max(content),
+                        Tool::Fullscreen | Tool::ExitFullscreen => self.toggle_solo(&ctx, content),
                     }
                 }
                 x += 26.0;
@@ -652,7 +756,8 @@ impl MultiView {
 
         // ---- Mini control bar ----
         let at_bottom = pointer.is_some_and(|q| r.contains(q) && q.y >= r.bottom() - MINI_H - 24.0);
-        let show_bar = if self.hide_bars { at_bottom } else { hovered || chrome || s.paused };
+        // Each bar hides on its own once the mouse rests or leaves the video.
+        let show_bar = if self.hide_bars { at_bottom } else { (hovered && chrome) || at_bottom || s.paused };
         if !show_bar || r.height() < MINI_H + HEADER_H {
             return;
         }
@@ -671,9 +776,10 @@ impl MultiView {
         x += 26.0;
         let narrow = r.width() < 300.0;
         let vol_w = if narrow { 0.0 } else { 56.0 };
-        let time_txt = fmt_time(s.position);
-        let time_w = if narrow { 0.0 } else { 44.0 };
-        let right_w = 22.0 + vol_w + if narrow { 0.0 } else { 34.0 };
+        let time_txt = format!("{} / {}", fmt_time(s.position), fmt_time(s.duration));
+        let time_w = if narrow { 0.0 } else { 92.0 };
+        let fs_w = 26.0;
+        let right_w = 22.0 + vol_w + if narrow { 0.0 } else { 34.0 } + fs_w;
         // Progress
         let track = Rect::from_min_max(pos2(x, cy - 8.0), pos2(bar.right() - right_w - time_w - 10.0, cy + 8.0));
         if track.width() > 20.0 && s.duration > 0.0 {
@@ -730,16 +836,33 @@ impl MultiView {
             let pct = if s.muted { tr("静音").to_string() } else { format!("{}%", s.volume.round()) };
             p.text(pos2(vol.right() + 6.0, cy), Align2::LEFT_CENTER, pct, FontId::monospace(10.0), TEXT_2);
         }
+        // Full screen for this video alone
+        let fs = Rect::from_center_size(pos2(bar.right() - fs_w / 2.0 - 2.0, cy), vec2(22.0, 22.0));
+        let fr = ui.interact(fs, ui.scope_id().with(("mv_fs", id)), Sense::click());
+        let solo = self.solo.is_some();
+        icons::draw(p, if solo { Icon::ExitFullscreen } else { Icon::Fullscreen }, fs.center(), 13.0, if fr.hovered() { ACCENT } else { TEXT });
+        if fr.hovered() {
+            ctx.set_cursor_icon(CursorIcon::PointingHand);
+        }
+        if fr.on_hover_text(if solo { tr("退出全屏（Esc）") } else { tr("全屏（双击）") }).clicked() {
+            self.toggle_solo(&ctx, content);
+        }
     }
 
     fn tool_list(&self, _id: u32, content: Content, floating: bool) -> Vec<(Tool, &'static str)> {
         let mut v = Vec::new();
+        if self.solo.is_some() {
+            v.push((Tool::ExitFullscreen, tr("退出全屏（Esc）")));
+            return v;
+        }
         if self.maximized.is_some() {
             v.push((Tool::Restore, tr("还原（Esc）")));
+            v.push((Tool::Fullscreen, tr("全屏（双击）")));
             return v;
         }
         if content != Content::Empty {
-            v.push((Tool::Max, tr("放大（双击）")));
+            v.push((Tool::Fullscreen, tr("全屏（双击）")));
+            v.push((Tool::Max, tr("在窗口内放大")));
         }
         if floating {
             v.push((Tool::Dock, tr("放回布局")));
@@ -868,7 +991,7 @@ impl MultiView {
         let mut rx = band.right() - 14.0;
         let (sw_left, off) = switch(ui, p, pos2(rx, cy), "mv_toggle", true, tr("多屏"), 1.0);
         if off {
-            self.disable();
+            self.disable(&ctx);
         }
         rx = sw_left - 14.0;
         p.line_segment([pos2(rx, cy - 8.0), pos2(rx, cy + 8.0)], Stroke::new(1.0, Color32::from_rgb(0x30, 0x36, 0x3D)));
@@ -941,6 +1064,8 @@ enum Tool {
     Close,
     Max,
     Restore,
+    Fullscreen,
+    ExitFullscreen,
 }
 
 /// A slot's inside: leaves sit in their cell with no extra margin.
@@ -975,6 +1100,8 @@ fn tool_button(ui: &mut egui::Ui, p: &egui::Painter, r: Rect, id: impl std::hash
             p.line_segment([pos2(c.x - 2.0, c.y + 2.5), pos2(c.x + 1.0, c.y + 2.5)], st);
         }
         Tool::Close => icons::draw(p, Icon::Close, c, 10.0, Color32::WHITE),
+        Tool::Fullscreen => icons::draw(p, Icon::Fullscreen, c, 11.0, Color32::WHITE),
+        Tool::ExitFullscreen => icons::draw(p, Icon::ExitFullscreen, c, 11.0, Color32::WHITE),
         Tool::Max | Tool::Restore => {
             // Four corners pointing out (enlarge) or in (restore).
             let (o, i) = (6.0, 2.5);

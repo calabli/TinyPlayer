@@ -2046,7 +2046,7 @@ dependencies = [
 
 [[package]]
 name = "tinyplayer"
-version = "0.1.16"
+version = "0.1.17"
 dependencies = [
  "eframe",
  "embed-resource",
