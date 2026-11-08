@@ -30,18 +30,27 @@ def run(*args, cwd=None):
     return subprocess.run(args, cwd=cwd, check=True, capture_output=True, text=True).stdout
 
 
+RELEASE_ASSET = re.compile(r"https://github\.com/([^/]+/[^/]+)/releases/download/([^/]+)/([^/?]+)$")
+
+
 def download(url, path):
-    # GitHub release downloads sometimes reset mid-transfer (curl exit 56),
-    # and curl's own quick retries can all land in the same bad patch.
+    # GitHub's releases/download links sometimes fail for long stretches
+    # (504, connection resets) while the API serves the same file, so
+    # release assets go through gh, which uses the API.
+    asset = RELEASE_ASSET.match(url)
     for attempt in range(4):
         try:
-            run("curl", "-fsSL", "--retry", "5", "--retry-all-errors", "--retry-delay", "3", "-o", str(path), url)
+            if asset:
+                repo, tag, name = asset.groups()
+                run("gh", "release", "download", tag, "--repo", repo, "--pattern", name, "--output", str(path), "--clobber")
+            else:
+                run("curl", "-fsSL", "--retry", "5", "--retry-all-errors", "--retry-delay", "3", "-o", str(path), url)
             return
-        except subprocess.CalledProcessError:
+        except subprocess.CalledProcessError as e:
             path.unlink(missing_ok=True)
             if attempt == 3:
                 raise
-            print(f"download failed, retrying in {15 * (attempt + 1)}s: {url}", flush=True)
+            print(f"download failed ({e.stderr.strip()[:200]}), retrying in {15 * (attempt + 1)}s: {url}", flush=True)
             time.sleep(15 * (attempt + 1))
 
 
