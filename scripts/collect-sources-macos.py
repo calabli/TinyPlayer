@@ -18,6 +18,7 @@ import re
 import subprocess
 import tarfile
 import tempfile
+import time
 from pathlib import Path
 
 ROOT = Path(__file__).resolve().parent.parent
@@ -30,7 +31,18 @@ def run(*args, cwd=None):
 
 
 def download(url, path):
-    run("curl", "-fsSL", "--retry", "5", "--retry-all-errors", "-o", str(path), url)
+    # GitHub release downloads sometimes reset mid-transfer (curl exit 56),
+    # and curl's own quick retries can all land in the same bad patch.
+    for attempt in range(4):
+        try:
+            run("curl", "-fsSL", "--retry", "5", "--retry-all-errors", "--retry-delay", "3", "-o", str(path), url)
+            return
+        except subprocess.CalledProcessError:
+            path.unlink(missing_ok=True)
+            if attempt == 3:
+                raise
+            print(f"download failed, retrying in {15 * (attempt + 1)}s: {url}", flush=True)
+            time.sleep(15 * (attempt + 1))
 
 
 def fetch(url, sha256, folder):
