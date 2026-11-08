@@ -13,7 +13,7 @@ jobs:
     name: macOS arm64
     runs-on: macos-15
     steps:
-      - uses: actions/checkout@v4
+      - uses: actions/checkout@v7
       - uses: dtolnay/rust-toolchain@stable
       - uses: Swatinem/rust-cache@v2
       - name: Install libmpv and bundling tools
@@ -26,7 +26,7 @@ jobs:
         env:
           GH_TOKEN: ${{ github.token }}
         run: python3 scripts/collect-sources-macos.py
-      - uses: actions/upload-artifact@v4
+      - uses: actions/upload-artifact@v7
         with:
           name: TinyPlayer-macos-arm64
           path: |
@@ -39,7 +39,7 @@ jobs:
     name: Windows x64
     runs-on: windows-latest
     steps:
-      - uses: actions/checkout@v4
+      - uses: actions/checkout@v7
       - uses: dtolnay/rust-toolchain@stable
       - uses: Swatinem/rust-cache@v2
       # Both come from one release, so the sources collected below match the DLL.
@@ -90,7 +90,7 @@ jobs:
         env:
           GH_TOKEN: ${{ github.token }}
         run: powershell -ExecutionPolicy Bypass -File scripts\collect-sources-windows.ps1 -Tag $env:MPV_BUILD -Ffmpeg tools\ffmpeg.exe
-      - uses: actions/upload-artifact@v4
+      - uses: actions/upload-artifact@v7
         with:
           name: TinyPlayer-windows-x64
           path: |
@@ -102,13 +102,15 @@ jobs:
 
   release:
     name: Publish release
-    if: startsWith(github.ref, 'refs/tags/v')
+    # A manual run goes through the same steps without publishing, so the
+    # release files are checked before a tag needs them.
+    if: startsWith(github.ref, 'refs/tags/v') || github.event_name == 'workflow_dispatch'
     needs: [macos, windows]
     runs-on: ubuntu-latest
     permissions:
       contents: write
     steps:
-      - uses: actions/download-artifact@v4
+      - uses: actions/download-artifact@v8
         with:
           path: packages
       # The app refuses an update that doesn't match this list, and compares
@@ -120,6 +122,9 @@ jobs:
           cd release
           sha256sum TinyPlayer-* > SHA256SUMS
           echo "$GITHUB_SHA" > COMMIT
-      - env:
+      - name: List release files
+        run: ls -l release && cat release/SHA256SUMS
+      - if: startsWith(github.ref, 'refs/tags/v')
+        env:
           GH_TOKEN: ${{ github.token }}
         run: gh release create "$GITHUB_REF_NAME" release/* --repo "$GITHUB_REPOSITORY" --generate-notes
