@@ -26,16 +26,33 @@ $stage = Join-Path ([IO.Path]::GetTempPath()) "third-party-sources"
 if (Test-Path $stage) { Remove-Item -Recurse -Force $stage }
 New-Item -ItemType Directory -Force $stage | Out-Null
 
-$sources = @{
-    "mpv-$mpv.tar.gz" = "https://github.com/mpv-player/mpv/archive/$mpv.tar.gz"
-    "ffmpeg-$ffmpegCommit.tar.gz" = "https://github.com/FFmpeg/FFmpeg/archive/$ffmpegCommit.tar.gz"
-    "mpv-winbuild-cmake-$Tag.tar.gz" = "https://github.com/$repo/archive/refs/tags/$Tag.tar.gz"
+# GitHub's archive downloads (codeload) sometimes answer 504 for long
+# stretches, so the source comes through git itself: one commit, no history.
+function Save-Source([string]$From, [string]$Ref, [string]$Name) {
+    $out = Join-Path $stage "$Name.tar.gz"
+    $sha = gh api "repos/$From/commits/$Ref" --jq .sha
+    if ($LASTEXITCODE -ne 0 -or -not $sha) { throw "can't find $Ref in $From" }
+    for ($attempt = 1; ; $attempt++) {
+        Write-Host "Fetching $Name ($sha)"
+        $clone = Join-Path ([IO.Path]::GetTempPath()) "src-$Name"
+        if (Test-Path $clone) { Remove-Item -Recurse -Force $clone }
+        git init -q $clone
+        git -C $clone fetch -q --depth 1 "https://github.com/$From.git" $sha
+        if ($LASTEXITCODE -eq 0) {
+            git -C $clone archive --format=tar.gz --prefix="$Name/" -o $out FETCH_HEAD
+        }
+        $ok = $LASTEXITCODE -eq 0
+        Remove-Item -Recurse -Force $clone
+        if ($ok) { return }
+        if ($attempt -ge 4) { throw "can't fetch $Name" }
+        Write-Host "Fetching $Name failed, retrying in $(15 * $attempt)s"
+        Start-Sleep -Seconds (15 * $attempt)
+    }
 }
-foreach ($name in $sources.Keys) {
-    Write-Host "Downloading $name"
-    curl.exe -fsSL --retry 5 --retry-all-errors -o (Join-Path $stage $name) $sources[$name]
-    if ($LASTEXITCODE -ne 0) { throw "can't download $name" }
-}
+
+Save-Source "mpv-player/mpv" $mpv "mpv-$mpv"
+Save-Source "FFmpeg/FFmpeg" $ffmpegCommit "ffmpeg-$ffmpegCommit"
+Save-Source $repo "refs/tags/$Tag" "mpv-winbuild-cmake-$Tag"
 
 $config = & $Ffmpeg -hide_banner -version
 @"
