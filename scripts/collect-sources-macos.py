@@ -31,14 +31,17 @@ def run(*args, cwd=None):
 
 
 RELEASE_ASSET = re.compile(r"https://github\.com/([^/]+/[^/]+)/releases/download/([^/]+)/([^/?]+)$")
+GITHUB_ARCHIVE = re.compile(r"https://github\.com/([^/]+/[^/]+)/archive/(?:refs/tags/)?(.+?)\.(?:tar\.gz|tgz)$")
+# Sources taken from git because GitHub's archive download failed.
+FROM_GIT = []
 
 
-def download(url, path):
+def download(url, path, tries=4):
     # GitHub's releases/download links sometimes fail for long stretches
     # (504, connection resets) while the API serves the same file, so
     # release assets go through gh, which uses the API.
     asset = RELEASE_ASSET.match(url)
-    for attempt in range(4):
+    for attempt in range(tries):
         try:
             if asset:
                 repo, tag, name = asset.groups()
@@ -48,7 +51,7 @@ def download(url, path):
             return
         except subprocess.CalledProcessError as e:
             path.unlink(missing_ok=True)
-            if attempt == 3:
+            if attempt == tries - 1:
                 raise
             print(f"download failed ({e.stderr.strip()[:200]}), retrying in {15 * (attempt + 1)}s: {url}", flush=True)
             time.sleep(15 * (attempt + 1))
@@ -56,9 +59,39 @@ def download(url, path):
 
 def fetch(url, sha256, folder):
     path = folder / (url.split("?")[0].rstrip("/").rsplit("/", 1)[-1] or "download")
-    download(url, path)
+    archive = GITHUB_ARCHIVE.match(url)
+    try:
+        download(url, path, tries=1 if archive else 4)
+    except subprocess.CalledProcessError:
+        if not archive:
+            raise
+        # GitHub's archive downloads (codeload) answer 504 for minutes at a
+        # time; git serves the same tree. Its archive isn't byte for byte the
+        # one the formula's checksum is for, so that check is skipped.
+        repo, ref = archive.groups()
+        print(f"archive download failed, taking {ref} from git: {url}", flush=True)
+        archive_ref(f"https://github.com/{repo}.git", ref, path, f"{repo.split('/')[1]}-{ref}")
+        FROM_GIT.append(url)
+        return
     if sha256 and hashlib.sha256(path.read_bytes()).hexdigest() != sha256:
         raise SystemExit(f"checksum mismatch: {url}")
+
+
+def archive_ref(url, ref, path, prefix):
+    """One commit or tag of a repository, as a .tar.gz, without its history."""
+    for attempt in range(4):
+        try:
+            with tempfile.TemporaryDirectory() as clone:
+                run("git", "init", "-q", clone)
+                run("git", "fetch", "-q", "--depth", "1", url, ref, cwd=clone)
+                run("git", "archive", "--format=tar.gz", f"--prefix={prefix}/", "-o", str(path), "FETCH_HEAD", cwd=clone)
+            return
+        except subprocess.CalledProcessError as e:
+            path.unlink(missing_ok=True)
+            if attempt == 3:
+                raise
+            print(f"git fetch failed ({e.stderr.strip()[:200]}), retrying in {15 * (attempt + 1)}s: {url} {ref}", flush=True)
+            time.sleep(15 * (attempt + 1))
 
 
 def fetch_git(url, revision, folder):
@@ -157,6 +190,9 @@ def main():
             "with, and its Homebrew formula, which says how it's built.\n\n"
             + "\n".join(lines)
             + "\n"
+            + "".join(
+                f"\nGitHub's download failed, so this came from git at the same tag or commit:\n{url}\n" for url in FROM_GIT
+            )
         )
         with tarfile.open(out, "w") as tar:
             tar.add(stage, arcname=stage.name)
