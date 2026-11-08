@@ -377,7 +377,7 @@ impl App {
         if update::install(&prepared, true) {
             ctx.send_viewport_cmd(ViewportCommand::Close);
         } else {
-            self.show_osd(ctx, tr("无法安装更新"));
+            self.show_osd(ctx, tr("Couldn't install the update"));
         }
     }
 
@@ -390,33 +390,33 @@ impl App {
         };
         let (title, body, buttons): (String, String, Vec<(&str, UpdateAction)>) = match dialog {
             Dialog::Available { version, notes, can_update } => {
-                let title = tf("发现新版本 {}", &[&version]);
-                let current = tf("当前版本 {}", &[&update::CURRENT_VERSION]);
+                let title = tf("Version {} is available", &[&version]);
+                let current = tf("Version {}", &[&update::CURRENT_VERSION]);
                 let body = if notes.is_empty() { current } else { format!("{current}\n\n{notes}") };
                 if can_update {
                     let buttons = vec![
-                        (tr("立即更新"), UpdateAction::Download),
-                        (tr("稍后提醒"), UpdateAction::Later),
-                        (tr("跳过此版本"), UpdateAction::Skip(version.to_string())),
+                        (tr("Update now"), UpdateAction::Download),
+                        (tr("Remind me later"), UpdateAction::Later),
+                        (tr("Skip this version"), UpdateAction::Skip(version.to_string())),
                     ];
                     (title, body, buttons)
                 } else {
-                    let body = format!("{body}\n\n{}", tr("这个安装方式不支持应用内更新，请下载新版安装包"));
-                    (title, body, vec![(tr("知道了"), UpdateAction::Later)])
+                    let body = format!("{body}\n\n{}", tr("This copy can't update itself. Please download the new package"));
+                    (title, body, vec![(tr("OK"), UpdateAction::Later)])
                 }
             }
             Dialog::Downloading { version, done, total } => {
                 let mb = |v: u64| v as f64 / 1_048_576.0;
                 let body = if total > 0 { format!("{:.1} / {:.1} MB", mb(done), mb(total)) } else { format!("{:.1} MB", mb(done)) };
-                (tf("正在下载 {}", &[&version]), body, vec![(tr("取消"), UpdateAction::Cancel)])
+                (tf("Downloading {}", &[&version]), body, vec![(tr("Cancel"), UpdateAction::Cancel)])
             }
             Dialog::Ready { version } => {
-                let buttons = vec![(tr("立即重启"), UpdateAction::Restart), (tr("稍后"), UpdateAction::Close)];
-                (tf("新版本 {} 已准备好", &[&version]), tr("重启后完成更新。选择稍后，会在退出时安装。").to_string(), buttons)
+                let buttons = vec![(tr("Restart now"), UpdateAction::Restart), (tr("Later"), UpdateAction::Close)];
+                (tf("Version {} is ready", &[&version]), tr("Restart to finish updating. If you choose later, it installs when you quit.").to_string(), buttons)
             }
             Dialog::Failed { reason } => {
-                let buttons = vec![(tr("重试"), UpdateAction::Download), (tr("知道了"), UpdateAction::Later)];
-                (tr("更新失败").to_string(), tr(reason).to_string(), buttons)
+                let buttons = vec![(tr("Retry"), UpdateAction::Download), (tr("OK"), UpdateAction::Later)];
+                (tr("Update failed").to_string(), tr(reason).to_string(), buttons)
             }
         };
         let progress = match self.updater.dialog() {
@@ -517,7 +517,7 @@ impl App {
     fn set_frameless(&mut self, ctx: &egui::Context, on: bool) {
         self.tracker.settings.frameless = on;
         self.tracker.save_settings();
-        self.show_osd(ctx, if on { tr("无边框播放  开") } else { tr("无边框播放  关") });
+        self.show_osd(ctx, if on { tr("Frameless: on") } else { tr("Frameless: off") });
     }
 
     fn apply_window_level(&self, ctx: &egui::Context) {
@@ -529,14 +529,14 @@ impl App {
     fn toggle_on_top(&mut self, ctx: &egui::Context) {
         self.always_on_top = !self.always_on_top;
         self.apply_window_level(ctx);
-        self.show_osd(ctx, if self.always_on_top { tr("窗口置顶  开") } else { tr("窗口置顶  关") });
+        self.show_osd(ctx, if self.always_on_top { tr("Always on top: on") } else { tr("Always on top: off") });
     }
 
     /// Shrinks the window to a borderless, always-on-top video in the corner
     /// of the screen, or puts it back where it was.
     fn toggle_pip(&mut self, ctx: &egui::Context) {
         if ctx.input(|i| i.viewport().fullscreen.unwrap_or(false)) {
-            self.show_osd(ctx, tr("请先退出全屏"));
+            self.show_osd(ctx, tr("Exit full screen first"));
             return;
         }
         self.pip = !self.pip;
@@ -669,8 +669,8 @@ impl App {
         }
         let text = match (self.ab.a, self.ab.b) {
             (Some(a), None) => format!("A  {}", fmt_time(a)),
-            (Some(a), Some(b)) => tf("A-B 循环  {} – {}", &[&fmt_time(a), &fmt_time(b)]),
-            _ => tr("A-B 循环  已清除").to_string(),
+            (Some(a), Some(b)) => tf("A-B loop  {} – {}", &[&fmt_time(a), &fmt_time(b)]),
+            _ => tr("A-B loop cleared").to_string(),
         };
         self.show_osd(ctx, text);
     }
@@ -711,7 +711,7 @@ impl App {
             p.set_view(self.view);
         }
         if osd {
-            self.show_osd(ctx, tf("缩放  {}%", &[&self.view.percent()]));
+            self.show_osd(ctx, tf("Zoom  {}%", &[&self.view.percent()]));
         }
     }
 
@@ -720,7 +720,7 @@ impl App {
         if self.vr.is_some() {
             self.vr_look.zoom_by(delta);
             if osd {
-                self.show_osd(ctx, tf("视野  {}°", &[&self.vr_look.fov_degrees()]));
+                self.show_osd(ctx, tf("Field of view  {}°", &[&self.vr_look.fov_degrees()]));
             }
         } else {
             self.view.zoom_by(delta);
@@ -732,7 +732,7 @@ impl App {
         if self.vr.is_some() {
             self.vr_look = vr::Look::default();
             if osd {
-                self.show_osd(ctx, tf("视野  {}°", &[&self.vr_look.fov_degrees()]));
+                self.show_osd(ctx, tf("Field of view  {}°", &[&self.vr_look.fov_degrees()]));
             }
         } else {
             self.view = View::default();
@@ -758,7 +758,7 @@ impl App {
                 store.set_value(&format!("vr:{key}"), vr::Format::stored(format));
             }
         }
-        let text = format.map_or_else(|| tr("VR 全景已关闭").to_string(), |f| format!("VR  {}", f.label()));
+        let text = format.map_or_else(|| tr("VR panorama off").to_string(), |f| format!("VR  {}", f.label()));
         self.show_osd(ctx, text);
     }
 
@@ -777,7 +777,7 @@ impl App {
         if let Some(e) = self.vr_error.take() {
             eprintln!("VR: {e}");
             self.set_vr(ctx, None, false);
-            self.show_osd(ctx, tr("这台电脑的显卡不支持 VR 全景"));
+            self.show_osd(ctx, tr("This computer's graphics can't show VR panoramas"));
         }
         if !self.vr_pending {
             return;
@@ -807,13 +807,13 @@ impl App {
                 let area = view::crop_to_ratio(p.state.width, p.state.height, r);
                 p.set_crop(area.as_deref());
                 if area.is_none() {
-                    self.show_osd(ctx, tr("画面已经是这个比例"));
+                    self.show_osd(ctx, tr("Already this shape"));
                 }
             }
-            Crop::Auto if p.state.path.contains("://") => self.show_osd(ctx, tr("只有本地文件可以去黑边")),
+            Crop::Auto if p.state.path.contains("://") => self.show_osd(ctx, tr("Local files only")),
             Crop::Auto => {
                 self.crop_detect.start(ctx, p.state.path.clone());
-                self.show_osd(ctx, tr("正在检测黑边…"));
+                self.show_osd(ctx, tr("Detecting black bars…"));
             }
         }
     }
@@ -828,11 +828,11 @@ impl App {
         match area.and_then(|a| view::crop_from_detected(frame, a)) {
             Some(crop) => {
                 p.set_crop(Some(&crop));
-                self.show_osd(ctx, tr("已去除黑边"));
+                self.show_osd(ctx, tr("Black bars removed"));
             }
             None => {
                 self.quick.crop = Crop::Off;
-                self.show_osd(ctx, tr("没有检测到黑边"));
+                self.show_osd(ctx, tr("No black bars found"));
             }
         }
     }
@@ -840,13 +840,13 @@ impl App {
     fn jump_chapter(&mut self, ctx: &egui::Context, forward: bool) {
         let Some(player) = &self.player else { return };
         if self.marks.chapters.is_empty() {
-            self.show_osd(ctx, tr("这个文件没有章节"));
+            self.show_osd(ctx, tr("No chapters in this file"));
             return;
         }
         let pos = player.state.position;
         let target = if forward { self.marks.next_chapter(pos) } else { self.marks.prev_chapter(pos) };
         let Some(i) = target else {
-            self.show_osd(ctx, if forward { tr("已是最后一章") } else { tr("已是第一章") });
+            self.show_osd(ctx, if forward { tr("Last chapter") } else { tr("First chapter") });
             return;
         };
         let chapter = &self.marks.chapters[i];
@@ -859,22 +859,22 @@ impl App {
         let Some(player) = &self.player else { return };
         let (pos, path) = (player.state.position, player.state.path.clone());
         let Some(key) = self.marks.key.clone() else {
-            self.show_osd(ctx, tr("只有本地文件可以添加书签"));
+            self.show_osd(ctx, tr("Bookmarks need a local file"));
             return;
         };
         if self.tracker.incognito {
-            self.show_osd(ctx, tr("隐私模式下不保存书签"));
+            self.show_osd(ctx, tr("Bookmarks aren't saved in private mode"));
             return;
         }
         if self.marks.has_bookmark_near(pos) {
-            self.show_osd(ctx, tr("这里已有书签"));
+            self.show_osd(ctx, tr("Already bookmarked here"));
             return;
         }
         let Some(store) = &self.tracker.store else { return };
         let label = self.marks.chapter_at(pos).map_or("", |i| self.marks.chapters[i].title.as_str());
         store.add_bookmark(&key, &path, pos, label);
         self.marks.bookmarks = store.bookmarks(&key);
-        self.show_osd(ctx, tf("已添加书签  {}", &[&fmt_time(pos)]));
+        self.show_osd(ctx, tf("Bookmarked  {}", &[&fmt_time(pos)]));
     }
 
     /// Opens the sidebar on the playlist or the marks, or closes it if it's
@@ -904,8 +904,8 @@ impl App {
 
     fn open_dialog(&mut self) {
         if let Some(files) = rfd::FileDialog::new()
-            .add_filter(tr("媒体文件"), playlist::MEDIA_EXTS)
-            .add_filter(tr("所有文件"), &["*"])
+            .add_filter(tr("Media files"), playlist::MEDIA_EXTS)
+            .add_filter(tr("All files"), &["*"])
             .pick_files()
         {
             self.pending_open
@@ -914,7 +914,7 @@ impl App {
     }
 
     fn add_folder_dialog(&mut self) {
-        if let Some(dir) = rfd::FileDialog::new().set_title(tr("添加到媒体库")).pick_folder() {
+        if let Some(dir) = rfd::FileDialog::new().set_title(tr("Add to library")).pick_folder() {
             if self.library.add_folder(&dir.to_string_lossy()) {
                 self.scanner.scan();
                 self.show_library = true;
@@ -946,7 +946,7 @@ impl App {
         self.library.clear();
         self.scanner.scan();
         self.show_library = false;
-        self.show_osd(ctx, tr("媒体库已清除"));
+        self.show_osd(ctx, tr("Library cleared"));
     }
 
     fn lock_dialogs(&mut self, ctx: &egui::Context, id: egui::Id) {
@@ -965,19 +965,19 @@ impl App {
         };
         egui::Modal::new(id).show(ctx, |ui| {
             ui.set_width(340.0);
-            let wrong = tr("密码不对");
+            let wrong = tr("Wrong password");
             match &mut dialog {
                 LockDialog::Unlock { password, error } => {
-                    ui.label(tr("输入媒体库密码"));
+                    ui.label(tr("Enter the library password"));
                     ui.add_space(6.0);
-                    password_field(ui, password, tr("密码"), true, &mut enter);
+                    password_field(ui, password, tr("Password"), true, &mut enter);
                     if *error {
                         ui.colored_label(Color32::from_rgb(0xF0, 0x71, 0x67), wrong);
                     }
                     ui.add_space(6.0);
                     ui.horizontal(|ui| {
-                        close = ui.button(tr("取消")).clicked();
-                        if ui.button(tr("进入媒体库")).clicked() || enter {
+                        close = ui.button(tr("Cancel")).clicked();
+                        if ui.button(tr("Open library")).clicked() || enter {
                             if right(password) {
                                 close = true;
                                 then = Some(Box::new(|app| {
@@ -989,29 +989,29 @@ impl App {
                                 password.clear();
                             }
                         }
-                        if ui.button(tr("忘记密码")).clicked() {
+                        if ui.button(tr("Forgot password")).clicked() {
                             then = Some(Box::new(|app| app.lock_dialog = Some(LockDialog::Forgot)));
                             close = true;
                         }
                     });
                 }
                 LockDialog::Set { first, second, error } => {
-                    ui.label(tr("设置媒体库密码"));
+                    ui.label(tr("Set a library password"));
                     ui.add_space(6.0);
-                    password_field(ui, first, tr("密码，至少 4 位"), false, &mut enter);
-                    password_field(ui, second, tr("再输入一次"), false, &mut enter);
-                    ui.colored_label(theme::text_2(), tr("密码只用于进入媒体库，不会加密视频文件"));
+                    password_field(ui, first, tr("Password, at least 4 characters"), false, &mut enter);
+                    password_field(ui, second, tr("Enter it again"), false, &mut enter);
+                    ui.colored_label(theme::text_2(), tr("This only guards the library page. Files aren't encrypted."));
                     if let Some(e) = error {
                         ui.colored_label(Color32::from_rgb(0xF0, 0x71, 0x67), tr(e));
                     }
                     ui.add_space(6.0);
                     ui.horizontal(|ui| {
-                        close = ui.button(tr("取消")).clicked();
-                        if ui.button(tr("设置密码")).clicked() || enter {
+                        close = ui.button(tr("Cancel")).clicked();
+                        if ui.button(tr("Set password")).clicked() || enter {
                             if first.chars().count() < library_lock::MIN_LENGTH {
-                                *error = Some("密码至少 4 位");
+                                *error = Some("Use at least 4 characters");
                             } else if first != second {
-                                *error = Some("两次输入不一致");
+                                *error = Some("The two entries don't match");
                             } else {
                                 let sealed = library_lock::seal(first);
                                 close = true;
@@ -1024,16 +1024,16 @@ impl App {
                     });
                 }
                 LockDialog::Disable { password, error } => {
-                    ui.label(tr("关闭媒体库密码"));
+                    ui.label(tr("Turn off the library password"));
                     ui.add_space(6.0);
-                    password_field(ui, password, tr("密码"), true, &mut enter);
+                    password_field(ui, password, tr("Password"), true, &mut enter);
                     if *error {
                         ui.colored_label(Color32::from_rgb(0xF0, 0x71, 0x67), wrong);
                     }
                     ui.add_space(6.0);
                     ui.horizontal(|ui| {
-                        close = ui.button(tr("取消")).clicked();
-                        if ui.button(tr("关闭密码")).clicked() || enter {
+                        close = ui.button(tr("Cancel")).clicked();
+                        if ui.button(tr("Turn off")).clicked() || enter {
                             if right(password) {
                                 close = true;
                                 then = Some(Box::new(|app| app.save_lock(None)));
@@ -1045,21 +1045,21 @@ impl App {
                     });
                 }
                 LockDialog::Clear { password, error } => {
-                    ui.label(tr("清除媒体库？"));
+                    ui.label(tr("Clear the library?"));
                     ui.add_space(4.0);
-                    ui.colored_label(theme::text_2(), tr("移除全部文件夹、标签和集合。视频文件和播放记录不受影响。"));
+                    ui.colored_label(theme::text_2(), tr("Removes all folders, tags, and sets. Video files and play history stay."));
                     let needs_password = !sealed.is_empty() && !self.library_unlocked;
                     if needs_password {
                         ui.add_space(6.0);
-                        password_field(ui, password, tr("密码"), true, &mut enter);
+                        password_field(ui, password, tr("Password"), true, &mut enter);
                     }
                     if *error {
                         ui.colored_label(Color32::from_rgb(0xF0, 0x71, 0x67), wrong);
                     }
                     ui.add_space(6.0);
                     ui.horizontal(|ui| {
-                        close = ui.button(tr("取消")).clicked();
-                        if ui.button(tr("清除")).clicked() || enter {
+                        close = ui.button(tr("Cancel")).clicked();
+                        if ui.button(tr("Clear")).clicked() || enter {
                             if !needs_password || right(password) {
                                 close = true;
                                 let ctx = ctx.clone();
@@ -1072,13 +1072,13 @@ impl App {
                     });
                 }
                 LockDialog::Forgot => {
-                    ui.label(tr("忘记密码？"));
+                    ui.label(tr("Forgot the password?"));
                     ui.add_space(4.0);
-                    ui.colored_label(theme::text_2(), tr("只能清除媒体库并取消密码。视频文件不受影响，之后可以重新添加文件夹。"));
+                    ui.colored_label(theme::text_2(), tr("The library can only be cleared along with the password. Video files stay, and you can add folders again."));
                     ui.add_space(8.0);
                     ui.horizontal(|ui| {
-                        close = ui.button(tr("取消")).clicked();
-                        if ui.button(tr("清除媒体库")).clicked() {
+                        close = ui.button(tr("Cancel")).clicked();
+                        if ui.button(tr("Clear library")).clicked() {
                             close = true;
                             let ctx = ctx.clone();
                             then = Some(Box::new(move |app| {
@@ -1238,7 +1238,7 @@ impl App {
                 Key::Comma | Key::Period if !cmd && !s.idle => {
                     let forward = key == Key::Period;
                     player.frame_step(forward);
-                    osd = Some(if forward { tr("下一帧").into() } else { tr("上一帧").into() });
+                    osd = Some(if forward { tr("Next frame").into() } else { tr("Previous frame").into() });
                 }
                 Key::Equals | Key::Plus if !cmd && !s.idle => want_zoom = Some(ZOOM_STEP),
                 Key::Minus if !cmd && !s.idle => want_zoom = Some(-ZOOM_STEP),
@@ -1330,7 +1330,7 @@ impl App {
         }
         if want_private {
             self.tracker.incognito = !self.tracker.incognito;
-            self.show_osd(ctx, if self.tracker.incognito { tr("隐私模式已开启") } else { tr("隐私模式已关闭") });
+            self.show_osd(ctx, if self.tracker.incognito { tr("Private mode on") } else { tr("Private mode off") });
         }
         if want_on_top {
             self.toggle_on_top(ctx);
@@ -1386,9 +1386,9 @@ impl App {
         match self.library.toggle_favorite_path(&path) {
             Some(on) => {
                 self.current_fav = Some(on);
-                self.show_osd(ctx, if on { tr("★ 已收藏") } else { tr("已取消收藏") });
+                self.show_osd(ctx, if on { tr("★ Added to favorites") } else { tr("Removed from favorites") });
             }
-            None => self.show_osd(ctx, tr("只有媒体库里的视频可以收藏")),
+            None => self.show_osd(ctx, tr("Only library videos can be favorited")),
         }
     }
 
@@ -1413,7 +1413,7 @@ impl App {
         let Some(main) = &self.player else { return };
         match self.multi.exit_plan(main) {
             multiview::Exit::Blocked => {
-                self.show_osd(ctx, tr("多个视频在播放，先关闭其他画面，只剩一个时才能退出多屏"));
+                self.show_osd(ctx, tr("Several videos are playing. Close the others first; multi-view turns off with one left"));
             }
             multiview::Exit::Main => self.multi.disable(ctx),
             multiview::Exit::Pane { path, position, paused } => {
@@ -1429,7 +1429,7 @@ impl App {
         match self.multi.load(slot, &path, ctx, &settings, self.tracker.incognito) {
             Ok(true) => {}
             Ok(false) => self.pending_open.push(path),
-            Err(e) => self.show_osd(ctx, tf("无法打开：{}", &[&e])),
+            Err(e) => self.show_osd(ctx, tf("Couldn't open: {}", &[&e])),
         }
     }
 
@@ -1630,7 +1630,7 @@ impl eframe::App for App {
             };
             if let Some(slot) = acts.open_file_for {
                 if let Some(file) = rfd::FileDialog::new()
-                    .add_filter(tr("媒体文件"), playlist::MEDIA_EXTS)
+                    .add_filter(tr("Media files"), playlist::MEDIA_EXTS)
                     .pick_file()
                 {
                     self.load_into_slot(&ctx, slot, file.to_string_lossy().into_owned());
@@ -1741,10 +1741,10 @@ impl eframe::App for App {
                 let plays = if private { 0 } else { self.tracker.current_play_count() };
                 // The multi-view switch sits at the right end; the tags move left.
                 let sw_right = pos2(stage.right() - right_gap, stage.top() + 22.0);
-                let (sw_left, flip) = multiview::switch(ui, &painter, sw_right, "multi_toggle", false, tr("多屏"), alpha);
+                let (sw_left, flip) = multiview::switch(ui, &painter, sw_right, "multi_toggle", false, tr("Multi-view"), alpha);
                 if flip {
                     self.multi.enable();
-                    self.show_osd(&ctx, tr("多屏已开启：点空白格添加视频"));
+                    self.show_osd(&ctx, tr("Multi-view on: click an empty slot to add a video"));
                 }
                 let right_gap = stage.right() - sw_left + 18.0;
                 draw_top_bar(&painter, stage, &s, plays, private, alpha, right_gap);
@@ -1779,8 +1779,8 @@ impl eframe::App for App {
                     }
                     if act.load_subtitle {
                         if let Some(file) = rfd::FileDialog::new()
-                            .set_title(tr("加载字幕文件"))
-                            .add_filter(tr("字幕"), &["srt", "ass", "ssa", "vtt", "sub", "sup", "idx"])
+                            .set_title(tr("Load subtitle file"))
+                            .add_filter(tr("Subtitles"), &["srt", "ass", "ssa", "vtt", "sub", "sup", "idx"])
                             .pick_file()
                         {
                             let f = file.to_string_lossy().into_owned();
@@ -1838,7 +1838,7 @@ impl eframe::App for App {
             let r = full.shrink(12.0);
             painter.rect_filled(full, 0.0, theme::scrim(150));
             icons::corner_brackets(&painter, r, 24.0, Stroke::new(1.5, ACCENT));
-            painter.text(full.center(), Align2::CENTER_CENTER, tr("松开以播放"), FontId::proportional(16.0), TEXT);
+            painter.text(full.center(), Align2::CENTER_CENTER, tr("Drop to play"), FontId::proportional(16.0), TEXT);
         }
 
         if self.settings_open {
@@ -1953,7 +1953,7 @@ impl eframe::App for App {
                         match resume {
                             Resume::Resumed(pos) => {
                                 player.seek_to(pos, true);
-                                let msg = tf("已从 {} 继续 · Home 从头", &[&fmt_time(pos)]);
+                                let msg = tf("Resumed at {} · Home to restart", &[&fmt_time(pos)]);
                                 self.osd = Some((msg, now, 3.5));
                             }
                             Resume::Ask(pos) => self.resume_prompt = Some((pos, now)),
@@ -2272,7 +2272,7 @@ impl App {
         let presp = ui.interact(pill, ui.scope_id().with("speed"), Sense::click());
         let pc = if presp.hovered() || self.speed_menu { ACCENT } else { TEXT_2 };
         painter.rect_stroke(pill, 12.0, Stroke::new(1.0, a(pc)), StrokeKind::Inside);
-        let label = if (s.speed - 1.0).abs() < 0.01 { tr("倍速").to_string() } else { fmt_speed(s.speed) };
+        let label = if (s.speed - 1.0).abs() < 0.01 { tr("Speed").to_string() } else { fmt_speed(s.speed) };
         painter.text(pill.center(), Align2::CENTER_CENTER, label, FontId::proportional(12.0), a(if presp.hovered() { ACCENT } else { TEXT }));
         if presp.hovered() {
             ctx.set_cursor_icon(CursorIcon::PointingHand);
@@ -2285,7 +2285,7 @@ impl App {
         rx -= 60.0;
         let cc = Rect::from_center_size(pos2(rx, cy), vec2(52.0, 34.0));
         let ccresp = ui.interact(cc, ui.scope_id().with("cc"), Sense::click());
-        painter.text(cc.center(), Align2::CENTER_CENTER, tr("字幕"), FontId::proportional(12.0), a(if ccresp.hovered() { ACCENT } else { TEXT }));
+        painter.text(cc.center(), Align2::CENTER_CENTER, tr("Subtitles"), FontId::proportional(12.0), a(if ccresp.hovered() { ACCENT } else { TEXT }));
         if ccresp.clicked() {
             player.cycle_subtitles();
             osd = Some("SUBTITLE  NEXT".into());
@@ -2374,7 +2374,7 @@ impl App {
         }
     }
 
-    /// "上次看到 12:40  继续播放 Enter  从头开始", above the control bar.
+    /// "Last watched 12:40  Resume Enter  Start over", above the control bar.
     fn draw_resume_prompt(&mut self, ui: &mut egui::Ui, full: Rect, now: f64) {
         let Some((pos, shown_at)) = self.resume_prompt else { return };
         let age = now - shown_at;
@@ -2386,11 +2386,11 @@ impl App {
         let p = ui.painter().clone();
         let a = ((RESUME_PROMPT_SECS - age) / 0.3).min(1.0) as f32;
 
-        let msg = tf("上次看到 {}", &[&fmt_time(pos)]);
+        let msg = tf("Stopped at {}", &[&fmt_time(pos)]);
         let font = FontId::proportional(12.0);
         let mg = p.layout_no_wrap(msg, FontId::monospace(12.0), TEXT.gamma_multiply(a));
-        let rg = p.layout_no_wrap(tr("继续播放 Enter").into(), font.clone(), ACCENT);
-        let sg = p.layout_no_wrap(tr("从头开始").into(), font.clone(), TEXT_2);
+        let rg = p.layout_no_wrap(tr("Resume  Enter").into(), font.clone(), ACCENT);
+        let sg = p.layout_no_wrap(tr("Start over").into(), font.clone(), TEXT_2);
         let h = 34.0;
         let w = 14.0 + mg.size().x + 18.0 + rg.size().x + 16.0 + sg.size().x + 14.0;
         let rect = Rect::from_min_size(pos2(full.left() + 16.0, full.bottom() - BAR_H - 24.0 - h), vec2(w, h));
@@ -2405,13 +2405,13 @@ impl App {
         let resume_r = Rect::from_min_size(pos2(x, cy - 12.0), vec2(rg.size().x, 24.0));
         let rr = ui.interact(resume_r, ui.scope_id().with("resume_yes"), Sense::click());
         let rc = if rr.hovered() { TEXT } else { ACCENT };
-        p.text(pos2(x, cy), Align2::LEFT_CENTER, tr("继续播放 Enter"), font.clone(), rc.gamma_multiply(a));
+        p.text(pos2(x, cy), Align2::LEFT_CENTER, tr("Resume  Enter"), font.clone(), rc.gamma_multiply(a));
         x += rg.size().x + 16.0;
 
         let start_r = Rect::from_min_size(pos2(x, cy - 12.0), vec2(sg.size().x, 24.0));
         let sr = ui.interact(start_r, ui.scope_id().with("resume_no"), Sense::click());
         let sc = if sr.hovered() { TEXT } else { TEXT_2 };
-        p.text(pos2(x, cy), Align2::LEFT_CENTER, tr("从头开始"), font, sc.gamma_multiply(a));
+        p.text(pos2(x, cy), Align2::LEFT_CENTER, tr("Start over"), font, sc.gamma_multiply(a));
 
         if rr.hovered() || sr.hovered() {
             ui.ctx().set_cursor_icon(CursorIcon::PointingHand);
@@ -2464,14 +2464,14 @@ fn fav_button(ui: &mut egui::Ui, stage: Rect, title: &str, fav: bool, alpha: f32
     if resp.hovered() {
         ui.ctx().set_cursor_icon(CursorIcon::PointingHand);
     }
-    resp.on_hover_text(if fav { tr("取消收藏 (Ctrl+D)") } else { tr("收藏 (Ctrl+D)") }).clicked()
+    resp.on_hover_text(if fav { tr("Unfavorite (Ctrl+D)") } else { tr("Favorite (Ctrl+D)") }).clicked()
 }
 
-/// "‹ 媒体库" at the top-left of the player. Returns true when clicked.
+/// "‹ Library" at the top-left of the player. Returns true when clicked.
 /// Stands in for the title bar's close button while it's hidden.
 fn close_button(ui: &mut egui::Ui, stage: Rect, alpha: f32) -> bool {
     let r = Rect::from_center_size(pos2(stage.right() - 22.0, stage.top() + 22.0), vec2(28.0, 28.0));
-    let resp = ui.interact(r, ui.scope_id().with("close_window"), Sense::click()).on_hover_text(tr("关闭窗口"));
+    let resp = ui.interact(r, ui.scope_id().with("close_window"), Sense::click()).on_hover_text(tr("Close window"));
     let c = if resp.hovered() { ACCENT } else { TEXT };
     icons::draw(ui.painter(), Icon::Close, r.center(), 14.0, c.gamma_multiply(alpha));
     if resp.hovered() {
@@ -2494,7 +2494,7 @@ fn back_button(ui: &mut egui::Ui, stage: Rect, alpha: f32) -> bool {
     let st = Stroke::new(1.8, c.gamma_multiply(alpha));
     p.line_segment([pos2(x + 4.0, cy - 6.0), pos2(x - 2.0, cy)], st);
     p.line_segment([pos2(x - 2.0, cy), pos2(x + 4.0, cy + 6.0)], st);
-    p.text(pos2(x + 12.0, cy), Align2::LEFT_CENTER, tr("媒体库"), FontId::proportional(13.0), c.gamma_multiply(alpha));
+    p.text(pos2(x + 12.0, cy), Align2::LEFT_CENTER, tr("Library"), FontId::proportional(13.0), c.gamma_multiply(alpha));
     resp.clicked()
 }
 
@@ -2569,7 +2569,7 @@ fn draw_empty_state(ui: &mut egui::Ui, full: Rect, recent: &[Entry], has_library
     let frame = Rect::from_center_size(c - vec2(0.0, 24.0), vec2(220.0, 112.0));
     icons::corner_brackets(&p, frame, 11.0, Stroke::new(1.0, theme::accent_alpha(200)));
     icons::draw(&p, Icon::Drop, frame.center() - vec2(0.0, 14.0), 24.0, ACCENT);
-    p.text(frame.center() + vec2(0.0, 22.0), Align2::CENTER_CENTER, tr("拖入媒体文件"), FontId::proportional(13.0), theme::text());
+    p.text(frame.center() + vec2(0.0, 22.0), Align2::CENTER_CENTER, tr("Drop media files here"), FontId::proportional(13.0), theme::text());
 
     let open_rect = Rect::from_center_size(pos2(c.x - 84.0, frame.bottom() + 26.0), vec2(150.0, 28.0));
     let resp = ui.interact(open_rect, ui.scope_id().with("open"), Sense::click());
@@ -2578,7 +2578,7 @@ fn draw_empty_state(ui: &mut egui::Ui, full: Rect, recent: &[Entry], has_library
         ui.ctx().set_cursor_icon(CursorIcon::PointingHand);
     }
     let shortcut = format!("{}O", theme::CMD);
-    p.text(open_rect.center(), Align2::CENTER_CENTER, tf("打开文件  {}", &[&shortcut]), FontId::monospace(11.0), color);
+    p.text(open_rect.center(), Align2::CENTER_CENTER, tf("Open file  {}", &[&shortcut]), FontId::monospace(11.0), color);
 
     let lib_rect = Rect::from_center_size(pos2(c.x + 84.0, frame.bottom() + 26.0), vec2(150.0, 28.0));
     let lresp = ui.interact(lib_rect, ui.scope_id().with("add_folder"), Sense::click());
@@ -2588,7 +2588,7 @@ fn draw_empty_state(ui: &mut egui::Ui, full: Rect, recent: &[Entry], has_library
     p.text(
         lib_rect.center(),
         Align2::CENTER_CENTER,
-        if has_library { tr("进入媒体库") } else { tr("+ 建立媒体库") },
+        if has_library { tr("Open library") } else { tr("+ Create library") },
         FontId::proportional(12.0),
         if lresp.hovered() { theme::text() } else { ACCENT },
     );
@@ -2596,7 +2596,7 @@ fn draw_empty_state(ui: &mut egui::Ui, full: Rect, recent: &[Entry], has_library
     p.text(
         pos2(c.x, frame.bottom() + 64.0),
         Align2::CENTER_CENTER,
-        tr("Space 播放/暂停 · ←/→ 快退/快进 · ↑/↓ 音量 · F 全屏"),
+        tr("Space play/pause · ←/→ seek · ↑/↓ volume · F full screen"),
         FontId::monospace(10.0),
         theme::text_3(),
     );
@@ -2673,7 +2673,7 @@ fn elide(p: &egui::Painter, text: &str, font: FontId, max_w: f32) -> String {
 
 fn draw_error(p: &egui::Painter, full: Rect, err: &str) {
     let c = full.center();
-    p.text(c - vec2(0.0, 14.0), Align2::CENTER_CENTER, tr("播放内核加载失败"), FontId::proportional(15.0), theme::text());
+    p.text(c - vec2(0.0, 14.0), Align2::CENTER_CENTER, tr("Couldn't load the playback engine"), FontId::proportional(15.0), theme::text());
     p.text(c + vec2(0.0, 12.0), Align2::CENTER_CENTER, err, FontId::monospace(11.0), theme::text_2());
 }
 
@@ -2795,8 +2795,8 @@ impl App {
         let lp = ui.painter_at(list.intersect(side));
 
         if n == 0 {
-            lp.text(list.center() - vec2(0.0, 10.0), Align2::CENTER_CENTER, tr("列表为空"), FontId::proportional(13.0), TEXT_2.gamma_multiply(a));
-            lp.text(list.center() + vec2(0.0, 12.0), Align2::CENTER_CENTER, tr("拖入文件或文件夹即可播放"), FontId::proportional(11.0), TEXT_3.gamma_multiply(a));
+            lp.text(list.center() - vec2(0.0, 10.0), Align2::CENTER_CENTER, tr("Playlist is empty"), FontId::proportional(13.0), TEXT_2.gamma_multiply(a));
+            lp.text(list.center() + vec2(0.0, 12.0), Align2::CENTER_CENTER, tr("Drop files or folders to play"), FontId::proportional(11.0), TEXT_3.gamma_multiply(a));
         }
 
         let pointer = ctx.input(|i| i.pointer.hover_pos());
@@ -2879,7 +2879,7 @@ impl App {
         p.text(
             pos2(left + 16.0, side.bottom() - 17.0),
             Align2::LEFT_CENTER,
-            tr("拖动排序 · L 收起"),
+            tr("Drag to reorder · L to hide"),
             FontId::proportional(10.0),
             TEXT_3.gamma_multiply(a),
         );
@@ -2935,7 +2935,7 @@ impl App {
         let rows = self.marks.rows();
         self.side_scroll = self.side_scroll.clamp(0.0, (rows.len() as f32 * ROW_H - list.height()).max(0.0));
         if rows.is_empty() {
-            lp.text(list.center() - vec2(0.0, 10.0), Align2::CENTER_CENTER, tr("没有章节或书签"), FontId::proportional(13.0), TEXT_2.gamma_multiply(a));
+            lp.text(list.center() - vec2(0.0, 10.0), Align2::CENTER_CENTER, tr("No chapters or bookmarks"), FontId::proportional(13.0), TEXT_2.gamma_multiply(a));
         }
         let pos = self.player.as_ref().map_or(0.0, |pl| pl.state.position);
         let current = marks::current_row(&rows, pos);
@@ -2985,7 +2985,7 @@ impl App {
                 seek = Some(row.time);
             }
         }
-        let hint = tf("{}B 添加书签 · G 收起", &[&theme::CMD]);
+        let hint = tf("{}B to bookmark · G to hide", &[&theme::CMD]);
         p.text(pos2(left + 16.0, side.bottom() - 17.0), Align2::LEFT_CENTER, hint, FontId::proportional(10.0), TEXT_3.gamma_multiply(a));
 
         if let (Some(t), Some(pl)) = (seek, &self.player) {

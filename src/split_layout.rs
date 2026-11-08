@@ -49,12 +49,12 @@ impl Preset {
     pub fn label(self) -> &'static str {
         use crate::i18n::tr;
         match self {
-            Preset::Single => tr("单屏"),
-            Preset::LeftRight => tr("左右"),
-            Preset::TopBottom => tr("上下"),
-            Preset::Grid => tr("四宫格"),
-            Preset::OneBigThree => tr("一大三小"),
-            Preset::Pip => tr("画中画"),
+            Preset::Single => tr("Single"),
+            Preset::LeftRight => tr("Side by side"),
+            Preset::TopBottom => tr("Top and bottom"),
+            Preset::Grid => tr("Grid"),
+            Preset::OneBigThree => tr("1 + 3"),
+            Preset::Pip => tr("Picture-in-picture"),
         }
     }
 }

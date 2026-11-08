@@ -1,5 +1,5 @@
 //! In-player quick settings, opened from the control bar's gear:
-//! 字幕 / 字幕样式 / 声音 / 均衡器 / 画面 / 画面增强 / 色彩 / VR 全景. Anchored above the bar at the bottom-right.
+//! Subtitles / Subtitle style / Sound / Equalizer / Picture / Enhance / Color / VR. Anchored above the bar at the bottom-right.
 //!
 //! Aspect, hardware decoding, enhancement, tone mapping, interpolation,
 //! subtitle size/position/style, normalization and the equalizer are saved
@@ -49,7 +49,7 @@ pub enum Crop {
 }
 
 const COLOR_PROPS: [(&str, &str); 5] =
-    [("亮度", "brightness"), ("对比度", "contrast"), ("饱和度", "saturation"), ("伽马", "gamma"), ("色调", "hue")];
+    [("Brightness", "brightness"), ("Contrast", "contrast"), ("Saturation", "saturation"), ("Gamma", "gamma"), ("Hue", "hue")];
 
 #[derive(Default)]
 pub struct QuickPanel {
@@ -123,7 +123,7 @@ impl QuickPanel {
         p.rect_filled(nav, egui::CornerRadius { nw: 8, sw: 8, ne: 0, se: 0 }, NAV_BG);
 
         // Nav
-        let items = [(Page::Subtitles, tr("字幕")), (Page::SubStyle, tr("字幕样式")), (Page::Audio, tr("声音")), (Page::Equalizer, tr("均衡器")), (Page::Video, tr("画面")), (Page::Enhance, tr("画面增强")), (Page::Color, tr("色彩")), (Page::Vr, tr("VR 全景"))];
+        let items = [(Page::Subtitles, tr("Subtitles")), (Page::SubStyle, tr("Styling")), (Page::Audio, tr("Audio")), (Page::Equalizer, tr("EQ")), (Page::Video, tr("Video")), (Page::Enhance, tr("Enhance")), (Page::Color, tr("Color")), (Page::Vr, tr("VR panorama"))];
         let top = nav.center().y - items.len() as f32 * 48.0 / 2.0;
         for (i, (page, label)) in items.into_iter().enumerate() {
             let r = Rect::from_min_size(pos2(nav.left(), top + i as f32 * 48.0), vec2(NAV_W, 40.0));
@@ -164,11 +164,11 @@ impl QuickPanel {
             Page::Vr => self.vr_page(&mut c, player, &mut out),
         }
 
-        // "更多设置" bottom-left of the body.
+        // "More settings" bottom-left of the body.
         let ui = c.ui;
         let more = Rect::from_min_size(pos2(body.left(), body.bottom() - 22.0), vec2(70.0, 22.0));
         let mr = ui.interact(more, ui.scope_id().with("qp_more"), Sense::click());
-        p.text(more.left_center(), Align2::LEFT_CENTER, tr("更多设置"), FontId::proportional(12.0), if mr.hovered() { ACCENT } else { TXT_2 });
+        p.text(more.left_center(), Align2::LEFT_CENTER, tr("More settings"), FontId::proportional(12.0), if mr.hovered() { ACCENT } else { TXT_2 });
         hover_hand(&ctx, &mr);
         if mr.clicked() {
             out.more_settings = true;
@@ -189,8 +189,8 @@ impl QuickPanel {
     // ---- Pages ---------------------------------------------------------
 
     fn subtitles(&mut self, c: &mut Cursor, player: &Player, s: &mut Settings, out: &mut Actions) {
-        c.section(tr("字幕轨道"));
-        let mut opts: Vec<(Option<i64>, String, bool)> = vec![(None, tr("关闭").into(), !self.subs.iter().any(|t| t.selected))];
+        c.section(tr("Subtitle track"));
+        let mut opts: Vec<(Option<i64>, String, bool)> = vec![(None, tr("Off").into(), !self.subs.iter().any(|t| t.selected))];
         opts.extend(self.subs.iter().map(|t| (Some(t.id), t.label.clone(), t.selected)));
         if let Some(i) = c.radios("qp_sid", &opts.iter().map(|o| (o.1.as_str(), o.2)).collect::<Vec<_>>()) {
             let v = opts[i].0.map_or("no".to_string(), |id| id.to_string());
@@ -198,30 +198,30 @@ impl QuickPanel {
             self.last_refresh = f64::NEG_INFINITY;
         }
         c.gap(4.0);
-        if c.buttons("qp_subbtn", &[tr("加载字幕文件…")]) == Some(0) {
+        if c.buttons("qp_subbtn", &[tr("Load file…")]) == Some(0) {
             out.load_subtitle = true;
         }
         c.gap(10.0);
 
-        c.section(tr("字幕大小"));
+        c.section(tr("Size|subtitle"));
         let sizes = [36u32, 46, 58, 72];
-        let labels = [tr("小"), tr("中"), tr("大"), tr("特大")];
+        let labels = [tr("Small"), tr("Medium"), tr("Large"), tr("Huge")];
         let cur: Vec<(&str, bool)> = labels.iter().zip(sizes).map(|(l, v)| (*l, s.sub_size == v)).collect();
         if let Some(i) = c.radios("qp_subsize", &cur) {
             s.sub_size = sizes[i];
             out.settings_changed = true;
         }
         c.gap(6.0);
-        c.section(tr("字幕位置"));
+        c.section(tr("Position"));
         let poss = [100u32, 95, 88];
-        let labels = [tr("底部"), tr("稍高"), tr("更高")];
+        let labels = [tr("Bottom"), tr("Higher"), tr("Highest")];
         let cur: Vec<(&str, bool)> = labels.iter().zip(poss).map(|(l, v)| (*l, s.sub_pos == v)).collect();
         if let Some(i) = c.radios("qp_subpos", &cur) {
             s.sub_pos = poss[i];
             out.settings_changed = true;
         }
         c.gap(6.0);
-        c.section(tr("字幕延迟"));
+        c.section(tr("Delay"));
         if let Some(d) = c.stepper("qp_subdelay", self.sub_delay, 0.5) {
             self.sub_delay = d;
             player.mpv.set_property_string("sub-delay", &format!("{d:.2}"));
@@ -229,10 +229,10 @@ impl QuickPanel {
     }
 
     fn sub_style(&mut self, c: &mut Cursor, player: &Player, s: &mut Settings, out: &mut Actions) {
-        c.section(tr("第二字幕"));
+        c.section(tr("Second subtitle"));
         // mpv can't show one track twice, so the main track isn't offered.
         let tracks: Vec<&Track> = self.subs.iter().filter(|t| !t.selected).collect();
-        let mut opts: Vec<(Option<i64>, &str, bool)> = vec![(None, tr("关闭"), !tracks.iter().any(|t| t.secondary))];
+        let mut opts: Vec<(Option<i64>, &str, bool)> = vec![(None, tr("Off"), !tracks.iter().any(|t| t.secondary))];
         opts.extend(tracks.iter().map(|t| (Some(t.id), t.label.as_str(), t.secondary)));
         if let Some(i) = c.radios("qp_sid2", &opts.iter().map(|o| (o.1, o.2)).collect::<Vec<_>>()) {
             let v = opts[i].0.map_or("no".to_string(), |id| id.to_string());
@@ -241,37 +241,37 @@ impl QuickPanel {
         }
         c.gap(4.0);
 
-        c.section(tr("字体"));
-        if let Some(v) = c.choice("qp_font", &[(tr("默认"), "default"), (tr("黑体"), "hei"), (tr("宋体"), "song"), (tr("楷体"), "kai")], s.sub_font.as_str()) {
+        c.section(tr("Font"));
+        if let Some(v) = c.choice("qp_font", &[(tr("Default"), "default"), (tr("Sans"), "hei"), (tr("Serif"), "song"), (tr("Kai"), "kai")], s.sub_font.as_str()) {
             s.sub_font = v.to_string();
             out.settings_changed = true;
         }
-        c.section(tr("颜色"));
-        let colors = [(tr("白色"), "#FFFFFF"), (tr("黄色"), "#FFE066"), (tr("青色"), "#7FE7FF"), (tr("绿色"), "#9CFF8F")];
+        c.section(tr("Color|text"));
+        let colors = [(tr("White"), "#FFFFFF"), (tr("Yellow"), "#FFE066"), (tr("Cyan"), "#7FE7FF"), (tr("Green"), "#9CFF8F")];
         if let Some(v) = c.choice("qp_color", &colors, s.sub_color.as_str()) {
             s.sub_color = v.to_string();
             out.settings_changed = true;
         }
-        c.section(tr("描边"));
-        if let Some(v) = c.choice("qp_outline", &[(tr("细"), 1u32), (tr("中"), 2), (tr("粗"), 4)], s.sub_outline) {
+        c.section(tr("Outline"));
+        if let Some(v) = c.choice("qp_outline", &[(tr("Thin"), 1u32), (tr("Medium"), 2), (tr("Thick"), 4)], s.sub_outline) {
             s.sub_outline = v;
             out.settings_changed = true;
         }
-        if c.toggle_row("qp_shadow", tr("阴影"), s.sub_shadow) {
+        if c.toggle_row("qp_shadow", tr("Shadow"), s.sub_shadow) {
             s.sub_shadow = !s.sub_shadow;
             out.settings_changed = true;
         }
         c.gap(4.0);
-        if c.toggle_row("qp_assforce", tr("覆盖 ASS"), s.sub_ass_force) {
+        if c.toggle_row("qp_assforce", tr("Force on ASS"), s.sub_ass_force) {
             s.sub_ass_force = !s.sub_ass_force;
             out.settings_changed = true;
         }
     }
 
     fn audio(&mut self, c: &mut Cursor, player: &Player, s: &mut Settings, out: &mut Actions) {
-        c.section(tr("音轨"));
+        c.section(tr("Audio track"));
         if self.audio.is_empty() {
-            c.note(tr("没有音轨"));
+            c.note(tr("No audio track"));
         } else {
             let opts: Vec<(&str, bool)> = self.audio.iter().map(|t| (t.label.as_str(), t.selected)).collect();
             if let Some(i) = c.radios("qp_aid", &opts) {
@@ -280,23 +280,23 @@ impl QuickPanel {
             }
         }
         c.gap(4.0);
-        c.section(tr("声道"));
-        let channels = [(tr("立体声"), Channel::Stereo), (tr("左声道"), Channel::Left), (tr("右声道"), Channel::Right), (tr("混合"), Channel::Mixed)];
+        c.section(tr("Channels"));
+        let channels = [(tr("Stereo"), Channel::Stereo), (tr("Left|channel"), Channel::Left), (tr("Right|channel"), Channel::Right), (tr("Mix"), Channel::Mixed)];
         if let Some(v) = c.choice("qp_channel", &channels, s.audio_channel) {
             s.audio_channel = v;
             out.settings_changed = true;
         }
         c.gap(4.0);
-        c.section(tr("音频延迟"));
+        c.section(tr("Audio delay"));
         if let Some(d) = c.stepper("qp_adelay", self.audio_delay, 0.1) {
             self.audio_delay = d;
             player.mpv.set_property_string("audio-delay", &format!("{d:.2}"));
         }
         c.gap(10.0);
-        c.section(tr("音量"));
+        c.section(tr("Volume"));
         let vol = player.state.volume.round();
-        let labels = ["−5%", "+5%", if player.state.muted { tr("取消静音") } else { tr("静音") }];
-        c.note(&tf("当前 {}%", &[&vol]));
+        let labels = ["−5%", "+5%", if player.state.muted { tr("Unmute") } else { tr("Mute") }];
+        c.note(&tf("Now {}%", &[&vol]));
         c.gap(2.0);
         match c.buttons("qp_vol", &labels) {
             Some(0) => player.set_volume(vol - 5.0),
@@ -305,14 +305,14 @@ impl QuickPanel {
             _ => {}
         }
         c.gap(4.0);
-        if c.toggle_row("qp_norm", tr("音量标准化"), s.audio_norm) {
+        if c.toggle_row("qp_norm", tr("Normalize"), s.audio_norm) {
             s.audio_norm = !s.audio_norm;
             out.settings_changed = true;
         }
     }
 
     fn equalizer(&mut self, c: &mut Cursor, s: &mut Settings, out: &mut Actions) {
-        c.section(tr("预设"));
+        c.section(tr("Preset"));
         let presets: Vec<(&str, bool)> = audio_fx::PRESETS.iter().map(|(l, g)| (tr(l), *g == s.eq)).collect();
         if let Some(i) = c.radios_cols("qp_eq_preset", &presets, audio_fx::PRESETS.len()) {
             s.eq = audio_fx::PRESETS[i].1;
@@ -335,23 +335,23 @@ impl QuickPanel {
     }
 
     fn video(&mut self, c: &mut Cursor, player: &Player, s: &mut Settings, out: &mut Actions) {
-        c.section(tr("画面比例"));
-        let opts = [(tr("原始比例"), "auto"), ("4:3", "4:3"), ("16:9", "16:9"), ("2.35:1", "2.35:1"), (tr("铺满窗口"), "stretch"), ("21:9", "21:9")];
+        c.section(tr("Aspect ratio"));
+        let opts = [(tr("Original|aspect"), "auto"), ("4:3", "4:3"), ("16:9", "16:9"), ("2.35:1", "2.35:1"), (tr("Stretch|window"), "stretch"), ("21:9", "21:9")];
         let cur: Vec<(&str, bool)> = opts.iter().map(|(l, v)| (*l, s.aspect == *v)).collect();
         if let Some(i) = c.radios_cols("qp_aspect", &cur, 4) {
             s.aspect = opts[i].1.to_string();
             out.settings_changed = true;
         }
         c.gap(10.0);
-        c.section(tr("画面旋转"));
-        match c.buttons("qp_rot", &[tr("向左旋转"), tr("向右旋转")]) {
+        c.section(tr("Rotate"));
+        match c.buttons("qp_rot", &[tr("Left"), tr("Right")]) {
             Some(0) => self.set_rotate(player, self.rotate - 90),
             Some(1) => self.set_rotate(player, self.rotate + 90),
             _ => {}
         }
         c.gap(10.0);
-        c.section(tr("画面翻转"));
-        match c.buttons("qp_flip", &[tr("水平镜像"), tr("垂直翻转")]) {
+        c.section(tr("Flip"));
+        match c.buttons("qp_flip", &[tr("Horizontal"), tr("Vertical")]) {
             Some(0) => {
                 self.hflip = !self.hflip;
                 player.set_flip(self.hflip, self.vflip);
@@ -363,12 +363,12 @@ impl QuickPanel {
             _ => {}
         }
         c.gap(12.0);
-        if c.toggle_row("qp_hw", tr("硬件加速"), s.hwdec) {
+        if c.toggle_row("qp_hw", tr("Hardware"), s.hwdec) {
             s.hwdec = !s.hwdec;
             out.settings_changed = true;
         }
         c.gap(6.0);
-        if c.toggle_row("qp_enh", tr("画质增强"), s.enhance) {
+        if c.toggle_row("qp_enh", tr("Enhance|quality"), s.enhance) {
             s.enhance = !s.enhance;
             out.settings_changed = true;
         }
@@ -387,8 +387,8 @@ impl QuickPanel {
     }
 
     fn vr_page(&mut self, c: &mut Cursor, player: &Player, out: &mut Actions) {
-        c.section(tr("全景模式"));
-        let spans = [(tr("关闭"), None), ("180°", Some(Span::Half)), ("360°", Some(Span::Full))];
+        c.section(tr("Panorama"));
+        let spans = [(tr("Off"), None), ("180°", Some(Span::Half)), ("360°", Some(Span::Full))];
         if let Some(span) = c.choice("qp_vr_span", &spans, self.vr.map(|f| f.span)) {
             let (w, h) = (player.state.width, player.state.height);
             let layout = |span| self.vr.map_or_else(|| vr::layout_for(span, w, h), |f| f.layout);
@@ -396,25 +396,25 @@ impl QuickPanel {
         }
         let Some(format) = self.vr else {
             c.gap(8.0);
-            c.note(tr("用于 180° 或 360° 全景视频，普通视频不用开"));
+            c.note(tr("For 180° or 360° video. Leave off for ordinary videos."));
             return;
         };
         c.gap(10.0);
-        c.section(tr("画面排列"));
-        let layouts = [(tr("单画面"), Layout::Mono), (tr("左右"), Layout::SideBySide), (tr("上下"), Layout::TopBottom)];
+        c.section(tr("Layout"));
+        let layouts = [(tr("Single|view"), Layout::Mono), (tr("Side by side"), Layout::SideBySide), (tr("Top and bottom"), Layout::TopBottom)];
         if let Some(layout) = c.choice("qp_vr_layout", &layouts, format.layout) {
             out.vr = Some(Some(Format { layout, ..format }));
         }
         c.gap(10.0);
-        c.section(&tf("视野  {}°", &[&self.fov]));
-        match c.buttons("qp_vr_view", &[tr("缩小"), tr("放大"), tr("回正")]) {
+        c.section(&tf("Field of view  {}°", &[&self.fov]));
+        match c.buttons("qp_vr_view", &[tr("Zoom out"), tr("Zoom in"), tr("Recenter")]) {
             Some(0) => out.zoom = Some(-ZOOM_STEP),
             Some(1) => out.zoom = Some(ZOOM_STEP),
             Some(2) => out.view_reset = true,
             _ => {}
         }
         c.gap(8.0);
-        c.note(tr("拖动画面转视角，滚轮缩放。全景模式下不显示字幕"));
+        c.note(tr("Drag to look around, scroll to zoom. Subtitles are hidden."));
     }
 
     fn enhance(&mut self, c: &mut Cursor, player: &Player, s: &mut Settings, view: View, out: &mut Actions) {
@@ -422,29 +422,29 @@ impl QuickPanel {
         if self.vr.is_none() {
             self.frame_area(c, view, out);
         }
-        c.section(tr("HDR 色调映射"));
-        if let Some(v) = c.choice("qp_tone", &[(tr("自动"), "auto"), ("BT.2390", "bt.2390"), ("Hable", "hable"), ("Mobius", "mobius")], s.tone_mapping.as_str()) {
+        c.section(tr("HDR tone mapping"));
+        if let Some(v) = c.choice("qp_tone", &[(tr("Auto"), "auto"), ("BT.2390", "bt.2390"), ("Hable", "hable"), ("Mobius", "mobius")], s.tone_mapping.as_str()) {
             s.tone_mapping = v.to_string();
             out.settings_changed = true;
         }
-        c.note(if player.is_hdr() { tr("当前视频是 HDR") } else { tr("当前视频不是 HDR，此项不起作用") });
+        c.note(if player.is_hdr() { tr("This video is HDR") } else { tr("Not an HDR video, so this has no effect") });
         c.gap(6.0);
-        if c.toggle_row("qp_interp", tr("插帧"), s.interpolation) {
+        if c.toggle_row("qp_interp", tr("Interpolate"), s.interpolation) {
             s.interpolation = !s.interpolation;
             out.settings_changed = true;
         }
         c.gap(4.0);
-        if c.toggle_row("qp_frameless", tr("无边框"), s.frameless) {
+        if c.toggle_row("qp_frameless", tr("Frameless"), s.frameless) {
             s.frameless = !s.frameless;
             out.settings_changed = true;
         }
     }
 
     fn frame_area(&mut self, c: &mut Cursor, view: View, out: &mut Actions) {
-        c.section(tr("裁剪"));
+        c.section(tr("Crop"));
         let crops = [
-            (tr("关闭"), Crop::Off),
-            (tr("去黑边"), Crop::Auto),
+            (tr("Off"), Crop::Off),
+            (tr("Remove bars"), Crop::Auto),
             ("16:9", Crop::Ratio(16.0 / 9.0)),
             ("4:3", Crop::Ratio(4.0 / 3.0)),
             ("2.35:1", Crop::Ratio(2.35)),
@@ -456,8 +456,8 @@ impl QuickPanel {
             out.crop_changed = true;
         }
         c.gap(6.0);
-        c.section(&tf("缩放  {}%", &[&view.percent()]));
-        match c.buttons("qp_zoom", &[tr("缩小"), tr("放大"), tr("还原")]) {
+        c.section(&tf("Zoom  {}%", &[&view.percent()]));
+        match c.buttons("qp_zoom", &[tr("Zoom out"), tr("Zoom in"), tr("Reset|restore")]) {
             Some(0) => out.zoom = Some(-ZOOM_STEP),
             Some(1) => out.zoom = Some(ZOOM_STEP),
             Some(2) => out.view_reset = true,
@@ -598,7 +598,7 @@ impl Cursor<'_> {
         clicked
     }
 
-    /// "label  [toggle] 开/关". Returns true when clicked.
+    /// "label  [toggle] on/off". Returns true when clicked.
     fn toggle_row(&mut self, id: &str, label: &str, on: bool) -> bool {
         let cy = self.y + 12.0;
         self.p.text(pos2(self.body.left(), cy), Align2::LEFT_CENTER, label, FontId::proportional(13.0), TXT);
@@ -608,20 +608,20 @@ impl Cursor<'_> {
         let track = Color32::from_rgb(0x55, 0x55, 0x55).lerp_to_gamma(ACCENT, t);
         self.p.rect_filled(r, 11.0, track);
         self.p.circle_filled(pos2(r.left() + 11.0 + t * (r.width() - 22.0), cy), 8.0, Color32::WHITE);
-        self.p.text(pos2(r.right() + 10.0, cy), Align2::LEFT_CENTER, if on { tr("开") } else { tr("关") }, FontId::proportional(13.0), TXT);
+        self.p.text(pos2(r.right() + 10.0, cy), Align2::LEFT_CENTER, if on { tr("On") } else { tr("Off|short") }, FontId::proportional(13.0), TXT);
         hover_hand(&self.ctx, &resp);
         self.y += 26.0;
         resp.clicked()
     }
 
-    /// "− value +  重置" for a delay in seconds. Returns the new value.
+    /// "− value +  Reset" for a delay in seconds. Returns the new value.
     fn stepper(&mut self, id: &str, value: f64, step: f64) -> Option<f64> {
         let mut out = None;
         let cy = self.y + 14.0;
         let mut x = self.body.left();
         for (i, label) in ["−", "+"].iter().enumerate() {
             if i == 1 {
-                let txt = tf("{} 秒", &[&format!("{value:+.1}")]);
+                let txt = tf("{} s", &[&format!("{value:+.1}")]);
                 self.p.text(pos2(x + 40.0, cy), Align2::CENTER_CENTER, txt, FontId::monospace(13.0), TXT);
                 x += 80.0;
             }
@@ -639,7 +639,7 @@ impl Cursor<'_> {
         }
         let reset = Rect::from_min_size(pos2(x + 18.0, cy - 11.0), vec2(40.0, 22.0));
         let rr = self.ui.interact(reset, self.ui.scope_id().with((id, "reset")), Sense::click());
-        self.p.text(reset.left_center(), Align2::LEFT_CENTER, tr("重置"), FontId::proportional(12.5), if rr.hovered() { ACCENT } else { TXT_2 });
+        self.p.text(reset.left_center(), Align2::LEFT_CENTER, tr("Reset"), FontId::proportional(12.5), if rr.hovered() { ACCENT } else { TXT_2 });
         hover_hand(&self.ctx, &rr);
         if rr.clicked() {
             out = Some(0.0);
@@ -677,7 +677,7 @@ impl Cursor<'_> {
         None
     }
 
-    /// "⟳ 重置" at the bottom-right. Returns true when clicked.
+    /// "⟳ Reset" at the bottom-right. Returns true when clicked.
     fn reset_button(&mut self, id: &str) -> bool {
         let r = Rect::from_min_size(pos2(self.body.right() - 60.0, self.body.bottom() - 24.0), vec2(60.0, 24.0));
         let resp = self.ui.interact(r, self.ui.scope_id().with(id), Sense::click());
@@ -693,7 +693,7 @@ impl Cursor<'_> {
         let end = pts[0];
         self.p.add(egui::Shape::line(pts, Stroke::new(1.5, c)));
         self.p.add(egui::Shape::convex_polygon(vec![end + vec2(3.5, -2.0), end + vec2(-2.0, -3.5), end + vec2(0.5, 3.0)], c, Stroke::NONE));
-        self.p.text(pos2(r.left() + 22.0, r.center().y), Align2::LEFT_CENTER, tr("重置"), FontId::proportional(13.0), c);
+        self.p.text(pos2(r.left() + 22.0, r.center().y), Align2::LEFT_CENTER, tr("Reset"), FontId::proportional(13.0), c);
         hover_hand(&self.ctx, &resp);
         resp.clicked()
     }

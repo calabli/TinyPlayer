@@ -1,4 +1,4 @@
-//! The settings overlay (播放 / 声音 / 画面 / 字幕 / 播放记录 / 快捷键), drawn in the tech-minimal style.
+//! The settings overlay (Playback / Sound / Picture / Subtitles / History / Shortcuts), drawn in the tech-minimal style.
 
 use eframe::egui::{self, Align2, Color32, FontId, Rect, Sense, Stroke, StrokeKind, pos2, vec2};
 
@@ -10,7 +10,7 @@ use crate::theme::{self, ACCENT};
 
 #[derive(Default)]
 pub struct PanelState {
-    /// Time until which "清除播放统计" is armed for a confirming second click.
+    /// Time until which "Clear play stats" is armed for a confirming second click.
     confirm_stats_until: f64,
     page: Page,
 }
@@ -81,14 +81,14 @@ pub fn show(
     p.line_segment([nav.right_top(), nav.right_bottom()], Stroke::new(0.5, theme::line()));
     p.text(nav.min + vec2(16.0, 22.0), Align2::LEFT_CENTER, "SETTINGS", FontId::monospace(10.0), theme::text_3());
     let pages = [
-        (Page::Playback, tr("播放")),
-        (Page::Audio, tr("声音")),
-        (Page::Video, tr("画面")),
-        (Page::Subtitles, tr("字幕")),
-        (Page::Interface, tr("界面")),
-        (Page::Library, tr("媒体库")),
-        (Page::History, tr("播放记录")),
-        (Page::Shortcuts, tr("快捷键")),
+        (Page::Playback, tr("Play")),
+        (Page::Audio, tr("Audio")),
+        (Page::Video, tr("Video")),
+        (Page::Subtitles, tr("Subtitles")),
+        (Page::Interface, tr("Interface")),
+        (Page::Library, tr("Library")),
+        (Page::History, tr("History")),
+        (Page::Shortcuts, tr("Shortcuts")),
     ];
     for (i, (page, name)) in pages.into_iter().enumerate() {
         let item = Rect::from_min_size(nav.min + vec2(0.0, 44.0 + 34.0 * i as f32), vec2(NAV_W, 32.0));
@@ -133,7 +133,7 @@ pub fn show(
 
     if st.page == Page::Playback {
         let r = row(y);
-        label(r, tr("自动加入同目录文件"), tr("打开单个文件时，把同一文件夹的其他媒体按文件名顺序加入列表"), true);
+        label(r, tr("Queue the folder"), tr("Opening one file also queues the rest of its folder, in name order"), true);
         if toggle(ui, &p, r, "fill_folder", settings.fill_folder, true) {
             settings.fill_folder = !settings.fill_folder;
             out.settings_changed = true;
@@ -141,17 +141,17 @@ pub fn show(
         y += ROW_H;
 
         let r = row(y);
-        label(r, tr("播完后"), "", true);
+        label(r, tr("After playback"), "", true);
         let modes = [LoopMode::Off, LoopMode::All, LoopMode::One];
         let sel = modes.iter().position(|m| *m == settings.loop_mode).unwrap_or(0);
-        if let Some(i) = segment(ui, &p, r, "loop_mode", &[tr("播下一个"), tr("列表循环"), tr("单个循环")], sel, true) {
+        if let Some(i) = segment(ui, &p, r, "loop_mode", &[tr("Next"), tr("Loop list"), tr("Loop one")], sel, true) {
             settings.loop_mode = modes[i];
             out.settings_changed = true;
         }
         y += ROW_H;
 
         let r = row(y);
-        label(r, tr("随机播放"), tr("列表中每个文件播放一次后才会重复"), true);
+        label(r, tr("Shuffle"), tr("Every file plays once before any repeats"), true);
         if toggle(ui, &p, r, "shuffle", settings.shuffle, true) {
             settings.shuffle = !settings.shuffle;
             out.settings_changed = true;
@@ -161,7 +161,7 @@ pub fn show(
 
     if st.page == Page::Audio {
         let r = row(y);
-        label(r, tr("按设备记音量"), tr("耳机、扬声器等输出设备各记一个音量，切换时自动换成对应音量"), true);
+        label(r, tr("Volume per device"), tr("Headphones, speakers and other outputs each keep their own volume"), true);
         if toggle(ui, &p, r, "device_volume", settings.device_volume, true) {
             settings.device_volume = !settings.device_volume;
             out.settings_changed = true;
@@ -174,7 +174,7 @@ pub fn show(
 
     if st.page == Page::Video {
         let r = row(y);
-        label(r, tr("硬件解码"), tr("用显卡解码，省电、降低 CPU 占用；画面异常时可关闭"), true);
+        label(r, tr("Hardware decoding"), tr("Uses the GPU to save power and CPU. Turn off if the picture looks wrong"), true);
         if toggle(ui, &p, r, "hwdec", settings.hwdec, true) {
             settings.hwdec = !settings.hwdec;
             out.settings_changed = true;
@@ -182,10 +182,10 @@ pub fn show(
         y += ROW_H;
 
         let r = row(y);
-        label(r, tr("画面比例"), "", true);
+        label(r, tr("Aspect ratio"), "", true);
         let opts = ["auto", "16:9", "4:3", "2.35:1", "stretch"];
         let sel = opts.iter().position(|o| *o == settings.aspect).unwrap_or(0);
-        if let Some(i) = segment(ui, &p, r, "aspect", &[tr("原始"), "16:9", "4:3", "2.35:1", tr("拉伸")], sel, true) {
+        if let Some(i) = segment(ui, &p, r, "aspect", &[tr("Original"), "16:9", "4:3", "2.35:1", tr("Stretch")], sel, true) {
             settings.aspect = opts[i].to_string();
             out.settings_changed = true;
         }
@@ -194,7 +194,7 @@ pub fn show(
 
     if st.page == Page::Subtitles {
         let r = row(y);
-        label(r, tr("自动加载外挂字幕"), tr("打开视频时加载同名的 .srt / .ass 等字幕文件"), true);
+        label(r, tr("Auto-load subtitles"), tr("Loads .srt, .ass and similar files named after the video"), true);
         if toggle(ui, &p, r, "sub_auto", settings.sub_auto, true) {
             settings.sub_auto = !settings.sub_auto;
             out.settings_changed = true;
@@ -202,30 +202,30 @@ pub fn show(
         y += ROW_H;
 
         let r = row(y);
-        label(r, tr("字幕大小"), "", true);
+        label(r, tr("Size|subtitle"), "", true);
         let sizes = [36u32, 46, 58, 72];
         let sel = sizes.iter().position(|v| *v == settings.sub_size).unwrap_or(1);
-        if let Some(i) = segment(ui, &p, r, "sub_size", &[tr("小"), tr("中"), tr("大"), tr("特大")], sel, true) {
+        if let Some(i) = segment(ui, &p, r, "sub_size", &[tr("Small"), tr("Medium"), tr("Large"), tr("Huge")], sel, true) {
             settings.sub_size = sizes[i];
             out.settings_changed = true;
         }
         y += ROW_H;
 
         let r = row(y);
-        label(r, tr("字幕位置"), "", true);
+        label(r, tr("Position"), "", true);
         let poss = [100u32, 95, 88];
         let sel = poss.iter().position(|v| *v == settings.sub_pos).unwrap_or(0);
-        if let Some(i) = segment(ui, &p, r, "sub_pos", &[tr("底部"), tr("稍高"), tr("更高")], sel, true) {
+        if let Some(i) = segment(ui, &p, r, "sub_pos", &[tr("Bottom"), tr("Higher"), tr("Highest")], sel, true) {
             settings.sub_pos = poss[i];
             out.settings_changed = true;
         }
         y += ROW_H;
 
         let r = row(y);
-        label(r, tr("首选字幕语言"), tr("有多条字幕轨时优先选择"), true);
+        label(r, tr("Preferred language"), tr("Picked first when a file has several tracks"), true);
         let langs = ["auto", "zh", "en"];
         let sel = langs.iter().position(|v| *v == settings.sub_lang).unwrap_or(0);
-        if let Some(i) = segment(ui, &p, r, "sub_lang", &[tr("自动"), tr("中文"), tr("英文")], sel, true) {
+        if let Some(i) = segment(ui, &p, r, "sub_lang", &[tr("Auto"), tr("Chinese"), tr("English")], sel, true) {
             settings.sub_lang = langs[i].to_string();
             out.settings_changed = true;
         }
@@ -234,10 +234,10 @@ pub fn show(
 
     if st.page == Page::Interface {
         let r = row(y);
-        label(r, tr("主题"), tr("只影响媒体库和设置，播放时的控件保持深色"), true);
+        label(r, tr("Theme"), tr("Library and settings only. Playback controls stay dark"), true);
         let themes = ["dark", "light", "system"];
         let sel = themes.iter().position(|v| *v == settings.theme).unwrap_or(0);
-        if let Some(i) = segment(ui, &p, r, "theme", &[tr("深色"), tr("浅色"), tr("跟随系统")], sel, true) {
+        if let Some(i) = segment(ui, &p, r, "theme", &[tr("Dark"), tr("Light"), tr("System")], sel, true) {
             settings.theme = themes[i].to_string();
             out.settings_changed = true;
         }
@@ -254,7 +254,7 @@ pub fn show(
         y += ROW_H;
 
         let r = row(y);
-        label(r, tr("自动检查更新"), tr("每天最多访问一次 GitHub，不发送使用数据"), true);
+        label(r, tr("Check for updates"), tr("Asks GitHub at most once a day. Sends no usage data"), true);
         if toggle(ui, &p, r, "auto_update", settings.auto_update, true) {
             settings.auto_update = !settings.auto_update;
             out.settings_changed = true;
@@ -262,7 +262,7 @@ pub fn show(
         y += ROW_H;
 
         let r = row(y);
-        label(r, tr("自动下载更新"), tr("在后台下载，下载完成后询问是否重启，也可以在退出时安装"), settings.auto_update);
+        label(r, tr("Download updates"), tr("Downloads in the background, then installs on restart or exit"), settings.auto_update);
         if toggle(ui, &p, r, "auto_download", settings.auto_download, settings.auto_update) {
             settings.auto_download = !settings.auto_download;
             out.settings_changed = true;
@@ -270,8 +270,8 @@ pub fn show(
         y += ROW_H;
 
         let r = row(y);
-        label(r, &tf("当前版本 {}", &[&crate::update::CURRENT_VERSION]), update_status, true);
-        if text_link(ui, &p, r.right_center(), "check_update", tr("检查更新"), ACCENT).clicked {
+        label(r, &tf("Version {}", &[&crate::update::CURRENT_VERSION]), update_status, true);
+        if text_link(ui, &p, r.right_center(), "check_update", tr("Check now"), ACCENT).clicked {
             out.check_update = true;
         }
         return out;
@@ -279,14 +279,14 @@ pub fn show(
 
     if st.page == Page::Library {
         let r = row(y);
-        label(r, tr("媒体库密码"), tr("进入媒体库前需要输入密码，重启后重新验证"), true);
+        label(r, tr("Library password"), tr("Asks for a password before opening the library"), true);
         if toggle(ui, &p, r, "library_lock", locked, true) {
             out.toggle_lock = true;
         }
         y += ROW_H;
         let r = row(y);
-        label(r, tr("清除媒体库"), tr("移除全部文件夹、标签和集合，不删除视频文件"), true);
-        if text_link(ui, &p, pos2(right, r.center().y), "clear_library", tr("清除"), Color32::from_rgb(0xF8, 0x51, 0x49)).clicked {
+        label(r, tr("Clear library"), tr("Removes all folders, tags, and sets. Video files stay."), true);
+        if text_link(ui, &p, pos2(right, r.center().y), "clear_library", tr("Clear"), Color32::from_rgb(0xF8, 0x51, 0x49)).clicked {
             out.clear_library = true;
         }
         return out;
@@ -295,35 +295,35 @@ pub fn show(
     if st.page == Page::Shortcuts {
         let cmd = crate::theme::CMD;
         let keys: Vec<(String, &str)> = vec![
-            ("Space / K".into(), tr("播放 / 暂停")),
-            ("← / →".into(), tr("快退 / 快进 5 秒")),
-            (format!("{cmd}← / →"), tr("快退 / 快进 60 秒")),
-            (tr("↑ / ↓ / 滚轮").into(), tr("音量 ±5%")),
-            ("M".into(), tr("静音")),
-            ("F / Enter".into(), tr("全屏（或双击画面）")),
-            ("Esc".into(), tr("退出全屏")),
-            ("Home".into(), tr("回到开头")),
-            ("[ / ]".into(), tr("减速 / 加速")),
-            ("Backspace".into(), tr("恢复 1.0×")),
-            ("C".into(), tr("切换字幕")),
-            ("N / P".into(), tr("下一个 / 上一个")),
-            ("L".into(), tr("播放列表")),
-            ("G".into(), tr("章节和书签")),
-            ("= / - / 0".into(), tr("放大 / 缩小 / 还原")),
-            ("Shift+← / →".into(), tr("上一章 / 下一章")),
-            (format!("{cmd}B"), tr("添加书签")),
-            (", / .".into(), tr("上一帧 / 下一帧")),
-            ("B".into(), tr("A-B 循环")),
-            ("V".into(), tr("VR 全景")),
-            (format!("{cmd}Shift + P"), tr("隐私模式")),
-            ("T".into(), tr("窗口置顶")),
-            ("I".into(), tr("画中画")),
-            ("H".into(), tr("无边框播放")),
-            (format!("{cmd}O"), tr("打开文件")),
-            (format!("{cmd}D"), tr("收藏 / 取消收藏")),
-            (format!("{cmd}S"), tr("截图到桌面")),
-            (format!("{cmd}K"), tr("媒体库搜索")),
-            (format!("{cmd},"), tr("设置")),
+            ("Space / K".into(), tr("Play / pause")),
+            ("← / →".into(), tr("Seek 5 s")),
+            (format!("{cmd}← / →"), tr("Seek 60 s")),
+            (tr("↑ / ↓ / wheel").into(), tr("Volume ±5%")),
+            ("M".into(), tr("Mute")),
+            ("F / Enter".into(), tr("Full screen")),
+            ("Esc".into(), tr("Exit full screen")),
+            ("Home".into(), tr("Back to start")),
+            ("[ / ]".into(), tr("Slower / faster")),
+            ("Backspace".into(), tr("Reset to 1.0×")),
+            ("C".into(), tr("Next subtitle")),
+            ("N / P".into(), tr("Next / previous")),
+            ("L".into(), tr("Playlist")),
+            ("G".into(), tr("Chapters, bookmarks")),
+            ("= / - / 0".into(), tr("Zoom in / out / reset")),
+            ("Shift+← / →".into(), tr("Previous / next chapter")),
+            (format!("{cmd}B"), tr("Add bookmark")),
+            (", / .".into(), tr("Previous / next frame")),
+            ("B".into(), tr("A-B loop")),
+            ("V".into(), tr("VR panorama")),
+            (format!("{cmd}Shift + P"), tr("Private mode")),
+            ("T".into(), tr("Always on top")),
+            ("I".into(), tr("Picture-in-picture")),
+            ("H".into(), tr("Frameless playback")),
+            (format!("{cmd}O"), tr("Open file")),
+            (format!("{cmd}D"), tr("Toggle favorite")),
+            (format!("{cmd}S"), tr("Screenshot to desktop")),
+            (format!("{cmd}K"), tr("Search library")),
+            (format!("{cmd},"), tr("Settings")),
         ];
         let col_w = (right - left) / 2.0;
         let per_col = keys.len().div_ceil(2);
@@ -344,7 +344,7 @@ pub fn show(
     let dep = settings.remember;
 
     let r = row(y);
-    label(r, tr("记住播放进度"), tr("下次打开同一文件时从上次位置继续"), true);
+    label(r, tr("Remember position"), tr("Continue where you left off in the same file"), true);
     if toggle(ui, &p, r, "remember", settings.remember, true) {
         settings.remember = !settings.remember;
         out.settings_changed = true;
@@ -352,27 +352,27 @@ pub fn show(
     y += ROW_H;
 
     let r = row(y);
-    label(r, tr("续播方式"), "", dep);
+    label(r, tr("When resuming"), "", dep);
     let modes = [ResumeMode::Auto, ResumeMode::Ask, ResumeMode::Start];
     let sel = modes.iter().position(|m| *m == settings.resume_mode).unwrap_or(0);
-    if let Some(i) = segment(ui, &p, r, "resume_mode", &[tr("自动"), tr("询问"), tr("从头")], sel, dep) {
+    if let Some(i) = segment(ui, &p, r, "resume_mode", &[tr("Auto"), tr("Ask"), tr("Restart")], sel, dep) {
         settings.resume_mode = modes[i];
         out.settings_changed = true;
     }
     y += ROW_H;
 
     let r = row(y);
-    label(r, tr("不记录短视频"), tr("时长低于此值的文件不保存进度"), dep);
+    label(r, tr("Skip short videos"), tr("No position saved for files shorter than this"), dep);
     let mins = [0u32, 180, 600];
     let sel = mins.iter().position(|m| *m == settings.min_duration).unwrap_or(1);
-    if let Some(i) = segment(ui, &p, r, "min_dur", &[tr("关"), tr("3 分钟"), tr("10 分钟")], sel, dep) {
+    if let Some(i) = segment(ui, &p, r, "min_dur", &[tr("Off|short"), tr("3 min"), tr("10 min")], sel, dep) {
         settings.min_duration = mins[i];
         out.settings_changed = true;
     }
     y += ROW_H;
 
     let r = row(y);
-    label(r, tr("播完自动清除"), tr("播放超过 95% 视为看完，删除该条进度"), dep);
+    label(r, tr("Clear when finished"), tr("Past 95% counts as watched, and the position is removed"), dep);
     if toggle(ui, &p, r, "clear_finished", settings.clear_finished, dep) {
         settings.clear_finished = !settings.clear_finished;
         out.settings_changed = true;
@@ -380,7 +380,7 @@ pub fn show(
     y += ROW_H;
 
     let r = row(y);
-    label(r, tr("退出时清除播放记录"), tr("关闭时清空进度和最近播放，播放次数保留"), true);
+    label(r, tr("Clear history on exit"), tr("Clears positions and recents on exit. Play counts stay"), true);
     if toggle(ui, &p, r, "clear_on_exit", settings.clear_on_exit, true) {
         settings.clear_on_exit = !settings.clear_on_exit;
         out.settings_changed = true;
@@ -388,7 +388,7 @@ pub fn show(
     y += ROW_H;
 
     let r = row(y);
-    label(r, tr("隐私模式"), tr("不写入记录，隐藏观看记录和系统媒体信息里的片名，重启后恢复"), true);
+    label(r, tr("Private mode"), tr("Records nothing and hides watch history and titles in system media controls until restart"), true);
     if toggle(ui, &p, r, "incognito", *incognito, true) {
         *incognito = !*incognito;
     }
@@ -399,12 +399,12 @@ pub fn show(
     p.text(
         pos2(left, fy),
         Align2::LEFT_CENTER,
-        tf("已保存 {} 条进度 · 共播放 {} 次", &[&stats.0, &stats.1]),
+        tf("{} positions saved · {} plays", &[&stats.0, &stats.1]),
         FontId::monospace(11.0),
         theme::text_2(),
     );
     let armed = now < st.confirm_stats_until;
-    let stats_label = if armed { tr("再点一次确认") } else { tr("清除播放统计") };
+    let stats_label = if armed { tr("Click again to confirm") } else { tr("Clear play stats") };
     let r2 = text_link(ui, &p, pos2(right, fy), "clear_stats", stats_label, if armed { Color32::from_rgb(0xF8, 0x51, 0x49) } else { theme::text_2() });
     if r2.clicked {
         if armed {
@@ -417,7 +417,7 @@ pub fn show(
     if armed {
         ui.ctx().request_repaint_after_secs((st.confirm_stats_until - now) as f32);
     }
-    let r1 = text_link(ui, &p, pos2(r2.left - 20.0, fy), "clear_history", tr("立即清除进度"), ACCENT);
+    let r1 = text_link(ui, &p, pos2(r2.left - 20.0, fy), "clear_history", tr("Clear positions now"), ACCENT);
     if r1.clicked {
         out.clear_history = true;
     }
@@ -428,7 +428,7 @@ pub fn show(
 fn device_list(ui: &mut egui::Ui, area: Rect, devices: &[DeviceRow], enabled: bool, out: &mut Actions) {
     if devices.is_empty() {
         let c = theme::text_2();
-        ui.painter().text(area.left_top() + vec2(0.0, 14.0), Align2::LEFT_CENTER, tr("还没有记录的设备"), FontId::proportional(12.0), c);
+        ui.painter().text(area.left_top() + vec2(0.0, 14.0), Align2::LEFT_CENTER, tr("No devices yet"), FontId::proportional(12.0), c);
         return;
     }
     let dim = if enabled { 1.0 } else { 0.35 };
@@ -459,7 +459,7 @@ fn device_list(ui: &mut egui::Ui, area: Rect, devices: &[DeviceRow], enabled: bo
                 let name_room = minus.left() - r.left() - 12.0;
                 let mut job_w = name_room;
                 if device.current {
-                    let tag = p.layout_no_wrap(tr("当前设备").to_string(), FontId::proportional(11.0), ACCENT.gamma_multiply(dim));
+                    let tag = p.layout_no_wrap(tr("In use").to_string(), FontId::proportional(11.0), ACCENT.gamma_multiply(dim));
                     job_w -= tag.size().x + 10.0;
                     p.galley(pos2(r.left() + job_w + 10.0, cy - tag.size().y / 2.0), tag, ACCENT);
                 } else if forget_button(ui, &p, forget, id.with("forget")) {

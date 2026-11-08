@@ -650,7 +650,7 @@ impl MultiView {
         let Some(r) = self.slot_rect(id) else { return };
         p.rect_filled(r, 3.0, theme::scrim(120));
         p.rect_stroke(r, 3.0, Stroke::new(3.0, ACCENT), StrokeKind::Inside);
-        let text = if self.is_empty(content, main) { tr("松开在这里播放") } else { tr("松开替换这个画面") };
+        let text = if self.is_empty(content, main) { tr("Drop to play here") } else { tr("Drop to replace this video") };
         p.text(r.center(), Align2::CENTER_CENTER, text, FontId::proportional(16.0), TEXT);
     }
 
@@ -709,8 +709,8 @@ impl MultiView {
                 p.rect_filled(r, 3.0, theme::panel());
                 p.rect_stroke(r, 3.0, Stroke::new(1.0, Color32::from_rgb(0x30, 0x36, 0x3D)), StrokeKind::Inside);
                 p.text(r.center() - vec2(0.0, 10.0), Align2::CENTER_CENTER, "+", FontId::proportional(24.0), TEXT_2);
-                p.text(r.center() + vec2(0.0, 14.0), Align2::CENTER_CENTER, tr("添加视频"), FontId::proportional(13.0), TEXT_2);
-                p.text(r.center() + vec2(0.0, 34.0), Align2::CENTER_CENTER, tr("点击或拖入文件"), FontId::proportional(11.0), TEXT_3);
+                p.text(r.center() + vec2(0.0, 14.0), Align2::CENTER_CENTER, tr("Add a video"), FontId::proportional(13.0), TEXT_2);
+                p.text(r.center() + vec2(0.0, 34.0), Align2::CENTER_CENTER, tr("Click or drop a file"), FontId::proportional(11.0), TEXT_3);
             }
         }
     }
@@ -767,7 +767,7 @@ impl MultiView {
             // main player's slot stays, to show its next video.
             if self.layout.slot_count() > 1 && hovered && content != Content::Main {
                 let x = Rect::from_min_size(pos2(r.right() - 28.0, r.top() + 4.0), vec2(24.0, 20.0));
-                if tool_button(ui, p, x, ("mv_close", id), Tool::Close, tr("关闭")) {
+                if tool_button(ui, p, x, ("mv_close", id), Tool::Close, tr("Off")) {
                     self.close_slot(id);
                 }
             }
@@ -929,7 +929,7 @@ impl MultiView {
             if vr.hovered() {
                 ctx.set_cursor_icon(CursorIcon::PointingHand);
             }
-            let pct = if s.muted { tr("静音").to_string() } else { format!("{}%", s.volume.round()) };
+            let pct = if s.muted { tr("Mute").to_string() } else { format!("{}%", s.volume.round()) };
             p.text(pos2(vol.right() + 6.0, cy), Align2::LEFT_CENTER, pct, FontId::monospace(10.0), TEXT_2);
         }
         // Full screen for this video alone
@@ -940,7 +940,7 @@ impl MultiView {
         if fr.hovered() {
             ctx.set_cursor_icon(CursorIcon::PointingHand);
         }
-        if fr.on_hover_text(if solo { tr("退出全屏（Esc）") } else { tr("全屏（双击）") }).clicked() {
+        if fr.on_hover_text(if solo { tr("Exit full screen (Esc)") } else { tr("Full screen (double-click)") }).clicked() {
             self.toggle_solo(&ctx, content);
         }
     }
@@ -948,33 +948,33 @@ impl MultiView {
     fn tool_list(&self, _id: u32, content: Content, floating: bool) -> Vec<(Tool, &'static str)> {
         let mut v = Vec::new();
         if self.solo.is_some() {
-            v.push((Tool::ExitFullscreen, tr("退出全屏（Esc）")));
-            v.push((Tool::Close, tr("关闭视频")));
+            v.push((Tool::ExitFullscreen, tr("Exit full screen (Esc)")));
+            v.push((Tool::Close, tr("Close video")));
             return v;
         }
         if self.maximized.is_some() {
-            v.push((Tool::Restore, tr("还原（Esc）")));
-            v.push((Tool::Fullscreen, tr("全屏（双击）")));
-            v.push((Tool::Close, tr("关闭视频")));
+            v.push((Tool::Restore, tr("Restore (Esc)")));
+            v.push((Tool::Fullscreen, tr("Full screen (double-click)")));
+            v.push((Tool::Close, tr("Close video")));
             return v;
         }
         if content != Content::Empty {
-            v.push((Tool::Fullscreen, tr("全屏（双击）")));
-            v.push((Tool::Max, tr("在窗口内放大")));
+            v.push((Tool::Fullscreen, tr("Full screen (double-click)")));
+            v.push((Tool::Max, tr("Enlarge in the window")));
         }
         if floating {
-            v.push((Tool::Dock, tr("放回布局")));
+            v.push((Tool::Dock, tr("Put back in the layout")));
         } else {
             if self.layout.can_add() {
-                v.push((Tool::SplitH, tr("左右分屏")));
-                v.push((Tool::SplitV, tr("上下分屏")));
+                v.push((Tool::SplitH, tr("Split left / right")));
+                v.push((Tool::SplitV, tr("Split top / bottom")));
             }
             if content != Content::Empty {
-                v.push((Tool::Float, tr("画中画小窗")));
+                v.push((Tool::Float, tr("Float as a small window")));
             }
         }
         // Stops the video; the slot goes back to "add video".
-        v.push((Tool::Close, tr("关闭视频")));
+        v.push((Tool::Close, tr("Close video")));
         v
     }
 
@@ -1058,14 +1058,14 @@ impl MultiView {
         let bx = back.left() + 14.0;
         p.line_segment([pos2(bx + 4.0, cy - 6.0), pos2(bx - 2.0, cy)], st);
         p.line_segment([pos2(bx - 2.0, cy), pos2(bx + 4.0, cy + 6.0)], st);
-        p.text(pos2(bx + 12.0, cy), Align2::LEFT_CENTER, tr("媒体库"), FontId::proportional(13.0), if br.hovered() { ACCENT } else { theme::text() });
+        p.text(pos2(bx + 12.0, cy), Align2::LEFT_CENTER, tr("Library"), FontId::proportional(13.0), if br.hovered() { ACCENT } else { theme::text() });
         if br.clicked() {
             out.back = true;
         }
 
         // Presets
         let mut x = back.right() + 16.0;
-        p.text(pos2(x, cy), Align2::LEFT_CENTER, tr("预设"), FontId::proportional(11.0), theme::text_3());
+        p.text(pos2(x, cy), Align2::LEFT_CENTER, tr("Preset"), FontId::proportional(11.0), theme::text_3());
         x += 30.0;
         for preset in Preset::ALL {
             let label = preset.label();
@@ -1085,26 +1085,26 @@ impl MultiView {
 
         // Right side: multi-view switch, divider, link switch, count
         let mut rx = band.right() - 14.0;
-        let (sw_left, off) = switch(ui, p, pos2(rx, cy), "mv_toggle", true, tr("多屏"), 1.0);
+        let (sw_left, off) = switch(ui, p, pos2(rx, cy), "mv_toggle", true, tr("Multi-view"), 1.0);
         if off {
             out.exit = true;
         }
         rx = sw_left - 14.0;
         p.line_segment([pos2(rx, cy - 8.0), pos2(rx, cy + 8.0)], Stroke::new(1.0, Color32::from_rgb(0x30, 0x36, 0x3D)));
         rx -= 14.0;
-        let (link_left, flip) = switch(ui, p, pos2(rx, cy), "mv_link", self.link, tr("联动"), 1.0);
+        let (link_left, flip) = switch(ui, p, pos2(rx, cy), "mv_link", self.link, tr("Linked"), 1.0);
         if flip {
             self.link = !self.link;
-            out.osd = Some(if self.link { tr("联动  开：播放、暂停、跳转同步到所有画面").into() } else { tr("联动  关").into() });
+            out.osd = Some(if self.link { tr("Linked: play, pause and seeking apply to every video").into() } else { tr("Linked: off").into() });
         }
         rx = link_left - 16.0;
-        let (bars_left, flip) = switch(ui, p, pos2(rx, cy), "mv_bars", !self.hide_bars, tr("进度条"), 1.0);
+        let (bars_left, flip) = switch(ui, p, pos2(rx, cy), "mv_bars", !self.hide_bars, tr("Bars"), 1.0);
         if flip {
             self.hide_bars = !self.hide_bars;
-            out.osd = Some(if self.hide_bars { tr("进度条已隐藏：鼠标移到画面底部显示").into() } else { tr("进度条  显示").into() });
+            out.osd = Some(if self.hide_bars { tr("Bars hidden: move the pointer to a video's bottom to show them").into() } else { tr("Bars shown").into() });
         }
         rx = bars_left - 16.0;
-        let count = tf("{} / {} 个画面", &[&self.video_count(main), &MAX_SLOTS]);
+        let count = tf("{} / {} videos", &[&self.video_count(main), &MAX_SLOTS]);
         if rx - 120.0 > x {
             p.text(pos2(rx, cy), Align2::RIGHT_CENTER, count, FontId::monospace(11.0), theme::text_3());
         }
@@ -1125,13 +1125,13 @@ impl MultiView {
                     .inner_margin(egui::Margin::symmetric(4, 4))
                     .show(ui, |ui| {
                         ui.set_min_width(200.0);
-                        if menu_item(ui, tr("打开文件…")) {
+                        if menu_item(ui, tr("Open file…")) {
                             out.open_file_for = Some(slot);
                             close = true;
                         }
                         if !playlist.is_empty() {
                             ui.add_space(2.0);
-                            ui.label(egui::RichText::new(tr("从播放列表")).size(11.0).color(TEXT_3));
+                            ui.label(egui::RichText::new(tr("From the playlist")).size(11.0).color(TEXT_3));
                             for (title, path) in playlist.iter().take(10) {
                                 if menu_item(ui, title) {
                                     out.load = Some((slot, path.clone()));

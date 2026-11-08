@@ -298,14 +298,14 @@ enum Msg {
 }
 
 fn download(version: &str, tx: &Sender<Msg>, cancel: &AtomicBool) -> Result<Prepared, Option<&'static str>> {
-    const NETWORK: &str = "下载失败，请检查网络";
-    let name = asset_name(version).ok_or(Some("当前系统没有可用的更新包"))?;
+    const NETWORK: &str = "Download failed. Check your network";
+    let name = asset_name(version).ok_or(Some("No update package for this system"))?;
     let base = format!("{RELEASES_URL}/download/v{version}");
     let dir = updates_dir();
     let _ = std::fs::remove_dir_all(&dir);
-    std::fs::create_dir_all(&dir).map_err(|_| Some("无法写入更新文件"))?;
-    let sums = fetch_text(&format!("{base}/{SUMS_NAME}")).ok_or(Some("更新校验信息不可用"))?;
-    let expected = parse_sum(&sums, &name).ok_or(Some("更新校验信息不可用"))?;
+    std::fs::create_dir_all(&dir).map_err(|_| Some("Couldn't write the update files"))?;
+    let sums = fetch_text(&format!("{base}/{SUMS_NAME}")).ok_or(Some("Update checksum unavailable"))?;
+    let expected = parse_sum(&sums, &name).ok_or(Some("Update checksum unavailable"))?;
 
     let url = format!("{base}/{name}");
     let total = download_size(&url);
@@ -336,9 +336,9 @@ fn download(version: &str, tx: &Sender<Msg>, cancel: &AtomicBool) -> Result<Prep
     }
     if sha256_file(&file).as_deref() != Some(expected.as_str()) {
         let _ = std::fs::remove_dir_all(&dir);
-        return Err(Some("更新文件校验失败，已删除"));
+        return Err(Some("The download failed its check and was deleted"));
     }
-    let path = stage(&file, &dir).ok_or(Some("无法准备更新"))?;
+    let path = stage(&file, &dir).ok_or(Some("Couldn't prepare the update"))?;
     Ok(Prepared { version: version.to_string(), path })
 }
 
@@ -470,6 +470,7 @@ impl Updater {
         }
         self.phase = Phase::Checking;
         let (tx, ctx) = (self.tx.clone(), ctx.clone());
+        let english = crate::i18n::is_english();
         std::thread::Builder::new()
             .name("update-check".into())
             .spawn(move || {
@@ -481,8 +482,15 @@ impl Updater {
                 ctx.request_repaint();
                 let Some((version, update)) = latest else { return };
                 if update {
-                    if let Some(text) = fetch_text(&format!("{RAW_URL}/v{version}/CHANGELOG.md")) {
-                        let _ = tx.send(Msg::Notes(parse_notes(&text, &version)));
+                    // The English changelog is new in 0.1.21; older releases
+                    // only have the Chinese one.
+                    let files: &[&str] = if english { &["CHANGELOG.en.md", "CHANGELOG.md"] } else { &["CHANGELOG.md"] };
+                    let notes = files.iter().find_map(|file| {
+                        let text = fetch_text(&format!("{RAW_URL}/v{version}/{file}"))?;
+                        Some(parse_notes(&text, &version)).filter(|n| !n.is_empty())
+                    });
+                    if let Some(notes) = notes {
+                        let _ = tx.send(Msg::Notes(notes));
                         ctx.request_repaint();
                     }
                 }
@@ -585,12 +593,12 @@ impl Updater {
     pub fn status_text(&self) -> String {
         match &self.phase {
             Phase::Idle => String::new(),
-            Phase::Checking => tr("正在检查…").to_string(),
-            Phase::UpToDate => tr("已是最新版本").to_string(),
-            Phase::CheckFailed => tr("检查失败，请稍后再试").to_string(),
-            Phase::Available(v) => tf("发现新版本 {}", &[v]),
-            Phase::Downloading { version, .. } => tf("正在下载 {}", &[version]),
-            Phase::Ready(v) => tf("新版本 {} 已准备好", &[v]),
+            Phase::Checking => tr("Checking…").to_string(),
+            Phase::UpToDate => tr("You're up to date").to_string(),
+            Phase::CheckFailed => tr("Couldn't check. Try again later").to_string(),
+            Phase::Available(v) => tf("Version {} is available", &[v]),
+            Phase::Downloading { version, .. } => tf("Downloading {}", &[version]),
+            Phase::Ready(v) => tf("Version {} is ready", &[v]),
             Phase::Failed { reason, .. } => tr(reason).to_string(),
         }
     }
@@ -667,6 +675,16 @@ mod tests {
         assert_eq!(parse_latest(&REDIRECT.replace("v0.2.0", "v1.x")), None);
         assert_eq!(parse_latest("location: https://github.com/calabli/TinyPlayer/releases"), None);
         assert_eq!(parse_latest("HTTP/2 200 \r\n\r\n"), None);
+    }
+
+    #[test]
+    fn both_changelogs_cover_the_same_versions() {
+        let versions = |text: &str| text.lines().filter_map(|l| l.strip_prefix("## ")).map(str::to_string).collect::<Vec<_>>();
+        let (zh, en) = (include_str!("../CHANGELOG.md"), include_str!("../CHANGELOG.en.md"));
+        assert_eq!(versions(zh), versions(en));
+        for v in versions(en) {
+            assert_eq!(parse_notes(zh, &v).lines().count(), parse_notes(en, &v).lines().count(), "{v}");
+        }
     }
 
     #[test]

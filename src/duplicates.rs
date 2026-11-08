@@ -5,7 +5,8 @@ use std::collections::{HashMap, HashSet};
 use std::sync::atomic::{AtomicBool, AtomicUsize, Ordering};
 
 /// Words that say how a copy differs rather than what the video is.
-const NOISE: [&str; 7] = ["副本", "copy", "2160p", "1080p", "720p", "4k", "8k"];
+/// The first is Chinese for "copy", as in "name copy.mp4".
+const NOISE: [&str; 7] = ["\u{526F}\u{672C}", "copy", "2160p", "1080p", "720p", "4k", "8k"];
 
 #[derive(Clone, Debug)]
 pub struct Item {
@@ -79,10 +80,11 @@ fn drop_numbering(text: &str) -> String {
     let mut out = String::new();
     let mut i = 0;
     while i < chars.len() {
-        let open = matches!(chars[i], '(' | '（');
+        // Full-width brackets too, as Chinese text uses them.
+        let open = matches!(chars[i], '(' | '\u{FF08}');
         let close = (i + 1..chars.len()).find(|&j| !chars[j].is_ascii_digit());
         if let (true, Some(end)) = (open, close) {
-            if end > i + 1 && matches!(chars[end], ')' | '）') {
+            if end > i + 1 && matches!(chars[end], ')' | '\u{FF09}') {
                 i = end + 1;
                 continue;
             }
@@ -411,11 +413,11 @@ mod tests {
 
     #[test]
     fn names_lose_what_only_marks_a_copy() {
-        assert_eq!(clean_name("星际穿越 1080p"), "星际穿越");
-        assert_eq!(clean_name("毕业典礼 (1)"), "毕业典礼");
-        assert_eq!(clean_name("家庭聚会 副本"), "家庭聚会");
+        assert_eq!(clean_name("\u{661F}\u{9645}\u{7A7F}\u{8D8A} 1080p"), "\u{661F}\u{9645}\u{7A7F}\u{8D8A}");
+        assert_eq!(clean_name("\u{6BD5}\u{4E1A}\u{5178}\u{793C} (1)"), "\u{6BD5}\u{4E1A}\u{5178}\u{793C}");
+        assert_eq!(clean_name("\u{5BB6}\u{5EAD}\u{805A}\u{4F1A} \u{526F}\u{672C}"), "\u{5BB6}\u{5EAD}\u{805A}\u{4F1A}");
         assert_eq!(clean_name("Trip.2024.4K"), "trip");
-        assert_eq!(clean_name("第2集"), "第2集");
+        assert_eq!(clean_name("\u{7B2C}2\u{96C6}"), "\u{7B2C}2\u{96C6}");
     }
 
     #[test]
@@ -425,14 +427,14 @@ mod tests {
             let names = rank_names(&items);
             similarity(&names[0], &names[1])
         };
-        assert_eq!(s("毕业典礼", "毕业典礼 (1)"), 1.0);
-        assert!(s("东京夜景", "东京夜景 剪辑版") >= 0.5);
-        assert!(s("星际穿越", "银翼杀手") < 0.1);
+        assert_eq!(s("\u{6BD5}\u{4E1A}\u{5178}\u{793C}", "\u{6BD5}\u{4E1A}\u{5178}\u{793C} (1)"), 1.0);
+        assert!(s("\u{4E1C}\u{4EAC}\u{591C}\u{666F}", "\u{4E1C}\u{4EAC}\u{591C}\u{666F} \u{526A}\u{8F91}\u{7248}") >= 0.5);
+        assert!(s("\u{661F}\u{9645}\u{7A7F}\u{8D8A}", "\u{94F6}\u{7FFC}\u{6740}\u{624B}") < 0.1);
     }
 
     #[test]
     fn two_agreeing_tests_make_a_match() {
-        let items = [v(1, "毕业典礼", 4951.0, 18.2), v(2, "毕业典礼 (1)", 4951.0, 18.1), v(3, "洱海日出", 728.0, 18.7)];
+        let items = [v(1, "\u{6BD5}\u{4E1A}\u{5178}\u{793C}", 4951.0, 18.2), v(2, "\u{6BD5}\u{4E1A}\u{5178}\u{793C} (1)", 4951.0, 18.1), v(3, "\u{6D31}\u{6D77}\u{65E5}\u{51FA}", 728.0, 18.7)];
         let g = find(&items, ALL);
         assert_eq!(g.len(), 1);
         assert!(g[0].strong());
@@ -443,27 +445,27 @@ mod tests {
 
     #[test]
     fn different_names_can_still_match() {
-        let g = find(&[v(1, "星际穿越", 10140.0, 58.2), v(2, "Interstellar", 10136.0, 57.8)], ALL);
+        let g = find(&[v(1, "\u{661F}\u{9645}\u{7A7F}\u{8D8A}", 10140.0, 58.2), v(2, "Interstellar", 10136.0, 57.8)], ALL);
         assert_eq!(g.len(), 1);
         assert_eq!(g[0].reasons, Reasons { duration: true, size: true, name: false });
     }
 
     #[test]
     fn one_test_alone_is_not_enough_when_more_are_chosen() {
-        assert!(find(&[v(1, "甲", 100.0, 1.0), v(2, "乙", 100.0, 9.0)], ALL).is_empty());
+        assert!(find(&[v(1, "\u{7532}", 100.0, 1.0), v(2, "\u{4E59}", 100.0, 9.0)], ALL).is_empty());
     }
 
     #[test]
     fn a_single_chosen_test_decides() {
         let o = Options { duration: true, size: false, name: false, level: Level::Normal };
-        assert_eq!(find(&[v(1, "甲", 100.0, 1.0), v(2, "乙", 100.0, 9.0)], o).len(), 1);
+        assert_eq!(find(&[v(1, "\u{7532}", 100.0, 1.0), v(2, "\u{4E59}", 100.0, 9.0)], o).len(), 1);
         let none = Options { duration: false, ..o };
-        assert!(find(&[v(1, "甲", 100.0, 1.0), v(2, "甲", 100.0, 1.0)], none).is_empty());
+        assert!(find(&[v(1, "\u{7532}", 100.0, 1.0), v(2, "\u{7532}", 100.0, 1.0)], none).is_empty());
     }
 
     #[test]
     fn stricter_levels_find_less() {
-        let items = [v(1, "东京夜景", 1860.0, 33.8), v(2, "东京夜景 剪辑版", 1782.0, 25.0)];
+        let items = [v(1, "\u{4E1C}\u{4EAC}\u{591C}\u{666F}", 1860.0, 33.8), v(2, "\u{4E1C}\u{4EAC}\u{591C}\u{666F} \u{526A}\u{8F91}\u{7248}", 1782.0, 25.0)];
         let at = |level| find(&items, Options { level, ..ALL }).len();
         assert_eq!(at(Level::Strict), 0);
         assert_eq!(at(Level::Loose), 1);
@@ -485,7 +487,7 @@ mod tests {
     /// The sweep and the name index must find what comparing all pairs would.
     #[test]
     fn the_shortcuts_find_the_same_groups_as_comparing_everything() {
-        let titles = ["星际穿越", "星际穿越 导演剪辑", "银翼杀手", "银翼杀手 2049", "东京夜景", "东京夜景 剪辑版", "毕业典礼", "毕业", "a", "ab", "第一集", "第二集"];
+        let titles = ["\u{661F}\u{9645}\u{7A7F}\u{8D8A}", "\u{661F}\u{9645}\u{7A7F}\u{8D8A} \u{5BFC}\u{6F14}\u{526A}\u{8F91}", "\u{94F6}\u{7FFC}\u{6740}\u{624B}", "\u{94F6}\u{7FFC}\u{6740}\u{624B} 2049", "\u{4E1C}\u{4EAC}\u{591C}\u{666F}", "\u{4E1C}\u{4EAC}\u{591C}\u{666F} \u{526A}\u{8F91}\u{7248}", "\u{6BD5}\u{4E1A}\u{5178}\u{793C}", "\u{6BD5}\u{4E1A}", "a", "ab", "\u{7B2C}\u{4E00}\u{96C6}", "\u{7B2C}\u{4E8C}\u{96C6}"];
         let items: Vec<Item> = (0..240)
             .map(|i| {
                 let n = i as usize;

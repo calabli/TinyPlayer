@@ -12,7 +12,6 @@ mod float_window;
 mod history;
 mod hover_thumbs;
 mod i18n;
-mod i18n_en;
 mod icons;
 mod keep_awake;
 mod library;

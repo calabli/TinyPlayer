@@ -71,8 +71,8 @@ impl Format {
         };
         match self.layout {
             Layout::Mono => span.to_string(),
-            Layout::SideBySide => format!("{span} {}", tr("左右")),
-            Layout::TopBottom => format!("{span} {}", tr("上下")),
+            Layout::SideBySide => format!("{span} {}", tr("Side by side")),
+            Layout::TopBottom => format!("{span} {}", tr("Top and bottom")),
         }
     }
 

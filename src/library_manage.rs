@@ -1,4 +1,4 @@
-//! The library's 管理 page: videos by folder set, search across folders and
+//! The library's Manage page: videos by folder set, search across folders and
 //! videos, moving files, and checking for likely duplicates.
 
 use std::collections::{BTreeMap, HashMap, HashSet};
@@ -35,7 +35,7 @@ const MAX_PICKER_DEPTH: usize = 8;
 const MAX_GROUPS_SHOWN: usize = 300;
 const MARKED: Color32 = Color32::from_rgb(0xF0, 0x71, 0x67);
 
-const LEVELS: [(Level, &str); 3] = [(Level::Strict, "严格"), (Level::Normal, "标准"), (Level::Loose, "宽松")];
+const LEVELS: [(Level, &str); 3] = [(Level::Strict, "Strict"), (Level::Normal, "Normal"), (Level::Loose, "Loose")];
 
 impl Data<'_> {
     fn video(&self, id: i64) -> Option<&Video> {
@@ -323,11 +323,11 @@ impl Manager {
             self.selected_dirs.clear();
             let (moved, failed) = (self.progress.moved, self.progress.failed);
             let text = if failed > 0 {
-                tf("已剪切 {} 项，{} 项失败，失败的还在原位置", &[&moved, &failed])
+                tf("Moved {}, {} failed. Failed items stayed where they were.", &[&moved, &failed])
             } else if moved > 0 {
-                tf("已剪切 {} 项", &[&moved])
+                tf("Moved {} items", &[&moved])
             } else {
-                tr("已取消，原文件没有变化").to_string()
+                tr("Cancelled. The originals are unchanged.").to_string()
             };
             let undo = (moved > 0).then_some(Undo::Moves);
             self.say(ctx, text, undo);
@@ -383,7 +383,7 @@ impl Manager {
 
         let videos_page = self.page == Page::Videos;
         let r = Rect::from_min_size(pos2(nav.left(), y), vec2(nav.width(), 30.0));
-        if nav_item(ui, &np, r, "set_all", tr("全部文件夹"), Some(d.videos.len()), videos_page && self.set.is_none()) {
+        if nav_item(ui, &np, r, "set_all", tr("All folders"), Some(d.videos.len()), videos_page && self.set.is_none()) {
             self.choose_set(None);
         }
         y += 30.0;
@@ -395,7 +395,7 @@ impl Manager {
                 self.choose_set(Some(set.id));
             }
             ui.interact(r, ui.scope_id().with(("set_menu", set.id)), Sense::click()).context_menu(|ui| {
-                if ui.button(tr("删除集合")).clicked() {
+                if ui.button(tr("Delete set")).clicked() {
                     delete = Some(set.id);
                     ui.close();
                 }
@@ -414,7 +414,7 @@ impl Manager {
         np.text(pos2(nav.left() + 18.0, y + 8.0), Align2::LEFT_CENTER, "TOOLS", FontId::monospace(10.0), theme::text_3());
         y += 22.0;
         let r = Rect::from_min_size(pos2(nav.left(), y), vec2(nav.width(), 30.0));
-        if nav_item(ui, &np, r, "dups", tr("可能重复"), None, !videos_page) {
+        if nav_item(ui, &np, r, "dups", tr("Possible duplicates"), None, !videos_page) {
             self.dup_scope = None;
             self.page = Page::Duplicates;
             self.clear_selection();
@@ -507,7 +507,7 @@ impl Manager {
                 })
                 .collect();
             if !hits.is_empty() {
-                rows.push(Row::Header(tr("文件夹").to_string()));
+                rows.push(Row::Header(tr("Folders").to_string()));
                 rows.extend(hits);
             }
             let mut videos: Vec<&&Video> = scoped
@@ -519,7 +519,7 @@ impl Manager {
                 .collect();
             self.sort(&mut videos);
             if !videos.is_empty() {
-                rows.push(Row::Header(tr("视频").to_string()));
+                rows.push(Row::Header(tr("Videos").to_string()));
                 rows.extend(videos.iter().map(|v| Row::Video { id: v.id, with_path: true }));
             }
         } else if let Some(cwd) = &self.cwd {
@@ -568,13 +568,13 @@ impl Manager {
         if searching {
             let folders = rows.iter().filter(|r| matches!(r, Row::Folder { .. })).count();
             let videos = rows.iter().filter(|r| matches!(r, Row::Video { .. })).count();
-            let text = tf("“{}”：{} 个文件夹，{} 个视频", &[&d.search.trim(), &folders, &videos]);
+            let text = tf("\"{}\": {} folders, {} videos", &[&d.search.trim(), &folders, &videos]);
             p.text(pos2(head.left(), head.center().y), Align2::LEFT_CENTER, text, FontId::proportional(13.0), theme::text_2());
         } else {
             self.breadcrumb(ui, p, head, d);
             if let Some(cwd) = self.cwd.clone() {
                 let mut x = head.right();
-                if button(ui, p, &mut x, head.center().y, "check_here", tr("检查这个文件夹的重复"), false) {
+                if button(ui, p, &mut x, head.center().y, "check_here", tr("Check this folder for duplicates"), false) {
                     self.check_folder(cwd);
                 }
             }
@@ -587,7 +587,7 @@ impl Manager {
         let batch_h = if any_selected { 52.0 } else { 0.0 };
         let list = Rect::from_min_max(pos2(rect.left(), cols.bottom()), pos2(rect.right(), rect.bottom() - batch_h));
         if rows.is_empty() {
-            let text = if searching { tr("这个集合里没有匹配项") } else { tr("这里没有视频") };
+            let text = if searching { tr("No matches in this set") } else { tr("No videos here") };
             p.text(list.center(), Align2::CENTER_CENTER, text, FontId::proportional(13.0), theme::text_3());
         } else {
             ui.scope_builder(egui::UiBuilder::new().max_rect(list), |ui| {
@@ -611,7 +611,7 @@ impl Manager {
     }
 
     fn breadcrumb(&mut self, ui: &mut egui::Ui, p: &egui::Painter, head: Rect, d: &Data) {
-        let set_name = self.set.and_then(|id| self.sets.iter().find(|s| s.id == id)).map_or(tr("全部文件夹"), |s| s.name.as_str()).to_string();
+        let set_name = self.set.and_then(|id| self.sets.iter().find(|s| s.id == id)).map_or(tr("All folders"), |s| s.name.as_str()).to_string();
         let Some(cwd) = self.cwd.clone() else {
             p.text(pos2(head.left(), head.center().y), Align2::LEFT_CENTER, set_name, FontId::proportional(13.0), theme::text_2());
             return;
@@ -649,10 +649,10 @@ impl Manager {
         p.line_segment([r.left_bottom(), r.right_bottom()], Stroke::new(0.5, theme::line()));
         let right = r.right() - 14.0;
         let columns = [
-            (Col::Name, tr("名称"), Rect::from_min_max(pos2(r.left() + TEXT_X, r.top()), pos2(r.left() + 200.0, r.bottom())), Align2::LEFT_CENTER),
-            (Col::Duration, tr("时长"), column(r, right - COL_DATE - COL_SIZE, COL_DURATION), Align2::RIGHT_CENTER),
-            (Col::Size, tr("大小"), column(r, right - COL_DATE, COL_SIZE), Align2::RIGHT_CENTER),
-            (Col::Date, tr("修改日期"), column(r, right, COL_DATE), Align2::RIGHT_CENTER),
+            (Col::Name, tr("Name"), Rect::from_min_max(pos2(r.left() + TEXT_X, r.top()), pos2(r.left() + 200.0, r.bottom())), Align2::LEFT_CENTER),
+            (Col::Duration, tr("Duration"), column(r, right - COL_DATE - COL_SIZE, COL_DURATION), Align2::RIGHT_CENTER),
+            (Col::Size, tr("Size"), column(r, right - COL_DATE, COL_SIZE), Align2::RIGHT_CENTER),
+            (Col::Date, tr("Modified"), column(r, right, COL_DATE), Align2::RIGHT_CENTER),
         ];
         for (col, label, area, align) in columns {
             let resp = ui.interact(area, ui.scope_id().with(("col", label)), Sense::click());
@@ -706,9 +706,9 @@ impl Manager {
                 draw_folder_icon(&p, icon);
                 let name = base_name(&path.to_string_lossy());
                 let sub = match parent {
-                    Some(_) if *offline => tf("硬盘未连接 · 保留了 {} 个视频的记录", &[&stats.count]),
-                    Some(parent) => tf("{} 个视频 · {}", &[&stats.count, parent]),
-                    None => tf("{} 个视频", &[&stats.count]),
+                    Some(_) if *offline => tf("Disk not connected · {} videos remembered", &[&stats.count]),
+                    Some(parent) => tf("{} videos · {}", &[&stats.count, parent]),
+                    None => tf("{} videos", &[&stats.count]),
                 };
                 self.row_text(&p, r, &name, Some(&sub));
                 if !*offline {
@@ -716,7 +716,7 @@ impl Manager {
                 }
                 if !*offline {
                     resp.context_menu(|ui| {
-                        if ui.button(tr("检查这个文件夹的重复")).clicked() {
+                        if ui.button(tr("Check this folder for duplicates")).clicked() {
                             self.check_folder(path.clone());
                             ui.close();
                         }
@@ -724,7 +724,7 @@ impl Manager {
                 }
                 if resp.clicked() {
                     if *offline {
-                        self.say(ui.ctx(), tr("硬盘未连接，接上后会自动恢复").to_string(), None);
+                        self.say(ui.ctx(), tr("Disk not connected. It comes back when you plug it in.").to_string(), None);
                     } else if !*root && ui.input(|i| i.modifiers.command) {
                         self.toggle_dir(path);
                     } else {
@@ -765,24 +765,24 @@ impl Manager {
                     }
                 }
                 resp.context_menu(|ui| {
-                    if ui.button(tr("播放")).clicked() {
+                    if ui.button(tr("Play")).clicked() {
                         out.play = Some(v.path.clone());
                         ui.close();
                     }
-                    if ui.button(tr("在文件管理器中显示")).clicked() {
+                    if ui.button(tr("Show in file manager")).clicked() {
                         reveal_in_file_manager(&v.path);
                         ui.close();
                     }
-                    if ui.button(tr("重命名")).clicked() {
+                    if ui.button(tr("Rename")).clicked() {
                         let stem = Path::new(&v.path).file_stem().map(|s| s.to_string_lossy().into_owned()).unwrap_or_default();
                         self.dialog = Some(Dialog::Rename { id: *id, stem, error: None });
                         ui.close();
                     }
-                    if ui.button(tr("剪切到…")).clicked() {
+                    if ui.button(tr("Move to…")).clicked() {
                         self.open_move(vec![*id], Vec::new(), d);
                         ui.close();
                     }
-                    if ui.button(tr("移到废纸篓")).clicked() {
+                    if ui.button(tr("Move to Trash")).clicked() {
                         self.dialog = Some(Dialog::Trash { ids: vec![*id] });
                         ui.close();
                     }
@@ -867,28 +867,28 @@ impl Manager {
         let size: i64 = d.videos.iter().filter(|v| self.selected.contains(&v.id)).map(|v| v.size).sum();
         let dirs = self.selected_dirs.len();
         let text = if dirs > 0 {
-            tf("已选 {} 个文件夹，{} 个视频", &[&dirs, &self.selected.len()])
+            tf("{} folders, {} videos selected", &[&dirs, &self.selected.len()])
         } else {
-            tf("已选 {} 个 · {}", &[&self.selected.len(), &format_size(size)])
+            tf("{} selected · {}", &[&self.selected.len(), &format_size(size)])
         };
         p.text(pos2(bar.left() + 12.0, bar.center().y), Align2::LEFT_CENTER, text, FontId::proportional(13.0), theme::text());
         let mut x = bar.right() - 8.0;
-        if button(ui, p, &mut x, bar.center().y, "sel_clear", tr("取消选择"), false) {
+        if button(ui, p, &mut x, bar.center().y, "sel_clear", tr("Clear selection"), false) {
             self.clear_selection();
         }
         let ids: Vec<i64> = self.selected.iter().copied().collect();
         if dirs == 0 {
-            if button(ui, p, &mut x, bar.center().y, "sel_trash", tr("移到废纸篓"), false) {
+            if button(ui, p, &mut x, bar.center().y, "sel_trash", tr("Move to Trash"), false) {
                 self.dialog = Some(Dialog::Trash { ids: ids.clone() });
             }
-            if button(ui, p, &mut x, bar.center().y, "sel_collect", tr("加入收藏"), false) {
+            if button(ui, p, &mut x, bar.center().y, "sel_collect", tr("Add to favorites"), false) {
                 self.dialog = Some(Dialog::Collect { ids: ids.clone(), picked: Vec::new() });
             }
-            if button(ui, p, &mut x, bar.center().y, "sel_tag", tr("加标签"), false) {
+            if button(ui, p, &mut x, bar.center().y, "sel_tag", tr("Add tag"), false) {
                 self.dialog = Some(Dialog::Tag { ids: ids.clone(), name: String::new(), error: None });
             }
         }
-        if button(ui, p, &mut x, bar.center().y, "sel_move", tr("剪切到…"), true) {
+        if button(ui, p, &mut x, bar.center().y, "sel_move", tr("Move to…"), true) {
             let folders = self.selected_dirs.iter().cloned().collect();
             self.open_move(ids, folders, d);
         }
@@ -959,15 +959,15 @@ impl Manager {
         let size: i64 = marked.iter().map(|v| v.size).sum();
         let summary = if let Some((_, comparing)) = &self.searching {
             let percent = (comparing.fraction() * 100.0) as u32;
-            tf("正在比较 {}%", &[&percent])
+            tf("Comparing {}%", &[&percent])
         } else {
-            tf("{} 组可能重复，已标记 {} 个，可释放 {}", &[&groups.len(), &marked.len(), &format_size(size)])
+            tf("{} possible groups, {} marked, {} to free", &[&groups.len(), &marked.len(), &format_size(size)])
         };
         p.text(pos2(head.left(), head.center().y), Align2::LEFT_CENTER, summary, FontId::proportional(13.0), theme::text_2());
         let mut x = head.right();
-        if button(ui, p, &mut x, head.center().y, "dup_apply", tr("处理已标记"), true) {
+        if button(ui, p, &mut x, head.center().y, "dup_apply", tr("Handle marked"), true) {
             if marked.is_empty() {
-                self.say(ui.ctx(), tr("先把要处理的视频标记为移到废纸篓").to_string(), None);
+                self.say(ui.ctx(), tr("Mark videos for the Trash first").to_string(), None);
             } else {
                 self.dialog = Some(Dialog::Trash { ids: marked.iter().map(|v| v.id).collect() });
             }
@@ -976,11 +976,11 @@ impl Manager {
         let mut top = head.bottom();
         if let Some(scope) = self.dup_scope.clone() {
             let line = Rect::from_min_size(pos2(rect.left(), top), vec2(rect.width(), 28.0));
-            let text = tf("只检查：{}", &[&scope.to_string_lossy()]);
+            let text = tf("Only checking: {}", &[&scope.to_string_lossy()]);
             let shown = elide(p, &text, FontId::proportional(12.0), line.width() - 130.0);
             p.text(line.left_center(), Align2::LEFT_CENTER, shown, FontId::proportional(12.0), ACCENT);
             let mut x = line.right();
-            if button(ui, p, &mut x, line.center().y, "dup_all", tr("检查全部"), false) {
+            if button(ui, p, &mut x, line.center().y, "dup_all", tr("Check everything"), false) {
                 self.dup_scope = None;
             }
             top = line.bottom() + 4.0;
@@ -1000,7 +1000,7 @@ impl Manager {
             .take(MAX_GROUPS_SHOWN)
             .collect();
         if !chosen || (shown.is_empty() && self.searching.is_none()) {
-            let text = if chosen { tr("没有发现可能重复的视频") } else { tr("至少选一个比较条件") };
+            let text = if chosen { tr("No possible duplicates found") } else { tr("Choose at least one test") };
             p.text(list.center(), Align2::CENTER_CENTER, text, FontId::proportional(13.0), theme::text_3());
             return;
         }
@@ -1018,9 +1018,9 @@ impl Manager {
     fn duplicate_filters(&mut self, ui: &mut egui::Ui, p: &egui::Painter, bar: Rect, groups: &[Group]) {
         let y = bar.center().y;
         let mut x = bar.left();
-        p.text(pos2(x, y), Align2::LEFT_CENTER, tr("比较"), FontId::proportional(12.0), theme::text_2());
+        p.text(pos2(x, y), Align2::LEFT_CENTER, tr("Compare"), FontId::proportional(12.0), theme::text_2());
         x += 34.0;
-        for (i, label) in [tr("时长"), tr("大小"), tr("名称")].into_iter().enumerate() {
+        for (i, label) in [tr("Duration"), tr("Size"), tr("Name")].into_iter().enumerate() {
             let flag = match i {
                 0 => &mut self.options.duration,
                 1 => &mut self.options.size,
@@ -1039,9 +1039,9 @@ impl Manager {
         x += 12.0;
         let strong = groups.iter().filter(|g| g.strong()).count();
         let filters = [
-            (Show::All, tf("全部 {}", &[&groups.len()])),
-            (Show::Strong, tf("很可能 {}", &[&strong])),
-            (Show::Weak, tf("可能 {}", &[&(groups.len() - strong)])),
+            (Show::All, tf("All {}", &[&groups.len()])),
+            (Show::Strong, tf("Likely {}", &[&strong])),
+            (Show::Weak, tf("Possible {}", &[&(groups.len() - strong)])),
         ];
         for (show, label) in filters {
             if chip(ui, p, &mut x, y, ("dup_show", label.as_str()), &label, self.show == show) {
@@ -1057,26 +1057,26 @@ impl Manager {
         let (head, _) = ui.allocate_exact_size(vec2(width, 34.0), Sense::hover());
         let p = ui.painter_at(head);
         p.rect_filled(head, egui::CornerRadius { nw: 7, ne: 7, sw: 0, se: 0 }, theme::panel());
-        let badge = if group.strong() { tr("很可能重复") } else { tr("可能重复") };
+        let badge = if group.strong() { tr("Likely duplicates") } else { tr("Possible duplicates") };
         let color = if group.strong() { Color32::from_rgb(0xF6, 0xD9, 0x8B) } else { theme::text_2() };
         let g = p.text(pos2(head.left() + 10.0, head.center().y), Align2::LEFT_CENTER, badge, FontId::proportional(12.0), color);
         let mut reasons = Vec::new();
         if group.reasons.duration {
-            reasons.push(tr("时长接近"));
+            reasons.push(tr("Similar length"));
         }
         if group.reasons.size {
-            reasons.push(tr("大小接近"));
+            reasons.push(tr("Similar size"));
         }
         if group.reasons.name {
-            reasons.push(tr("名称相似"));
+            reasons.push(tr("Similar name"));
         }
         p.text(pos2(g.right() + 10.0, head.center().y), Align2::LEFT_CENTER, reasons.join(" · "), FontId::proportional(11.0), ACCENT);
         let mut x = head.right() - 8.0;
-        if button(ui, &p, &mut x, head.center().y, &format!("dup_no_{}", group.key()), tr("不是重复"), false) {
+        if button(ui, &p, &mut x, head.center().y, &format!("dup_no_{}", group.key()), tr("Not duplicates"), false) {
             let key = group.key();
             d.lib.ignore_duplicate(&key, true);
             self.ignored = None;
-            self.say(ui.ctx(), tr("已记住：这组不是重复").to_string(), Some(Undo::Ignored(key)));
+            self.say(ui.ctx(), tr("Remembered: these aren't duplicates").to_string(), Some(Undo::Ignored(key)));
         }
 
         for v in &videos {
@@ -1104,7 +1104,7 @@ impl Manager {
             p.text(pos2(right, r.center().y), Align2::RIGHT_CENTER, format_size(v.size), font, theme::text_2());
 
             let on = self.marked.contains(&v.id);
-            let label = if on { tr("移到废纸篓") } else { tr("保留") };
+            let label = if on { tr("Move to Trash") } else { tr("Keep") };
             let mut x = r.right() - 8.0;
             if toggle_button(ui, &p, &mut x, r.center().y, ("dup_mark", v.id), label, on) {
                 let kept = videos.iter().filter(|o| !self.marked.contains(&o.id)).count();
@@ -1113,7 +1113,7 @@ impl Manager {
                 } else if kept > 1 {
                     self.marked.insert(v.id);
                 } else {
-                    self.say(ui.ctx(), tr("每组至少保留一个视频").to_string(), None);
+                    self.say(ui.ctx(), tr("Keep at least one video in each group").to_string(), None);
                 }
             } else if resp.clicked() {
                 out.play = Some(v.path.clone());
@@ -1132,9 +1132,9 @@ impl Manager {
             ui.set_width(420.0);
             match &mut dialog {
                 Dialog::NewSet { name, picked, error } => {
-                    ui.label(tr("新建文件夹集合"));
+                    ui.label(tr("New folder set"));
                     ui.add_space(6.0);
-                    ui.add(egui::TextEdit::singleline(name).hint_text(tr("集合名称，比如 工作素材")).desired_width(f32::INFINITY));
+                    ui.add(egui::TextEdit::singleline(name).hint_text(tr("Set name, like Work footage")).desired_width(f32::INFINITY));
                     ui.add_space(6.0);
                     egui::ScrollArea::vertical().max_height(220.0).show(ui, |ui| {
                         for f in d.folders {
@@ -1153,14 +1153,14 @@ impl Manager {
                     }
                     ui.add_space(6.0);
                     ui.horizontal(|ui| {
-                        if ui.button(tr("取消")).clicked() {
+                        if ui.button(tr("Cancel")).clicked() {
                             close = true;
                         }
-                        if ui.button(tr("创建集合")).clicked() {
+                        if ui.button(tr("Create set")).clicked() {
                             if name.trim().is_empty() {
-                                *error = Some("输入集合名称");
+                                *error = Some("Enter a set name");
                             } else if picked.is_empty() {
-                                *error = Some("至少选一个文件夹");
+                                *error = Some("Choose at least one folder");
                             } else {
                                 self.set = d.lib.create_folder_set(name.trim(), picked);
                                 self.sets_dirty = true;
@@ -1172,9 +1172,9 @@ impl Manager {
                     });
                 }
                 Dialog::Move { ids, folders, dirs, filter, pick, new_name, error } => {
-                    ui.label(tf("剪切 {} 项到", &[&(ids.len() + folders.len())]));
+                    ui.label(tf("Move {} items to", &[&(ids.len() + folders.len())]));
                     ui.add_space(6.0);
-                    ui.add(egui::TextEdit::singleline(filter).hint_text(tr("搜索目标文件夹")).desired_width(f32::INFINITY));
+                    ui.add(egui::TextEdit::singleline(filter).hint_text(tr("Search folders")).desired_width(f32::INFINITY));
                     ui.add_space(6.0);
                     let needle = filter.to_lowercase();
                     egui::ScrollArea::vertical().max_height(240.0).auto_shrink([false, true]).show(ui, |ui| {
@@ -1195,15 +1195,15 @@ impl Manager {
                     let chosen: Vec<&Video> = d.videos.iter().filter(|v| ids.contains(&v.id)).collect();
                     ui.add_space(6.0);
                     ui.horizontal(|ui| {
-                        ui.add(egui::TextEdit::singleline(new_name).hint_text(tr("新文件夹名称")).desired_width(280.0));
-                        if ui.button(tr("新建文件夹")).clicked() {
+                        ui.add(egui::TextEdit::singleline(new_name).hint_text(tr("New folder name")).desired_width(280.0));
+                        if ui.button(tr("New folder")).clicked() {
                             match pick.and_then(|i| dirs.get(i)).map(|dir| (dir.root, dir.depth, dir.path.clone())) {
-                                None => *error = Some("选一个目标文件夹"),
-                                Some(_) if !valid_name(new_name) => *error = Some("名称不能为空，也不能包含特殊字符"),
+                                None => *error = Some("Choose a folder"),
+                                Some(_) if !valid_name(new_name) => *error = Some("Enter a name without special characters"),
                                 Some((root, depth, parent)) => {
                                     let path = parent.join(new_name.trim());
                                     if path.exists() {
-                                        *error = Some("已有同名文件或文件夹");
+                                        *error = Some("That name is already taken");
                                     } else if std::fs::create_dir(&path).is_ok() {
                                         let at = pick.map_or(dirs.len(), |i| i + 1);
                                         dirs.insert(at, Dir { root, path, depth: depth + 1 });
@@ -1211,7 +1211,7 @@ impl Manager {
                                         new_name.clear();
                                         *error = None;
                                     } else {
-                                        *error = Some("无法在这里新建文件夹");
+                                        *error = Some("Couldn't create a folder here");
                                     }
                                 }
                             }
@@ -1223,10 +1223,10 @@ impl Manager {
                         let other_disk = chosen.iter().any(|v| !file_move::same_disk(Path::new(&v.path), &dir.path))
                             || folders.iter().any(|f| !file_move::same_disk(f, &dir.path));
                         if other_disk {
-                            ui.colored_label(theme::text_2(), tr("目标在另一块磁盘，要先复制并校验，再删除原文件"));
+                            ui.colored_label(theme::text_2(), tr("This is another disk: files are copied and checked before the originals go"));
                         }
                         if chosen.iter().any(|v| dir.path.join(base_name(&v.path)).exists() && Path::new(&v.path).parent() != Some(dir.path.as_path())) {
-                            ui.colored_label(theme::text_2(), tr("目标已有同名文件，将保留两者并自动改名"));
+                            ui.colored_label(theme::text_2(), tr("A file with this name exists. Both are kept and the new one is renamed."));
                         }
                     }
                     if let Some(e) = error {
@@ -1234,14 +1234,14 @@ impl Manager {
                     }
                     ui.add_space(6.0);
                     ui.horizontal(|ui| {
-                        if ui.button(tr("取消")).clicked() {
+                        if ui.button(tr("Cancel")).clicked() {
                             close = true;
                         }
-                        if ui.button(tr("剪切到这里")).clicked() {
+                        if ui.button(tr("Move here")).clicked() {
                             match pick.and_then(|i| dirs.get(i)) {
-                                None => *error = Some("选一个目标文件夹"),
+                                None => *error = Some("Choose a folder"),
                                 Some(dir) if folders.iter().any(|f| dir.path.starts_with(f)) => {
-                                    *error = Some("不能把文件夹剪切到它自己里面");
+                                    *error = Some("A folder can't move into itself");
                                 }
                                 Some(dir) => {
                                     let mut jobs: Vec<Task> = folders
@@ -1257,7 +1257,7 @@ impl Manager {
                                             .map(|v| Task::File(Job { id: v.id, from: PathBuf::from(&v.path), to_dir: dir.path.clone(), folder_id: dir.root })),
                                     );
                                     if jobs.is_empty() {
-                                        *error = Some("视频已经在这个文件夹里");
+                                        *error = Some("The videos are already here");
                                     } else {
                                         self.start_moves(&ctx, jobs, d.videos);
                                         close = true;
@@ -1270,15 +1270,15 @@ impl Manager {
                 Dialog::Trash { ids } => {
                     let chosen: Vec<&Video> = d.videos.iter().filter(|v| ids.contains(&v.id)).collect();
                     let size: i64 = chosen.iter().map(|v| v.size).sum();
-                    ui.label(tf("把 {} 个视频移到废纸篓？", &[&chosen.len()]));
+                    ui.label(tf("Move {} videos to the Trash?", &[&chosen.len()]));
                     ui.add_space(4.0);
-                    ui.colored_label(theme::text_2(), tf("共 {}。可以从系统废纸篓恢复，清空废纸篓后才释放空间。", &[&format_size(size)]));
+                    ui.colored_label(theme::text_2(), tf("{} in total. You can restore them from the Trash; space is freed when it's emptied.", &[&format_size(size)]));
                     ui.add_space(8.0);
                     ui.horizontal(|ui| {
-                        if ui.button(tr("取消")).clicked() {
+                        if ui.button(tr("Cancel")).clicked() {
                             close = true;
                         }
-                        if ui.button(tr("移到废纸篓")).clicked() {
+                        if ui.button(tr("Move to Trash")).clicked() {
                             let mut failed = 0;
                             for v in &chosen {
                                 if to_trash(&v.path) {
@@ -1291,9 +1291,9 @@ impl Manager {
                             }
                             let moved = chosen.len() - failed;
                             let text = if failed > 0 {
-                                tf("已移到废纸篓 {} 个，{} 个失败", &[&moved, &failed])
+                                tf("{} moved to the Trash, {} failed", &[&moved, &failed])
                             } else {
-                                tf("已将 {} 个视频移到废纸篓", &[&moved])
+                                tf("Moved {} videos to the Trash", &[&moved])
                             };
                             self.say(&ctx, text, None);
                             self.changed = true;
@@ -1302,21 +1302,21 @@ impl Manager {
                     });
                 }
                 Dialog::Rename { id, stem, error } => {
-                    ui.label(tr("重命名"));
+                    ui.label(tr("Rename"));
                     ui.add_space(6.0);
                     let edit = ui.add(egui::TextEdit::singleline(stem).desired_width(f32::INFINITY));
                     let enter = edit.lost_focus() && ui.input(|i| i.key_pressed(egui::Key::Enter));
-                    ui.colored_label(theme::text_2(), tr("同时修改磁盘上的文件，进度、收藏和标签都保留"));
+                    ui.colored_label(theme::text_2(), tr("Renames the file on disk. Progress, favorites, and tags stay."));
                     if let Some(e) = error {
                         ui.colored_label(MARKED, tr(e));
                     }
                     ui.add_space(6.0);
                     let mut go = enter;
                     ui.horizontal(|ui| {
-                        if ui.button(tr("取消")).clicked() {
+                        if ui.button(tr("Cancel")).clicked() {
                             close = true;
                         }
-                        go |= ui.button(tr("重命名")).clicked();
+                        go |= ui.button(tr("Rename")).clicked();
                     });
                     if let (true, Some(v)) = (go, d.video(*id)) {
                         match rename_video(Path::new(&v.path), stem) {
@@ -1330,25 +1330,25 @@ impl Manager {
                     }
                 }
                 Dialog::Tag { ids, name, error } => {
-                    ui.label(tf("给 {} 个视频加标签", &[&ids.len()]));
+                    ui.label(tf("Tag {} videos", &[&ids.len()]));
                     ui.add_space(6.0);
-                    ui.add(egui::TextEdit::singleline(name).hint_text(tr("标签名称")).desired_width(f32::INFINITY));
+                    ui.add(egui::TextEdit::singleline(name).hint_text(tr("Tag name")).desired_width(f32::INFINITY));
                     if let Some(e) = error {
                         ui.colored_label(MARKED, tr(e));
                     }
                     ui.add_space(6.0);
                     ui.horizontal(|ui| {
-                        if ui.button(tr("取消")).clicked() {
+                        if ui.button(tr("Cancel")).clicked() {
                             close = true;
                         }
-                        if ui.button(tr("加标签")).clicked() {
+                        if ui.button(tr("Add tag")).clicked() {
                             if name.trim().is_empty() {
-                                *error = Some("输入标签名称");
+                                *error = Some("Enter a tag name");
                             } else {
                                 for id in ids.iter() {
                                     d.lib.add_tag(*id, name.trim());
                                 }
-                                self.say(&ctx, tf("已给 {} 个视频加标签", &[&ids.len()]), None);
+                                self.say(&ctx, tf("Tagged {} videos", &[&ids.len()]), None);
                                 self.selected.clear();
                                 self.changed = true;
                                 close = true;
@@ -1357,7 +1357,7 @@ impl Manager {
                     });
                 }
                 Dialog::Collect { ids, picked } => {
-                    ui.label(tf("把 {} 个视频加入收藏", &[&ids.len()]));
+                    ui.label(tf("Add {} videos to favorites", &[&ids.len()]));
                     ui.add_space(6.0);
                     egui::ScrollArea::vertical().max_height(220.0).show(ui, |ui| {
                         for c in d.collections {
@@ -1373,16 +1373,16 @@ impl Manager {
                     });
                     ui.add_space(6.0);
                     ui.horizontal(|ui| {
-                        if ui.button(tr("取消")).clicked() {
+                        if ui.button(tr("Cancel")).clicked() {
                             close = true;
                         }
-                        if ui.button(tr("加入收藏")).clicked() && !picked.is_empty() {
+                        if ui.button(tr("Add to favorites")).clicked() && !picked.is_empty() {
                             for collection in picked.iter() {
                                 for id in ids.iter() {
                                     d.lib.set_in_collection(*collection, *id, true);
                                 }
                             }
-                            self.say(&ctx, tf("已把 {} 个视频加入收藏", &[&ids.len()]), None);
+                            self.say(&ctx, tf("Added {} videos to favorites", &[&ids.len()]), None);
                             self.selected.clear();
                             self.changed = true;
                             close = true;
@@ -1407,15 +1407,15 @@ impl Manager {
         egui::Modal::new(ui.scope_id().with("manage_progress")).show(&ctx, |ui| {
             ui.set_width(380.0);
             let index = (self.progress.moved + self.progress.failed + 1).min(self.progress.jobs.max(1));
-            ui.label(tf("正在剪切 {} / {}", &[&index, &self.progress.jobs]));
+            ui.label(tf("Moving {} of {}", &[&index, &self.progress.jobs]));
             ui.colored_label(theme::text_2(), self.progress.name.as_str());
             ui.add_space(6.0);
             ui.add(egui::ProgressBar::new(fraction).desired_height(6.0));
             if self.progress.verifying {
-                ui.colored_label(theme::text_2(), tr("正在校验复制结果"));
+                ui.colored_label(theme::text_2(), tr("Checking the copy"));
             }
             ui.add_space(6.0);
-            if ui.button(tr("取消")).clicked() {
+            if ui.button(tr("Cancel")).clicked() {
                 if let Some(mover) = &self.mover {
                     mover.cancel();
                 }
@@ -1433,7 +1433,7 @@ impl Manager {
         }
         ui.ctx().request_repaint_after_secs((TOAST_SECS - (now - toast.at)) as f32);
         let font = FontId::proportional(13.0);
-        let undo = tr("撤销");
+        let undo = tr("Undo");
         let text_w = p.layout_no_wrap(toast.text.clone(), font.clone(), theme::text()).size().x;
         let undo_w = if toast.undo { p.layout_no_wrap(undo.to_string(), font.clone(), ACCENT).size().x + 14.0 } else { 0.0 };
         let r = Rect::from_center_size(pos2(rect.center().x, rect.bottom() - 74.0), vec2(text_w + undo_w + 28.0, 32.0));
@@ -1503,7 +1503,7 @@ fn valid_name(name: &str) -> bool {
 /// Renames a file, keeping its extension. `stem` is the new name without it.
 fn rename_video(from: &Path, stem: &str) -> Result<PathBuf, &'static str> {
     if !valid_name(stem) {
-        return Err("名称不能为空，也不能包含特殊字符");
+        return Err("Enter a name without special characters");
     }
     let mut name = stem.trim().to_string();
     if let Some(ext) = from.extension() {
@@ -1516,9 +1516,9 @@ fn rename_video(from: &Path, stem: &str) -> Result<PathBuf, &'static str> {
     // On a case-insensitive disk, a new case of the same name exists already.
     let same_file = matches!((std::fs::canonicalize(from), std::fs::canonicalize(&to)), (Ok(a), Ok(b)) if a == b);
     if to.exists() && !same_file {
-        return Err("已有同名文件或文件夹");
+        return Err("That name is already taken");
     }
-    std::fs::rename(from, &to).map_err(|_| "无法重命名这个文件")?;
+    std::fs::rename(from, &to).map_err(|_| "Couldn't rename this file")?;
     Ok(to)
 }
 
@@ -1630,17 +1630,17 @@ mod tests {
 
     #[test]
     fn a_folder_check_includes_subfolders_only() {
-        let dir = Path::new("/v/电影");
-        assert!(in_scope("/v/电影/a.mp4", Some(dir)));
-        assert!(in_scope("/v/电影/科幻/a.mp4", Some(dir)));
-        assert!(!in_scope("/v/电影二/a.mp4", Some(dir)));
+        let dir = Path::new("/v/\u{7535}\u{5F71}");
+        assert!(in_scope("/v/\u{7535}\u{5F71}/a.mp4", Some(dir)));
+        assert!(in_scope("/v/\u{7535}\u{5F71}/\u{79D1}\u{5E7B}/a.mp4", Some(dir)));
+        assert!(!in_scope("/v/\u{7535}\u{5F71}\u{4E8C}/a.mp4", Some(dir)));
         assert!(!in_scope("/v/a.mp4", Some(dir)));
         assert!(in_scope("/v/a.mp4", None));
     }
 
     #[test]
     fn names_must_work_on_every_system() {
-        assert!(valid_name("第 2 集"));
+        assert!(valid_name("\u{7B2C} 2 \u{96C6}"));
         assert!(!valid_name("  "));
         assert!(!valid_name("a/b"));
         assert!(!valid_name("a:b"));
@@ -1655,7 +1655,7 @@ mod tests {
         let from = dir.join("a.mp4");
         std::fs::write(&from, b"x").unwrap();
         std::fs::write(dir.join("b.mp4"), b"y").unwrap();
-        assert_eq!(rename_video(&from, "b"), Err("已有同名文件或文件夹"));
+        assert_eq!(rename_video(&from, "b"), Err("That name is already taken"));
         assert_eq!(rename_video(&from, "a"), Ok(from.clone()));
         let to = rename_video(&from, "c").unwrap();
         assert_eq!(to, dir.join("c.mp4"));

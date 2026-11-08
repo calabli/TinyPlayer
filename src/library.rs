@@ -2,7 +2,7 @@
 //! Shares the SQLite file with `history.rs` (separate connection, WAL mode).
 //!
 //! Search uses `LIKE` rather than FTS5: SQLite's FTS tokenizers don't split
-//! Chinese text, so "王朝" wouldn't match "大明王朝". Filtering a few thousand
+//! Chinese text, so a two-character word wouldn't match inside a longer title. Filtering a few thousand
 //! rows in memory is well under a frame anyway.
 
 use std::path::{Path, PathBuf};
@@ -144,6 +144,9 @@ impl Library {
         )
         .map_err(|e| e.to_string())?;
         db.execute_batch(SCHEMA).map_err(|e| e.to_string())?;
+        // Before 0.1.21 the first collection was stored under its Chinese
+        // name; it's keyed by its English name now, and translated when shown.
+        let _ = db.execute("UPDATE collections SET name = 'Favorites' WHERE name = ?1", ["\u{9ED8}\u{8BA4}\u{6536}\u{85CF}"]);
         Ok(Self { db })
     }
 
@@ -434,11 +437,11 @@ impl Library {
 
     // ---- Collections (favorites) ----
 
-    /// All collections; creates "默认收藏" the first time so there's always one.
+    /// All collections; creates "Favorites" the first time so there's always one.
     pub fn collections(&self) -> Vec<Collection> {
         let n: i64 = self.db.query_row("SELECT COUNT(*) FROM collections", [], |r| r.get(0)).unwrap_or(0);
         if n == 0 {
-            self.create_collection("默认收藏");
+            self.create_collection("Favorites");
         }
         let Ok(mut stmt) = self.db.prepare(
             "SELECT c.id, c.name,
@@ -619,7 +622,7 @@ mod tests {
         std::fs::create_dir_all(&dir).unwrap();
         let lib = Library::open(&dir.join("t.db")).unwrap();
         let folder = lib.add_folder(dir.to_str().unwrap()).unwrap();
-        let set = lib.create_folder_set("影视", &[folder]).unwrap();
+        let set = lib.create_folder_set("Films", &[folder]).unwrap();
         assert_eq!(lib.folder_sets()[0].folders, [folder]);
         lib.remove_folder(folder);
         assert!(lib.folder_sets()[0].folders.is_empty());
@@ -645,7 +648,7 @@ mod tests {
     fn scan_tag_and_remove() {
         let (lib, dir) = temp_lib();
         let media = dir.join("media");
-        let file = media.join("第1讲.mp4");
+        let file = media.join("\u{7B2C}1\u{8BB2}.mp4");
         std::fs::write(&file, b"x").unwrap();
         let fid = lib.add_folder(&media.to_string_lossy()).unwrap();
         assert_eq!(lib.add_folder(&media.to_string_lossy()), Some(fid), "adding twice is a no-op");
@@ -656,21 +659,21 @@ mod tests {
         assert!(lib.upsert_file(fid, &canon, 2, 200), "changed file is re-probed");
 
         let v = &lib.videos()[0];
-        assert_eq!(v.title, "第1讲");
-        lib.add_tag(v.id, "#课程");
+        assert_eq!(v.title, "\u{7B2C}1\u{8BB2}");
+        lib.add_tag(v.id, "#\u{8BFE}\u{7A0B}");
         lib.add_tag(v.id, "Rust");
         let mut tags = lib.videos()[0].tags.clone();
         tags.sort();
-        assert_eq!(tags, ["Rust", "课程"]);
+        assert_eq!(tags, ["Rust", "\u{8BFE}\u{7A0B}"]);
         lib.remove_tag(v.id, "Rust");
-        assert_eq!(lib.videos()[0].tags, ["课程"]);
+        assert_eq!(lib.videos()[0].tags, ["\u{8BFE}\u{7A0B}"]);
 
         // Collections: a default one exists, quick-favorite toggles it.
         let cols = lib.collections();
-        assert_eq!(cols[0].name, "默认收藏");
+        assert_eq!(cols[0].name, "Favorites");
         assert!(lib.toggle_favorite(v.id));
         assert_eq!(lib.videos()[0].collections, [cols[0].id]);
-        let watch = lib.create_collection("想看").unwrap();
+        let watch = lib.create_collection("Watch later").unwrap();
         lib.set_in_collection(watch, v.id, true);
         assert_eq!(lib.collections().iter().map(|c| c.count).collect::<Vec<_>>(), [1, 1]);
         assert!(!lib.toggle_favorite(v.id), "toggling again removes from all");

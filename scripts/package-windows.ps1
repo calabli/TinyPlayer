@@ -28,8 +28,8 @@ New-Item -ItemType Directory -Force $dir | Out-Null
 
 Copy-Item "target\release\tinyplayer.exe" (Join-Path $dir "TinyPlayer.exe")
 Copy-Item $dll $dir
-Copy-Item README.md $dir
-Copy-Item THIRD_PARTY.md $dir
+Copy-Item README.md, README.en.md $dir
+Copy-Item THIRD_PARTY.md, THIRD_PARTY.en.md $dir
 Copy-Item LICENSE $dir
 
 $zip = Join-Path $Out "$name.zip"

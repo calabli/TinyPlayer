@@ -53,7 +53,7 @@ pub struct Settings {
     pub hwdec: bool,
     /// Aspect override: "auto", "16:9", "4:3", "2.35:1" or "stretch".
     pub aspect: String,
-    /// 画质增强: debanding + sharper scaling (more GPU work).
+    /// Enhance quality: debanding + sharper scaling (more GPU work).
     pub enhance: bool,
     /// mpv `tone-mapping`: how HDR video is fitted to the display.
     pub tone_mapping: String,
@@ -561,12 +561,12 @@ mod tests {
     fn bookmarks_are_per_file_ordered_and_survive_clearing_history() {
         let s = mem();
         s.add_bookmark("k", "/a.mp4", 90.0, "");
-        s.add_bookmark("k", "/a.mp4", 30.0, "第一章");
+        s.add_bookmark("k", "/a.mp4", 30.0, "Chapter 1");
         s.add_bookmark("other", "/b.mp4", 10.0, "");
         s.clear_history();
         let marks = s.bookmarks("k");
         assert_eq!(marks.iter().map(|b| b.time).collect::<Vec<_>>(), [30.0, 90.0]);
-        assert_eq!(marks[0].label, "第一章");
+        assert_eq!(marks[0].label, "Chapter 1");
         s.remove_bookmark(marks[0].id);
         assert_eq!(s.bookmarks("k").len(), 1);
         assert_eq!(s.bookmarks("other").len(), 1);

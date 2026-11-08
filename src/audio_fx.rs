@@ -11,11 +11,11 @@ pub type Gains = [i32; BANDS.len()];
 pub const FLAT: Gains = [0; BANDS.len()];
 
 pub const PRESETS: [(&str, Gains); 5] = [
-    ("关闭", FLAT),
-    ("低音", [6, 5, 4, 2, 0, 0, 0, 0, 0, 0]),
-    ("人声", [-2, -2, -1, 1, 3, 4, 4, 2, 0, -1]),
-    ("高音", [0, 0, 0, 0, 0, 1, 2, 4, 5, 6]),
-    ("影院", [4, 3, 1, 0, -1, 0, 1, 2, 3, 3]),
+    ("Off", FLAT),
+    ("Bass", [6, 5, 4, 2, 0, 0, 0, 0, 0, 0]),
+    ("Voice", [-2, -2, -1, 1, 3, 4, 4, 2, 0, -1]),
+    ("Treble", [0, 0, 0, 0, 0, 1, 2, 4, 5, 6]),
+    ("Cinema", [4, 3, 1, 0, -1, 0, 1, 2, 3, 3]),
 ];
 
 /// RMS-based, because peak-based settings barely closed the gap between loud

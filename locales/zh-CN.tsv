@@ -1,0 +1,453 @@
+# Simplified Chinese for TinyPlayer's interface: English key, a tab, Chinese.
+# A key's "|context" part only tells apart texts that read the same in English;
+# it isn't shown. "{}" marks a value filled in at runtime, in order.
+
+# Multi-view
+Single	单屏
+Grid	四宫格
+1 + 3	一大三小
+Add a video	添加视频
+Click or drop a file	点击或拖入文件
+Put back in the layout	放回布局
+Split left / right	左右分屏
+Split top / bottom	上下分屏
+Float as a small window	画中画小窗
+Multi-view	多屏
+Linked	联动
+Linked: play, pause and seeking apply to every video	联动  开：播放、暂停、跳转同步到所有画面
+Linked: off	联动  关
+{} / {} videos	{} / {} 个画面
+Open file…	打开文件…
+From the playlist	从播放列表
+Couldn't open: {}	无法打开：{}
+Multi-view on: click an empty slot to add a video	多屏已开启：点空白格添加视频
+Restore (Esc)	还原（Esc）
+Enlarge in the window	在窗口内放大
+Close video	关闭视频
+Drop to play here	松开在这里播放
+Drop to replace this video	松开替换这个画面
+Several videos are playing. Close the others first; multi-view turns off with one left	多个视频在播放，先关闭其他画面，只剩一个时才能退出多屏
+Full screen (double-click)	全屏（双击）
+Exit full screen (Esc)	退出全屏（Esc）
+Bars	进度条
+Bars hidden: move the pointer to a video's bottom to show them	进度条已隐藏：鼠标移到画面底部显示
+Bars shown	进度条  显示
+Always on top: on	窗口置顶  开
+Always on top: off	窗口置顶  关
+Exit full screen first	请先退出全屏
+A-B loop  {} – {}	A-B 循环  {} – {}
+A-B loop cleared	A-B 循环  已清除
+Zoom  {}%	缩放  {}%
+Already this shape	画面已经是这个比例
+Local files only	只有本地文件可以去黑边
+Detecting black bars…	正在检测黑边…
+Black bars removed	已去除黑边
+No black bars found	没有检测到黑边
+No chapters in this file	这个文件没有章节
+Last chapter	已是最后一章
+First chapter	已是第一章
+Bookmarks need a local file	只有本地文件可以添加书签
+Bookmarks aren't saved in private mode	隐私模式下不保存书签
+Already bookmarked here	这里已有书签
+Bookmarked  {}	已添加书签  {}
+Media files	媒体文件
+All files	所有文件
+Add to library	添加到媒体库
+Next frame	下一帧
+Previous frame	上一帧
+★ Added to favorites	★ 已收藏
+Removed from favorites	已取消收藏
+Only library videos can be favorited	只有媒体库里的视频可以收藏
+Load subtitle file	加载字幕文件
+Subtitles	字幕
+Volume per device	按设备记音量
+Headphones, speakers and other outputs each keep their own volume	耳机、扬声器等输出设备各记一个音量，切换时自动换成对应音量
+In use	当前设备
+No devices yet	还没有记录的设备
+Drop to play	松开以播放
+Resumed at {} · Home to restart	已从 {} 继续 · Home 从头
+Speed	倍速
+Stopped at {}	上次看到 {}
+Resume  Enter	继续播放 Enter
+Start over	从头开始
+Unfavorite (Ctrl+D)	取消收藏 (Ctrl+D)
+Favorite (Ctrl+D)	收藏 (Ctrl+D)
+Library	媒体库
+Drop media files here	拖入媒体文件
+Open file  {}	打开文件  {}
++ Create library	+ 建立媒体库
+Space play/pause · ←/→ seek · ↑/↓ volume · F full screen	Space 播放/暂停 · ←/→ 快退/快进 · ↑/↓ 音量 · F 全屏
+Couldn't load the playback engine	播放内核加载失败
+Playlist is empty	列表为空
+Drop files or folders to play	拖入文件或文件夹即可播放
+Drag to reorder · L to hide	拖动排序 · L 收起
+No chapters or bookmarks	没有章节或书签
+{}B to bookmark · G to hide	{}B 添加书签 · G 收起
+Off	关闭
+Bass	低音
+Voice	人声
+Treble	高音
+Cinema	影院
+Favorites	默认收藏
+Search titles, tags, folders	搜索标题、标签、文件夹
+Folders	文件夹
+Open file	打开文件
++ Add folder	+ 添加文件夹
+All	全部
+Continue watching	继续观看
+Recently added	最近添加
+Most played	最常播放
+All favorites	全部收藏
+Delete collection (keeps the videos)	删除收藏夹（不删除视频）
+Collection name	收藏夹名称
+{} videos · {}	{} 个视频 · {}
+Duration	时长
+Name	名称
+Plays	播放次数
+Recently played	最近播放
+No favorites yet. Hover a video and click its star	还没有收藏。悬停视频，点右上角的星标即可收藏
+Nothing played yet	还没有播放记录
+No videos in progress	没有看到一半的视频
+No matching videos	没有匹配的视频
+All folders	全部文件夹
+{} folders · {} videos	{} 个文件夹 · {} 个视频
+Play all	播放全部
+No videos in this folder	这个文件夹里没有视频
+Type a tag, press Enter	输入标签，回车添加
+Add to	收藏到
++ New collection, press Enter	+ 新建收藏夹，回车创建
+Generating…	生成中…
+Favorited · click to manage	已收藏 · 点击管理收藏夹
+Favorite	收藏
+Watched	已看完
++ Tag	+ 标签
+Play	播放
+Manage collections…	管理收藏夹…
+Add to collection…	收藏到…
+Add tag…	添加标签…
+Remove tag	移除标签
+Show in Finder	在访达中显示
+Show in Explorer	在资源管理器中显示
+Remove from library (keeps the file)	从媒体库移除（不删除文件）
+ · watched {}/{}	 · 看完 {}/{}
+Open	打开
+Build your library	建立你的媒体库
+Add folders of videos for automatic thumbnails, tags and search	添加视频所在的文件夹，自动生成缩略图，支持标签与搜索
+Or just drop a video into this window	也可以直接把视频拖进窗口播放
+Bookmark	书签
+Chinese	中文
+Traditional Chinese	繁体中文
+English	英文
+Japanese	日文
+Korean	韩文
+Track {}	轨道 {}
+ (external)	（外挂）
+Chapter {}	第 {} 章
+Brightness	亮度
+Contrast	对比度
+Saturation	饱和度
+Gamma	伽马
+Hue	色调
+Styling	字幕样式
+Audio	声音
+EQ	均衡器
+Video	画面
+Enhance	画面增强
+Color	色彩
+More settings	更多设置
+Subtitle track	字幕轨道
+Load file…	加载字幕文件…
+Size|subtitle	字幕大小
+Small	小
+Medium	中
+Large	大
+Huge	特大
+Position	字幕位置
+Bottom	底部
+Higher	稍高
+Highest	更高
+Delay	字幕延迟
+Second subtitle	第二字幕
+Font	字体
+Default	默认
+Sans	黑体
+Serif	宋体
+Kai	楷体
+Color|text	颜色
+White	白色
+Yellow	黄色
+Cyan	青色
+Green	绿色
+Outline	描边
+Thin	细
+Thick	粗
+Shadow	阴影
+Force on ASS	覆盖 ASS
+Audio track	音轨
+No audio track	没有音轨
+Channels	声道
+Stereo	立体声
+Left|channel	左声道
+Right|channel	右声道
+Mix	混合
+Audio delay	音频延迟
+Volume	音量
+Unmute	取消静音
+Mute	静音
+Now {}%	当前 {}%
+Normalize	音量标准化
+Preset	预设
+Aspect ratio	画面比例
+Original|aspect	原始比例
+Stretch|window	铺满窗口
+Rotate	画面旋转
+Left	向左旋转
+Right	向右旋转
+Flip	画面翻转
+Horizontal	水平镜像
+Vertical	垂直翻转
+Hardware	硬件加速
+Enhance|quality	画质增强
+Crop	裁剪
+Remove bars	去黑边
+Zoom out	缩小
+Zoom in	放大
+Reset|restore	还原
+HDR tone mapping	HDR 色调映射
+Auto	自动
+This video is HDR	当前视频是 HDR
+Not an HDR video, so this has no effect	当前视频不是 HDR，此项不起作用
+Interpolate	插帧
+On	开
+Off|short	关
+{} s	{} 秒
+Reset	重置
+Interface	界面
+History	播放记录
+Shortcuts	快捷键
+Queue the folder	自动加入同目录文件
+Opening one file also queues the rest of its folder, in name order	打开单个文件时，把同一文件夹的其他媒体按文件名顺序加入列表
+After playback	播完后
+Next	播下一个
+Loop list	列表循环
+Loop one	单个循环
+Shuffle	随机播放
+Every file plays once before any repeats	列表中每个文件播放一次后才会重复
+Hardware decoding	硬件解码
+Uses the GPU to save power and CPU. Turn off if the picture looks wrong	用显卡解码，省电、降低 CPU 占用；画面异常时可关闭
+Original	原始
+Stretch	拉伸
+Auto-load subtitles	自动加载外挂字幕
+Loads .srt, .ass and similar files named after the video	打开视频时加载同名的 .srt / .ass 等字幕文件
+Preferred language	首选字幕语言
+Picked first when a file has several tracks	有多条字幕轨时优先选择
+Theme	主题
+Library and settings only. Playback controls stay dark	只影响媒体库和设置，播放时的控件保持深色
+Dark	深色
+Light	浅色
+System	跟随系统
+Play / pause	播放 / 暂停
+Seek 5 s	快退 / 快进 5 秒
+Seek 60 s	快退 / 快进 60 秒
+↑ / ↓ / wheel	↑ / ↓ / 滚轮
+Volume ±5%	音量 ±5%
+Full screen	全屏（或双击画面）
+Exit full screen	退出全屏
+Back to start	回到开头
+Slower / faster	减速 / 加速
+Reset to 1.0×	恢复 1.0×
+Next subtitle	切换字幕
+Next / previous	下一个 / 上一个
+Playlist	播放列表
+Chapters, bookmarks	章节和书签
+Zoom in / out / reset	放大 / 缩小 / 还原
+Previous / next chapter	上一章 / 下一章
+Add bookmark	添加书签
+Previous / next frame	上一帧 / 下一帧
+A-B loop	A-B 循环
+Always on top	窗口置顶
+VR panorama	VR 全景
+VR panorama off	VR 全景已关闭
+Panorama	全景模式
+Layout	画面排列
+Single|view	单画面
+Side by side	左右
+Top and bottom	上下
+Field of view  {}°	视野  {}°
+Recenter	回正
+For 180° or 360° video. Leave off for ordinary videos.	用于 180° 或 360° 全景视频，普通视频不用开
+Drag to look around, scroll to zoom. Subtitles are hidden.	拖动画面转视角，滚轮缩放。全景模式下不显示字幕
+This computer's graphics can't show VR panoramas	这台电脑的显卡不支持 VR 全景
+Picture-in-picture	画中画
+Toggle favorite	收藏 / 取消收藏
+Screenshot to desktop	截图到桌面
+Search library	媒体库搜索
+Settings	设置
+Remember position	记住播放进度
+Continue where you left off in the same file	下次打开同一文件时从上次位置继续
+When resuming	续播方式
+Ask	询问
+Restart	从头
+Skip short videos	不记录短视频
+No position saved for files shorter than this	时长低于此值的文件不保存进度
+3 min	3 分钟
+10 min	10 分钟
+Clear when finished	播完自动清除
+Past 95% counts as watched, and the position is removed	播放超过 95% 视为看完，删除该条进度
+Clear history on exit	退出时清除播放记录
+Clears positions and recents on exit. Play counts stay	关闭时清空进度和最近播放，播放次数保留
+Private mode	隐私模式
+Check this folder for duplicates	检查这个文件夹的重复
+Only checking: {}	只检查：{}
+Check everything	检查全部
+Library password	媒体库密码
+Asks for a password before opening the library	进入媒体库前需要输入密码，重启后重新验证
+Clear library	清除媒体库
+Removes all folders, tags, and sets. Video files stay.	移除全部文件夹、标签和集合，不删除视频文件
+Clear	清除
+Library cleared	媒体库已清除
+Wrong password	密码不对
+Enter the library password	输入媒体库密码
+Password	密码
+Open library	进入媒体库
+Forgot password	忘记密码
+Set a library password	设置媒体库密码
+Password, at least 4 characters	密码，至少 4 位
+Enter it again	再输入一次
+This only guards the library page. Files aren't encrypted.	密码只用于进入媒体库，不会加密视频文件
+Set password	设置密码
+Use at least 4 characters	密码至少 4 位
+The two entries don't match	两次输入不一致
+Turn off the library password	关闭媒体库密码
+Turn off	关闭密码
+Clear the library?	清除媒体库？
+Removes all folders, tags, and sets. Video files and play history stay.	移除全部文件夹、标签和集合。视频文件和播放记录不受影响。
+Forgot the password?	忘记密码？
+The library can only be cleared along with the password. Video files stay, and you can add folders again.	只能清除媒体库并取消密码。视频文件不受影响，之后可以重新添加文件夹。
+Player	播放页
+Lock	锁定
+Processing videos {} / {} · {}%	正在处理视频 {} / {} · {}%
+Scanning folders, found {} videos	正在扫描文件夹，已找到 {} 个视频
+Less than a minute left	还剩不到 1 分钟
+About {} min left	还剩约 {} 分钟
+About {} h {} min left	还剩约 {} 小时 {} 分钟
+Comparing {}%	正在比较 {}%
+Moved {}, {} failed. Failed items stayed where they were.	已剪切 {} 项，{} 项失败，失败的还在原位置
+Moved {} items	已剪切 {} 项
+Disk not connected · {} videos remembered	硬盘未连接 · 保留了 {} 个视频的记录
+Disk not connected. It comes back when you plug it in.	硬盘未连接，接上后会自动恢复
+Rename	重命名
+{} folders, {} videos selected	已选 {} 个文件夹，{} 个视频
+Add to favorites	加入收藏
+Add tag	加标签
+Move {} items to	剪切 {} 项到
+New folder name	新文件夹名称
+New folder	新建文件夹
+Enter a name without special characters	名称不能为空，也不能包含特殊字符
+That name is already taken	已有同名文件或文件夹
+Couldn't create a folder here	无法在这里新建文件夹
+A folder can't move into itself	不能把文件夹剪切到它自己里面
+Renames the file on disk. Progress, favorites, and tags stay.	同时修改磁盘上的文件，进度、收藏和标签都保留
+Couldn't rename this file	无法重命名这个文件
+Tag {} videos	给 {} 个视频加标签
+Tag name	标签名称
+Enter a tag name	输入标签名称
+Tagged {} videos	已给 {} 个视频加标签
+Add {} videos to favorites	把 {} 个视频加入收藏
+Added {} videos to favorites	已把 {} 个视频加入收藏
+{} videos	{} 个视频
+Manage	管理
+Delete set	删除集合
+Possible duplicates	可能重复
+Likely duplicates	很可能重复
+Cancelled. The originals are unchanged.	已取消，原文件没有变化
+No matches in this set	这个集合里没有匹配项
+No videos here	这里没有视频
+"{}": {} folders, {} videos	“{}”：{} 个文件夹，{} 个视频
+Videos	视频
+Modified	修改日期
+Size	大小
+Show in file manager	在文件管理器中显示
+Move to…	剪切到…
+Move to Trash	移到废纸篓
+{} selected · {}	已选 {} 个 · {}
+Clear selection	取消选择
+{} possible groups, {} marked, {} to free	{} 组可能重复，已标记 {} 个，可释放 {}
+Handle marked	处理已标记
+Mark videos for the Trash first	先把要处理的视频标记为移到废纸篓
+No possible duplicates found	没有发现可能重复的视频
+Choose at least one test	至少选一个比较条件
+Compare	比较
+Strict	严格
+Normal	标准
+Loose	宽松
+All {}	全部 {}
+Likely {}	很可能 {}
+Possible {}	可能 {}
+Similar length	时长接近
+Similar size	大小接近
+Similar name	名称相似
+Not duplicates	不是重复
+Remembered: these aren't duplicates	已记住：这组不是重复
+Keep	保留
+Keep at least one video in each group	每组至少保留一个视频
+New folder set	新建文件夹集合
+Set name, like Work footage	集合名称，比如 工作素材
+Enter a set name	输入集合名称
+Choose at least one folder	至少选一个文件夹
+Create set	创建集合
+Search folders	搜索目标文件夹
+This is another disk: files are copied and checked before the originals go	目标在另一块磁盘，要先复制并校验，再删除原文件
+A file with this name exists. Both are kept and the new one is renamed.	目标已有同名文件，将保留两者并自动改名
+Move here	剪切到这里
+Choose a folder	选一个目标文件夹
+The videos are already here	视频已经在这个文件夹里
+Move {} videos to the Trash?	把 {} 个视频移到废纸篓？
+{} in total. You can restore them from the Trash; space is freed when it's emptied.	共 {}。可以从系统废纸篓恢复，清空废纸篓后才释放空间。
+{} moved to the Trash, {} failed	已移到废纸篓 {} 个，{} 个失败
+Moved {} videos to the Trash	已将 {} 个视频移到废纸篓
+Moving {} of {}	正在剪切 {} / {}
+Checking the copy	正在校验复制结果
+Undo	撤销
+Private mode on	隐私模式已开启
+Private mode off	隐私模式已关闭
+Records nothing and hides watch history and titles in system media controls until restart	不写入记录，隐藏观看记录和系统媒体信息里的片名，重启后恢复
+{} positions saved · {} plays	已保存 {} 条进度 · 共播放 {} 次
+Click again to confirm	再点一次确认
+Clear play stats	清除播放统计
+Clear positions now	立即清除进度
+Checking…	正在检查…
+You're up to date	已是最新版本
+Couldn't check. Try again later	检查失败，请稍后再试
+Version {} is available	发现新版本 {}
+Check for updates	自动检查更新
+Version {}	当前版本 {}
+Check now	检查更新
+Frameless	无边框
+Frameless playback	无边框播放
+Frameless: on	无边框播放  开
+Frameless: off	无边框播放  关
+Close window	关闭窗口
+Skip this version	跳过此版本
+Asks GitHub at most once a day. Sends no usage data	每天最多访问一次 GitHub，不发送使用数据
+Download updates	自动下载更新
+Downloads in the background, then installs on restart or exit	在后台下载，下载完成后询问是否重启，也可以在退出时安装
+Update now	立即更新
+Remind me later	稍后提醒
+This copy can't update itself. Please download the new package	这个安装方式不支持应用内更新，请下载新版安装包
+OK	知道了
+Downloading {}	正在下载 {}
+Cancel	取消
+Version {} is ready	新版本 {} 已准备好
+Restart now	立即重启
+Later	稍后
+Restart to finish updating. If you choose later, it installs when you quit.	重启后完成更新。选择稍后，会在退出时安装。
+Retry	重试
+Update failed	更新失败
+Couldn't install the update	无法安装更新
+No update package for this system	当前系统没有可用的更新包
+Couldn't write the update files	无法写入更新文件
+Update checksum unavailable	更新校验信息不可用
+Download failed. Check your network	下载失败，请检查网络
+The download failed its check and was deleted	更新文件校验失败，已删除
+Couldn't prepare the update	无法准备更新

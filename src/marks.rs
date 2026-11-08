@@ -64,7 +64,7 @@ impl Marks {
         let chapters = self.chapters.iter().map(|c| Row { time: c.time, title: c.title.clone(), bookmark: None });
         let bookmarks = self.bookmarks.iter().map(|b| Row {
             time: b.time,
-            title: if b.label.is_empty() { tr("书签").to_string() } else { b.label.clone() },
+            title: if b.label.is_empty() { tr("Bookmark").to_string() } else { b.label.clone() },
             bookmark: Some(b.id),
         });
         let mut rows: Vec<Row> = chapters.chain(bookmarks).collect();
@@ -118,12 +118,12 @@ mod tests {
     #[test]
     fn rows_merge_in_time_order_and_name_unlabeled_bookmarks() {
         let mut m = chapters();
-        m.bookmarks = vec![bookmark(7, 90.0, ""), bookmark(8, 30.0, "开场")];
+        m.bookmarks = vec![bookmark(7, 90.0, ""), bookmark(8, 30.0, "\u{5F00}\u{573A}")];
         let rows = m.rows();
         let times: Vec<f64> = rows.iter().map(|r| r.time).collect();
         assert_eq!(times, [0.0, 30.0, 60.0, 90.0, 120.0]);
-        assert_eq!(rows[1].title, "开场");
-        assert_eq!(rows[3].title, "书签");
+        assert_eq!(rows[1].title, "\u{5F00}\u{573A}");
+        assert_eq!(rows[3].title, crate::i18n::tr("Bookmark"));
         assert_eq!(rows[3].bookmark, Some(7));
         assert_eq!(current_row(&rows, 95.0), Some(3));
     }

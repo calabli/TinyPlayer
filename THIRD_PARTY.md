@@ -1,5 +1,7 @@
 # 第三方组件
 
+[English](THIRD_PARTY.en.md) | 简体中文
+
 TinyPlayer 使用了以下开源组件：
 
 | 组件 | 用途 | 许可 |

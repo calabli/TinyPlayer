@@ -104,7 +104,7 @@ cat > "$APP/Contents/Info.plist" <<PLIST
 </plist>
 PLIST
 
-cp README.md THIRD_PARTY.md LICENSE "$APP/Contents/Resources/"
+cp README.md README.en.md THIRD_PARTY.md THIRD_PARTY.en.md LICENSE "$APP/Contents/Resources/"
 
 # App icon: build an .icns from assets/icon-512.png (scripts/make-icon.py).
 ICONSET=dist/TinyPlayer.iconset

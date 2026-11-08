@@ -74,11 +74,11 @@ fn sub_font_name(choice: &str) -> &'static str {
 
 fn language_name(code: &str) -> String {
     match code.to_lowercase().as_str() {
-        "chi" | "zho" | "zh" | "chs" | "sc" | "zh-hans" | "zh-cn" => tr("中文").into(),
-        "cht" | "tc" | "zh-hant" | "zh-tw" | "zh-hk" => tr("繁体中文").into(),
-        "eng" | "en" => tr("英文").into(),
-        "jpn" | "ja" => tr("日文").into(),
-        "kor" | "ko" => tr("韩文").into(),
+        "chi" | "zho" | "zh" | "chs" | "sc" | "zh-hans" | "zh-cn" => tr("Chinese").into(),
+        "cht" | "tc" | "zh-hant" | "zh-tw" | "zh-hk" => tr("Traditional Chinese").into(),
+        "eng" | "en" => tr("English").into(),
+        "jpn" | "ja" => tr("Japanese").into(),
+        "kor" | "ko" => tr("Korean").into(),
         other => other.to_string(),
     }
 }
@@ -348,7 +348,7 @@ impl Player {
         self.hwdec.set(s.hwdec);
         self.apply_hwdec();
         self.apply_aspect(&s.aspect);
-        // 画质增强: debanding plus a sharper (heavier) upscaler.
+        // Enhance quality: debanding plus a sharper (heavier) upscaler.
         if !self.panorama.get() {
             m.set_property_string("deband", if s.enhance { "yes" } else { "no" });
             m.set_property_string("scale", if s.enhance { "ewa_lanczossharp" } else { "lanczos" });
@@ -458,10 +458,10 @@ impl Player {
             } else if !title.is_empty() {
                 title
             } else {
-                tf("轨道 {}", &[&id])
+                tf("Track {}", &[&id])
             };
             if external {
-                label.push_str(tr("（外挂）"));
+                label.push_str(tr(" (external)"));
             }
             let selected = get("selected").as_deref() == Some("yes");
             let secondary = selected && get("main-selection").as_deref() == Some("1");
@@ -478,7 +478,7 @@ impl Player {
             .filter_map(|i| {
                 let time = m.get_string(&format!("chapter-list/{i}/time"))?.parse().ok()?;
                 let title = m.get_string(&format!("chapter-list/{i}/title")).filter(|t| !t.is_empty());
-                Some(crate::marks::Chapter { time, title: title.unwrap_or_else(|| tf("第 {} 章", &[&(i + 1)])) })
+                Some(crate::marks::Chapter { time, title: title.unwrap_or_else(|| tf("Chapter {}", &[&(i + 1)])) })
             })
             .collect()
     }

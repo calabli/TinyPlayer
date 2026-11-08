@@ -1,5 +1,5 @@
 //! Library home screen, shown whenever nothing is playing:
-//! - top bar: search, 媒体库/文件夹 mode switch, add folder, open file, settings
+//! - top bar: search, Library/Folders mode switch, add folder, open file, settings
 //! - nav: views (all / continue / recent / most played), collections, tags, folders
 //! - content: a virtualized thumbnail grid, or a folder browser with breadcrumbs
 
@@ -436,11 +436,11 @@ impl LibraryView {
                     (secs >= 3.0 && finished >= 3).then(|| (total - done) as f64 * secs / finished as f64)
                 });
                 let percent = done * 100 / total.max(1);
-                let text = tf("正在处理视频 {} / {} · {}%", &[&done, &total, &percent]);
+                let text = tf("Processing videos {} / {} · {}%", &[&done, &total, &percent]);
                 let text = left.map_or(text.clone(), |secs| format!("{text} · {}", time_left(secs)));
                 (text, Some(done as f32 / total.max(1) as f32))
             }
-            (Some(found), _) => (tf("正在扫描文件夹，已找到 {} 个视频", &[&found]), None),
+            (Some(found), _) => (tf("Scanning folders, found {} videos", &[&found]), None),
             _ => return 0.0,
         };
         let bar = Rect::from_min_max(pos2(rect.left(), rect.bottom() - H), rect.max);
@@ -521,7 +521,7 @@ impl LibraryView {
             search_resp = Some(
                 ui.add(
                     egui::TextEdit::singleline(&mut self.search)
-                        .hint_text(tr("搜索标题、标签、文件夹"))
+                        .hint_text(tr("Search titles, tags, folders"))
                         .frame(egui::Frame::NONE)
                         .text_color(theme::text())
                         .font(FontId::proportional(13.0))
@@ -544,10 +544,10 @@ impl LibraryView {
             }
         }
 
-        // Mode switch: 媒体库 | 文件夹 | 管理
+        // Mode switch: Library | Folders | Manage
         let seg = Rect::from_min_size(pos2(search_rect.right() + 16.0, top.center().y - 14.0), vec2(196.0, 28.0));
         p.rect_filled(seg, 14.0, theme::panel());
-        for (i, (mode, label)) in [(Mode::Grid, tr("媒体库")), (Mode::Folders, tr("文件夹")), (Mode::Manage, tr("管理"))].into_iter().enumerate() {
+        for (i, (mode, label)) in [(Mode::Grid, tr("Library")), (Mode::Folders, tr("Folders")), (Mode::Manage, tr("Manage"))].into_iter().enumerate() {
             let r = Rect::from_min_size(seg.min + vec2(2.0 + i as f32 * 64.0, 2.0), vec2(64.0, 24.0));
             let resp = ui.interact(r, ui.scope_id().with(("mode", i)), Sense::click());
             let on = self.mode == mode;
@@ -569,20 +569,20 @@ impl LibraryView {
         if g.clicked() {
             action = Some(Action::Settings);
         }
-        let (open_left, open_clicked) = text_btn(ui, p, pos2(rx - 40.0, top.center().y), "lib_open", tr("打开文件"), theme::text_2());
+        let (open_left, open_clicked) = text_btn(ui, p, pos2(rx - 40.0, top.center().y), "lib_open", tr("Open file"), theme::text_2());
         if open_clicked {
             action = Some(Action::OpenFile);
         }
-        let (add_left, add_clicked) = text_btn(ui, p, pos2(open_left - 24.0, top.center().y), "lib_add", tr("+ 添加文件夹"), ACCENT);
+        let (add_left, add_clicked) = text_btn(ui, p, pos2(open_left - 24.0, top.center().y), "lib_add", tr("+ Add folder"), ACCENT);
         if add_clicked {
             action = Some(Action::AddFolder);
         }
-        let (home_left, home_clicked) = text_btn(ui, p, pos2(add_left - 20.0, top.center().y), "lib_home", tr("播放页"), theme::text_2());
+        let (home_left, home_clicked) = text_btn(ui, p, pos2(add_left - 20.0, top.center().y), "lib_home", tr("Player"), theme::text_2());
         if home_clicked {
             action = Some(Action::Home);
         }
         if self.lockable {
-            let (_, lock_clicked) = text_btn(ui, p, pos2(home_left - 20.0, top.center().y), "lib_lock", tr("锁定"), theme::text_2());
+            let (_, lock_clicked) = text_btn(ui, p, pos2(home_left - 20.0, top.center().y), "lib_lock", tr("Lock"), theme::text_2());
             if lock_clicked {
                 action = Some(Action::Lock);
             }
@@ -601,10 +601,10 @@ impl LibraryView {
         let Some((_, [continue_n, recent_n, played_n], tag_counts)) = &self.cached.nav else { return };
         let ([continue_n, recent_n, played_n], tag_counts) = ([*continue_n, *recent_n, *played_n], tag_counts.clone());
         for (view, label, n) in [
-            (View::All, tr("全部"), self.videos.len()),
-            (View::Continue, tr("继续观看"), continue_n),
-            (View::Recent, tr("最近添加"), recent_n),
-            (View::MostPlayed, tr("最常播放"), played_n),
+            (View::All, tr("All"), self.videos.len()),
+            (View::Continue, tr("Continue watching"), continue_n),
+            (View::Recent, tr("Recently added"), recent_n),
+            (View::MostPlayed, tr("Most played"), played_n),
         ] {
             if self.hide_history && matches!(view, View::Continue | View::MostPlayed) {
                 continue;
@@ -629,7 +629,7 @@ impl LibraryView {
         y += 22.0;
         let fav_n = self.videos.iter().filter(|v| !v.collections.is_empty()).count();
         let r = Rect::from_min_size(pos2(nav.left(), y), vec2(NAV_W, 28.0));
-        if nav_item(ui, &np, r, "fav_all", tr("全部收藏"), Some(fav_n), grid_mode && self.view == View::Favorites(None)) {
+        if nav_item(ui, &np, r, "fav_all", tr("All favorites"), Some(fav_n), grid_mode && self.view == View::Favorites(None)) {
             self.view = View::Favorites(None);
             self.mode = Mode::Grid;
         }
@@ -644,7 +644,7 @@ impl LibraryView {
             }
             icons::draw(&np, Icon::Star, pos2(r.left() + 24.0, r.center().y), 11.0, if on { ACCENT } else { theme::text_3() });
             ui.interact(r, ui.scope_id().with(("coll", c.id)), Sense::click()).context_menu(|ui| {
-                if ui.button(tr("删除收藏夹（不删除视频）")).clicked() {
+                if ui.button(tr("Delete collection (keeps the videos)")).clicked() {
                     delete = Some(c.id);
                     ui.close();
                 }
@@ -663,7 +663,7 @@ impl LibraryView {
             ui.scope_builder(egui::UiBuilder::new().max_rect(r.shrink2(vec2(8.0, 3.0))), |ui| {
                 let resp = ui.add(
                     egui::TextEdit::singleline(name)
-                        .hint_text(tr("收藏夹名称"))
+                        .hint_text(tr("Collection name"))
                         .frame(egui::Frame::NONE)
                         .text_color(theme::text())
                         .font(FontId::proportional(12.0)),
@@ -731,7 +731,7 @@ impl LibraryView {
                 }
             }
             ui.interact(r, ui.scope_id().with(("folder", f.id)), Sense::click()).context_menu(|ui| {
-                if ui.button(tr("检查这个文件夹的重复")).clicked() {
+                if ui.button(tr("Check this folder for duplicates")).clicked() {
                     check_folder = Some(PathBuf::from(&f.path));
                     ui.close();
                 }
@@ -741,7 +741,7 @@ impl LibraryView {
                 let xr = ui.interact(x, ui.scope_id().with(("folder_rm", f.id)), Sense::click());
                 icons::draw(&np, Icon::Close, x.center(), 11.0, if xr.hovered() { ACCENT } else { theme::text_3() });
                 let clicked = xr.clicked();
-                xr.on_hover_text(format!("{}\n{}", tr("从媒体库移除（不删除文件）"), f.path));
+                xr.on_hover_text(format!("{}\n{}", tr("Remove from library (keeps the file)"), f.path));
                 if clicked {
                     remove_folder = Some(f.id);
                 }
@@ -773,8 +773,8 @@ impl LibraryView {
         // Title for collection/most-played views.
         let title = match self.view {
             View::Favorites(Some(c)) => self.collections.iter().find(|x| x.id == c).map(|x| tr(&x.name).to_string()),
-            View::Favorites(None) => Some(tr("全部收藏").to_string()),
-            View::MostPlayed => Some(tr("最常播放").to_string()),
+            View::Favorites(None) => Some(tr("All favorites").to_string()),
+            View::MostPlayed => Some(tr("Most played").to_string()),
             _ => None,
         };
         if let Some(t) = title {
@@ -798,18 +798,18 @@ impl LibraryView {
         p.text(
             pos2(hx, header.center().y),
             Align2::LEFT_CENTER,
-            tf("{} 个视频 · {}", &[&cells.len(), &fmt_time(total)]),
+            tf("{} videos · {}", &[&cells.len(), &fmt_time(total)]),
             FontId::monospace(11.0),
             theme::text_3(),
         );
         if !matches!(self.view, View::Continue | View::MostPlayed) {
             let mut sx = header.right();
             for (sort, label) in [
-                (Sort::Duration, tr("时长")),
-                (Sort::Name, tr("名称")),
-                (Sort::Plays, tr("播放次数")),
-                (Sort::Played, tr("最近播放")),
-                (Sort::Added, tr("最近添加")),
+                (Sort::Duration, tr("Duration")),
+                (Sort::Name, tr("Name")),
+                (Sort::Plays, tr("Plays")),
+                (Sort::Played, tr("Recently played")),
+                (Sort::Added, tr("Recently added")),
             ] {
                 if self.hide_history && matches!(sort, Sort::Plays | Sort::Played) {
                     continue;
@@ -833,10 +833,10 @@ impl LibraryView {
         let grid_rect = Rect::from_min_max(pos2(content.left() + 24.0, header.bottom() + 8.0), pos2(content.right() - 12.0, content.bottom()));
         if cells.is_empty() {
             let msg = match self.view {
-                View::Favorites(_) => tr("还没有收藏。悬停视频，点右上角的星标即可收藏"),
-                View::MostPlayed => tr("还没有播放记录"),
-                View::Continue => tr("没有看到一半的视频"),
-                _ => tr("没有匹配的视频"),
+                View::Favorites(_) => tr("No favorites yet. Hover a video and click its star"),
+                View::MostPlayed => tr("Nothing played yet"),
+                View::Continue => tr("No videos in progress"),
+                _ => tr("No matching videos"),
             };
             p.text(grid_rect.center() - vec2(0.0, 40.0), Align2::CENTER_CENTER, msg, FontId::proportional(14.0), theme::text_2());
             return Action::None;
@@ -851,8 +851,8 @@ impl LibraryView {
         let header = Rect::from_min_size(content.min + vec2(24.0, 12.0), vec2(content.width() - 48.0, 30.0));
         let cy = header.center().y;
 
-        // Breadcrumb: 全部文件夹 / root / a / b
-        let mut crumbs: Vec<(String, Option<FolderLoc>)> = vec![(tr("全部文件夹").into(), None)];
+        // Breadcrumb: All folders / root / a / b
+        let mut crumbs: Vec<(String, Option<FolderLoc>)> = vec![(tr("All folders").into(), None)];
         if let Some(loc) = &self.folder_loc {
             if let Some(root) = self.folders.iter().find(|f| f.id == loc.root) {
                 crumbs.push((base_name(&root.path), Some(FolderLoc { root: loc.root, parts: Vec::new() })));
@@ -908,13 +908,13 @@ impl LibraryView {
         let (cells, play_all) = self.folder_list();
         let video_n = cells.iter().filter(|c| matches!(c, Cell::Video(_))).count();
         let folder_n = cells.len() - video_n;
-        let stat = tf("{} 个文件夹 · {} 个视频", &[&folder_n, &video_n]);
-        let (pa_left, pa_clicked) = text_btn(ui, p, pos2(header.right(), cy), "play_all", tr("播放全部"), ACCENT);
+        let stat = tf("{} folders · {} videos", &[&folder_n, &video_n]);
+        let (pa_left, pa_clicked) = text_btn(ui, p, pos2(header.right(), cy), "play_all", tr("Play all"), ACCENT);
         p.text(pos2(pa_left - 20.0, cy), Align2::RIGHT_CENTER, stat, FontId::monospace(11.0), theme::text_3());
 
         let grid_rect = Rect::from_min_max(pos2(content.left() + 24.0, header.bottom() + 8.0), pos2(content.right() - 12.0, content.bottom()));
         if cells.is_empty() {
-            p.text(grid_rect.center() - vec2(0.0, 40.0), Align2::CENTER_CENTER, tr("这个文件夹里没有视频"), FontId::proportional(14.0), theme::text_2());
+            p.text(grid_rect.center() - vec2(0.0, 40.0), Align2::CENTER_CENTER, tr("No videos in this folder"), FontId::proportional(14.0), theme::text_2());
             return Action::None;
         }
         let action = self.grid(ui, grid_rect, &cells, false, "folder_grid");
@@ -925,7 +925,7 @@ impl LibraryView {
     }
 
     /// Cells for the current folder location, plus every video below it
-    /// (recursive, natural order) for "全部播放".
+    /// (recursive, natural order) for "Play all".
     fn folder_list(&mut self) -> (Rc<Vec<Cell>>, Rc<Vec<String>>) {
         if let Some((revision, loc, cells, play_all)) = &self.cached.folder {
             if *revision == self.revision && *loc == self.folder_loc {
@@ -1206,7 +1206,7 @@ impl LibraryView {
                 popup_frame().show(ui, |ui| {
                     let r = ui.add(
                         egui::TextEdit::singleline(&mut text)
-                            .hint_text(tr("输入标签，回车添加"))
+                            .hint_text(tr("Type a tag, press Enter"))
                             .frame(egui::Frame::NONE)
                             .text_color(theme::text())
                             .font(FontId::proportional(13.0))
@@ -1251,7 +1251,7 @@ impl LibraryView {
             .show(ui.ctx(), |ui| {
                 popup_frame().show(ui, |ui| {
                     ui.set_width(190.0);
-                    ui.label(egui::RichText::new(tr("收藏到")).size(11.0).color(theme::text_3()));
+                    ui.label(egui::RichText::new(tr("Add to")).size(11.0).color(theme::text_3()));
                     ui.add_space(4.0);
                     for c in &self.collections {
                         let on = in_cols.contains(&c.id);
@@ -1278,7 +1278,7 @@ impl LibraryView {
                     let name = &mut self.fav_new_name;
                     let r = ui.add(
                         egui::TextEdit::singleline(name)
-                            .hint_text(tr("+ 新建收藏夹，回车创建"))
+                            .hint_text(tr("+ New collection, press Enter"))
                             .frame(egui::Frame::NONE)
                             .text_color(theme::text())
                             .font(FontId::proportional(12.0))
@@ -1358,7 +1358,7 @@ fn draw_card(
         }
         None => {
             p.rect_filled(thumb, 6.0, placeholder_color(v.id));
-            let label = if v.duration > 0.0 { "" } else { tr("生成中…") };
+            let label = if v.duration > 0.0 { "" } else { tr("Generating…") };
             p.text(thumb.center(), Align2::CENTER_CENTER, label, FontId::proportional(11.0), theme::text_3());
         }
     }
@@ -1389,7 +1389,7 @@ fn draw_card(
         p.circle_filled(star.center(), 13.0, theme::scrim(if sr.hovered() { 230 } else { 170 }));
         let icon = if fav { Icon::StarFilled } else { Icon::Star };
         icons::draw(p, icon, star.center(), 14.0, if fav || sr.hovered() { ACCENT } else { TEXT });
-        sr.clone().on_hover_text(if fav { tr("已收藏 · 点击管理收藏夹") } else { tr("收藏") });
+        sr.clone().on_hover_text(if fav { tr("Favorited · click to manage") } else { tr("Favorite") });
         if sr.clicked() {
             ev = Some(CardEvent::Favorite(v.id, pos2(star.right() - 190.0, star.bottom() + 6.0)));
         }
@@ -1397,7 +1397,7 @@ fn draw_card(
 
     let progress = v.progress().filter(|_| !hide_history);
     let finished = progress.is_some_and(|x| x >= FINISHED);
-    let badge = if finished { tr("已看完").to_string() } else if v.duration > 0.0 { fmt_time(v.duration) } else { String::new() };
+    let badge = if finished { tr("Watched").to_string() } else if v.duration > 0.0 { fmt_time(v.duration) } else { String::new() };
     if !badge.is_empty() {
         let g = p.layout_no_wrap(badge, FontId::monospace(10.0), TEXT);
         let r = Rect::from_min_size(thumb.right_bottom() - g.size() - vec2(12.0, 10.0), g.size() + vec2(8.0, 4.0));
@@ -1421,7 +1421,7 @@ fn draw_card(
         p.text(pos2(card.right(), ty), Align2::RIGHT_CENTER, plays, plays_font, if rank.is_some() { ACCENT } else { theme::text_3() });
     }
 
-    // Tags + "+ 标签".
+    // Tags + "+ Tag".
     let mut x = card.left();
     let cy = thumb.bottom() + 38.0;
     for t in &v.tags {
@@ -1440,7 +1440,7 @@ fn draw_card(
     }
     let add = Rect::from_min_size(pos2(x, cy - 9.0), vec2(42.0, 18.0));
     let ar = ui.interact(add, ui.scope_id().with(("card_add_tag", v.id)), Sense::click());
-    p.text(add.left_center() + vec2(2.0, 0.0), Align2::LEFT_CENTER, tr("+ 标签"), FontId::proportional(11.0), if ar.hovered() { ACCENT } else { theme::text_3() });
+    p.text(add.left_center() + vec2(2.0, 0.0), Align2::LEFT_CENTER, tr("+ Tag"), FontId::proportional(11.0), if ar.hovered() { ACCENT } else { theme::text_3() });
     if ar.clicked() {
         ev = Some(CardEvent::EditTags(v.id, pos2(card.left(), cy + 12.0)));
     }
@@ -1449,20 +1449,20 @@ fn draw_card(
         ev = Some(CardEvent::Play(v.path.clone()));
     }
     resp.context_menu(|ui| {
-        if ui.button(tr("播放")).clicked() {
+        if ui.button(tr("Play")).clicked() {
             ev = Some(CardEvent::Play(v.path.clone()));
             ui.close();
         }
-        if ui.button(if fav { tr("管理收藏夹…") } else { tr("收藏到…") }).clicked() {
+        if ui.button(if fav { tr("Manage collections…") } else { tr("Add to collection…") }).clicked() {
             ev = Some(CardEvent::Favorite(v.id, pos2(thumb.left() + 8.0, thumb.top() + 8.0)));
             ui.close();
         }
-        if ui.button(tr("添加标签…")).clicked() {
+        if ui.button(tr("Add tag…")).clicked() {
             ev = Some(CardEvent::EditTags(v.id, pos2(card.left(), cy + 12.0)));
             ui.close();
         }
         if !v.tags.is_empty() {
-            ui.menu_button(tr("移除标签"), |ui| {
+            ui.menu_button(tr("Remove tag"), |ui| {
                 for t in &v.tags {
                     if ui.button(format!("#{t}")).clicked() {
                         ev = Some(CardEvent::RemoveTag(v.id, t.clone()));
@@ -1472,12 +1472,12 @@ fn draw_card(
             });
         }
         ui.separator();
-        let reveal = if cfg!(target_os = "macos") { tr("在访达中显示") } else { tr("在资源管理器中显示") };
+        let reveal = if cfg!(target_os = "macos") { tr("Show in Finder") } else { tr("Show in Explorer") };
         if ui.button(reveal).clicked() {
             ev = Some(CardEvent::Reveal(v.path.clone()));
             ui.close();
         }
-        if ui.button(tr("从媒体库移除（不删除文件）")).clicked() {
+        if ui.button(tr("Remove from library (keeps the file)")).clicked() {
             ev = Some(CardEvent::Remove(v.id));
             ui.close();
         }
@@ -1536,7 +1536,7 @@ fn draw_folder_card(
     p.text(pos2(card.left(), ty), Align2::LEFT_CENTER, elide(p, name, FontId::proportional(13.0), card.width()), FontId::proportional(13.0), theme::text());
     let mut meta = fmt_time(total);
     if count > 0 && watched > 0 {
-        meta.push_str(&tf(" · 看完 {}/{}", &[&watched, &count]));
+        meta.push_str(&tf(" · watched {}/{}", &[&watched, &count]));
     }
     p.text(pos2(card.left(), thumb.bottom() + 36.0), Align2::LEFT_CENTER, meta, FontId::monospace(10.0), theme::text_3());
 
@@ -1544,15 +1544,15 @@ fn draw_folder_card(
         ev = Some(CardEvent::OpenFolder(loc.clone()));
     }
     resp.context_menu(|ui| {
-        if ui.button(tr("打开")).clicked() {
+        if ui.button(tr("Open")).clicked() {
             ev = Some(CardEvent::OpenFolder(loc.clone()));
             ui.close();
         }
-        if ui.button(tr("播放全部")).clicked() {
+        if ui.button(tr("Play all")).clicked() {
             ev = Some(CardEvent::PlayFolder(loc.clone()));
             ui.close();
         }
-        if ui.button(tr("检查这个文件夹的重复")).clicked() {
+        if ui.button(tr("Check this folder for duplicates")).clicked() {
             ev = Some(CardEvent::CheckFolder(loc.clone()));
             ui.close();
         }
@@ -1578,18 +1578,18 @@ fn empty_library(ui: &mut egui::Ui, p: &egui::Painter, content: Rect) -> Action 
     let frame = Rect::from_center_size(c - vec2(0.0, 30.0), vec2(240.0, 120.0));
     icons::corner_brackets(p, frame, 12.0, Stroke::new(1.0, theme::accent_alpha(200)));
     icons::draw(p, Icon::Folder, frame.center() - vec2(0.0, 14.0), 26.0, ACCENT);
-    p.text(frame.center() + vec2(0.0, 24.0), Align2::CENTER_CENTER, tr("建立你的媒体库"), FontId::proportional(14.0), theme::text());
-    p.text(pos2(c.x, frame.bottom() + 22.0), Align2::CENTER_CENTER, tr("添加视频所在的文件夹，自动生成缩略图，支持标签与搜索"), FontId::proportional(12.0), theme::text_2());
+    p.text(frame.center() + vec2(0.0, 24.0), Align2::CENTER_CENTER, tr("Build your library"), FontId::proportional(14.0), theme::text());
+    p.text(pos2(c.x, frame.bottom() + 22.0), Align2::CENTER_CENTER, tr("Add folders of videos for automatic thumbnails, tags and search"), FontId::proportional(12.0), theme::text_2());
     let mut action = Action::None;
     let y = frame.bottom() + 60.0;
-    if text_btn(ui, p, pos2(c.x - 14.0, y), "empty_add", tr("+ 添加文件夹"), ACCENT).1 {
+    if text_btn(ui, p, pos2(c.x - 14.0, y), "empty_add", tr("+ Add folder"), ACCENT).1 {
         action = Action::AddFolder;
     }
-    let open_w = p.layout_no_wrap(tr("打开文件").into(), FontId::proportional(13.0), theme::text()).size().x;
-    if text_btn(ui, p, pos2(c.x + 14.0 + open_w, y), "empty_open", tr("打开文件"), theme::text_2()).1 {
+    let open_w = p.layout_no_wrap(tr("Open file").into(), FontId::proportional(13.0), theme::text()).size().x;
+    if text_btn(ui, p, pos2(c.x + 14.0 + open_w, y), "empty_open", tr("Open file"), theme::text_2()).1 {
         action = Action::OpenFile;
     }
-    p.text(pos2(c.x, y + 40.0), Align2::CENTER_CENTER, tr("也可以直接把视频拖进窗口播放"), FontId::proportional(11.0), theme::text_3());
+    p.text(pos2(c.x, y + 40.0), Align2::CENTER_CENTER, tr("Or just drop a video into this window"), FontId::proportional(11.0), theme::text_3());
     action
 }
 
@@ -1619,11 +1619,11 @@ fn text_btn(ui: &mut egui::Ui, p: &egui::Painter, right_center: egui::Pos2, id: 
 fn time_left(secs: f64) -> String {
     let minutes = (secs / 60.0).ceil() as u64;
     if minutes < 1 {
-        tr("还剩不到 1 分钟").to_string()
+        tr("Less than a minute left").to_string()
     } else if minutes < 60 {
-        tf("还剩约 {} 分钟", &[&minutes])
+        tf("About {} min left", &[&minutes])
     } else {
-        tf("还剩约 {} 小时 {} 分钟", &[&(minutes / 60), &(minutes % 60)])
+        tf("About {} h {} min left", &[&(minutes / 60), &(minutes % 60)])
     }
 }
 

@@ -83,7 +83,7 @@ pub fn is_media(path: &Path) -> bool {
         .is_some_and(|e| MEDIA_EXTS.iter().any(|m| m.eq_ignore_ascii_case(e)))
 }
 
-/// Media files directly inside `dir`, in natural order ("第2讲" before "第10讲").
+/// Media files directly inside `dir`, in natural order ("Lesson 2" before "Lesson 10").
 /// Uses the directory entry's own file type (no extra stat per file), which
 /// matters on network drives and big folders.
 pub fn scan_dir(dir: &Path) -> Vec<String> {
@@ -396,9 +396,9 @@ mod tests {
 
     #[test]
     fn natural_order() {
-        let mut v = vec!["第10讲.mp4", "第2讲.mp4", "第1讲.mp4", "Intro.mp4", "ep02.mkv", "EP1.mkv"];
+        let mut v = vec!["\u{7B2C}10\u{8BB2}.mp4", "\u{7B2C}2\u{8BB2}.mp4", "\u{7B2C}1\u{8BB2}.mp4", "Intro.mp4", "ep02.mkv", "EP1.mkv"];
         v.sort_by(|a, b| natural_cmp(a, b));
-        assert_eq!(v, ["EP1.mkv", "ep02.mkv", "Intro.mp4", "第1讲.mp4", "第2讲.mp4", "第10讲.mp4"]);
+        assert_eq!(v, ["EP1.mkv", "ep02.mkv", "Intro.mp4", "\u{7B2C}1\u{8BB2}.mp4", "\u{7B2C}2\u{8BB2}.mp4", "\u{7B2C}10\u{8BB2}.mp4"]);
     }
 
     #[test]
@@ -437,10 +437,10 @@ mod tests {
         let dir = std::env::temp_dir().join(format!("tp-fill-{}", std::process::id()));
         let _ = std::fs::remove_dir_all(&dir);
         std::fs::create_dir_all(&dir).unwrap();
-        for n in ["第1讲.mp4", "第2讲.mp4", "第10讲.mp4", "notes.txt"] {
+        for n in ["\u{7B2C}1\u{8BB2}.mp4", "\u{7B2C}2\u{8BB2}.mp4", "\u{7B2C}10\u{8BB2}.mp4", "notes.txt"] {
             std::fs::write(dir.join(n), b"x").unwrap();
         }
-        let file = dir.join("第2讲.mp4").to_string_lossy().into_owned();
+        let file = dir.join("\u{7B2C}2\u{8BB2}.mp4").to_string_lossy().into_owned();
         let mut p = Playlist::new(LoopMode::Off, false);
 
         // Plays immediately with just the opened file.
@@ -451,7 +451,7 @@ mod tests {
         // Background scan result merges in, keeping the playing file current.
         assert!(p.merge_folder(generation, &name, scan_dir(&folder)));
         let titles: Vec<_> = p.items.iter().map(|i| i.title.as_str()).collect();
-        assert_eq!(titles, ["第1讲.mp4", "第2讲.mp4", "第10讲.mp4"]);
+        assert_eq!(titles, ["\u{7B2C}1\u{8BB2}.mp4", "\u{7B2C}2\u{8BB2}.mp4", "\u{7B2C}10\u{8BB2}.mp4"]);
         assert_eq!(p.current, Some(1));
 
         // A stale result (another file opened since) is ignored.
