@@ -24,6 +24,7 @@ use crate::marks::{self, Marks};
 use crate::media_keys::{Cmd as MediaCmd, MediaKeys};
 use crate::scanner::{Msg as ScanMsg, Scanner};
 use crate::mpv::{Event, RenderContext};
+use crate::multiview::{self, MultiView};
 use crate::player::Player;
 use crate::quick_panel::{Crop, QuickPanel};
 use crate::playlist::{self, LoopMode, Playlist};
@@ -164,6 +165,10 @@ pub struct App {
     hover_thumbs: HoverThumbs,
     keep_awake: KeepAwake,
     media_keys: Option<MediaKeys>,
+    /// Several videos in one window.
+    multi: MultiView,
+    /// Files dropped while in multi-view, placed by slot in flush_open.
+    multi_drop: Vec<String>,
 }
 
 impl App {
@@ -270,6 +275,8 @@ impl App {
             hover_thumbs,
             keep_awake: KeepAwake::new(),
             media_keys,
+            multi: MultiView::default(),
+            multi_drop: Vec::new(),
         }
     }
 
@@ -1116,8 +1123,28 @@ impl App {
         if moved || !keys.is_empty() || scroll != 0.0 {
             self.last_activity = now;
         }
-        self.pending_open.extend(dropped);
+        if self.multi.on && !dropped.is_empty() {
+            // Handled in flush_open, where `self` isn't borrowed.
+            self.multi_drop.extend(dropped);
+        } else {
+            self.pending_open.extend(dropped);
+        }
         if ctx.egui_wants_keyboard_input() {
+            return;
+        }
+        // In multi-view, keys go to the focused slot. Full screen still works.
+        if self.multi.on && !player.state.idle {
+            let fullscreen = ctx.input(|i| i.viewport().fullscreen.unwrap_or(false));
+            for key in &keys {
+                match key {
+                    Key::F | Key::Enter => ctx.send_viewport_cmd(ViewportCommand::Fullscreen(!fullscreen)),
+                    Key::Escape if fullscreen => ctx.send_viewport_cmd(ViewportCommand::Fullscreen(false)),
+                    _ => {}
+                }
+            }
+            if let Some(text) = self.multi.handle_keys(&keys, player) {
+                self.show_osd(ctx, text);
+            }
             return;
         }
 
@@ -1321,6 +1348,10 @@ impl App {
     /// right away. The rest of the folder is scanned on a background thread
     /// and merged into the queue when ready, so opening never waits on disk.
     fn flush_open(&mut self, ctx: &egui::Context) {
+        if !self.multi_drop.is_empty() {
+            let files = std::mem::take(&mut self.multi_drop);
+            self.drop_into_multi(ctx, files);
+        }
         if !self.pending_open.is_empty() {
             self.opening_until = ctx.input(|i| i.time) + OPENING_SECS;
         }
@@ -1362,6 +1393,30 @@ impl App {
                 self.show_osd(ctx, if on { tr("★ 已收藏") } else { tr("已取消收藏") });
             }
             None => self.show_osd(ctx, tr("只有媒体库里的视频可以收藏")),
+        }
+    }
+
+    /// Files dropped in multi-view: onto an extra slot (or an empty one)
+    /// they play there; onto the main slot they replace the main video.
+    fn drop_into_multi(&mut self, ctx: &egui::Context, files: Vec<String>) {
+        let pos = ctx.input(|i| i.pointer.latest_pos());
+        let target = pos.and_then(|q| self.multi.slot_at(q)).or_else(|| {
+            self.multi.layout.leaves().into_iter().find(|(_, c)| *c == crate::split_layout::Content::Empty)
+        });
+        let Some((slot, _)) = target else {
+            self.pending_open.extend(files);
+            return;
+        };
+        let Some(first) = files.into_iter().next() else { return };
+        self.load_into_slot(ctx, slot, first);
+    }
+
+    fn load_into_slot(&mut self, ctx: &egui::Context, slot: u32, path: String) {
+        let settings = self.tracker.settings.clone();
+        match self.multi.load(slot, &path, ctx, &settings, self.tracker.incognito) {
+            Ok(true) => {}
+            Ok(false) => self.pending_open.push(path),
+            Err(e) => self.show_osd(ctx, tf("无法打开：{}", &[&e])),
         }
     }
 
@@ -1509,16 +1564,28 @@ impl eframe::App for App {
                 ctx.set_cursor_icon(if surface.dragged() { CursorIcon::Grabbing } else { CursorIcon::Grab });
             }
         }
-        if !s.idle {
+        // Multi-view lays several videos out; the main one goes in its slot.
+        if s.idle && self.multi.on {
+            self.multi.disable();
+        }
+        let multi = self.multi.on && !self.pip;
+        let video_rect = if multi {
+            self.multi.main_rect(MultiView::grid_rect(stage)).unwrap_or(Rect::NOTHING)
+        } else {
+            full
+        };
+        let mut main_texture = None;
+        if !s.idle && video_rect.width() >= 1.0 && video_rect.height() >= 1.0 {
             if let (Some(video), Some(render), Some(gl)) = (&mut self.video, &self.render, frame.gl()) {
                 let ppp = ctx.pixels_per_point();
-                let px = [(full.width() * ppp).round() as i32, (full.height() * ppp).round() as i32];
+                let px = [(video_rect.width() * ppp).round() as i32, (video_rect.height() * ppp).round() as i32];
                 let aspect = px[0].max(1) as f64 / px[1].max(1) as f64;
-                let pano = self.vr.map(|f| Panorama {
+                let pano = self.vr.filter(|_| !multi).map(|f| Panorama {
                     view: self.vr_look.projection(f, aspect),
                     size: self.vr_look.render_size(f, [s.width as i32, s.height as i32], px[1]),
                 });
                 match video.update(gl, render, px, pano) {
+                    Ok(texture) if multi => main_texture = Some(texture),
                     Ok(texture) => {
                         painter.image(
                             texture,
@@ -1529,6 +1596,44 @@ impl eframe::App for App {
                     }
                     Err(e) => self.vr_error = Some(e),
                 }
+            }
+        }
+        if multi && !s.idle {
+            let now = ctx.input(|i| i.time);
+            let chrome = now - self.last_activity < HIDE_AFTER;
+            if chrome {
+                ctx.request_repaint_after_secs((HIDE_AFTER - (now - self.last_activity)).max(0.05) as f32);
+            }
+            let items: Vec<(String, String)> = self.playlist.items.iter().map(|i| (i.title.clone(), i.path.clone())).collect();
+            let gpa = self.get_proc_address.clone();
+            let acts = match &self.player {
+                Some(main) => self.multi.show(ui, frame, gpa.as_ref(), stage, main, main_texture, &items, chrome),
+                None => multiview::Actions::default(),
+            };
+            if let Some(slot) = acts.open_file_for {
+                if let Some(file) = rfd::FileDialog::new()
+                    .add_filter(tr("媒体文件"), playlist::MEDIA_EXTS)
+                    .pick_file()
+                {
+                    self.load_into_slot(&ctx, slot, file.to_string_lossy().into_owned());
+                }
+            }
+            if let Some((slot, path)) = acts.load {
+                self.load_into_slot(&ctx, slot, path);
+            }
+            if acts.toggle_fullscreen {
+                let fs = ctx.input(|i| i.viewport().fullscreen.unwrap_or(false));
+                ctx.send_viewport_cmd(ViewportCommand::Fullscreen(!fs));
+            }
+            if let Some(text) = acts.osd {
+                self.show_osd(&ctx, text);
+            }
+            if acts.back {
+                self.multi.disable();
+                if let Some(p) = &self.player {
+                    p.stop();
+                }
+                self.open_library();
             }
         }
         if self.pip && !s.idle {
@@ -1574,6 +1679,10 @@ impl eframe::App for App {
                 EmptyAction::Settings => self.settings_open = true,
                 EmptyAction::None => {}
             }
+        } else if multi {
+            // Multi-view draws its own bar and per-slot controls.
+            self.quick.close();
+            self.sidebar_open = false;
         } else {
             let now = ctx.input(|i| i.time);
             let pointer_in_bar = ctx
@@ -1613,6 +1722,14 @@ impl eframe::App for App {
                 let right_gap = if self.frameless { 44.0 } else { 16.0 };
                 let private = self.tracker.incognito;
                 let plays = if private { 0 } else { self.tracker.current_play_count() };
+                // The multi-view switch sits at the right end; the tags move left.
+                let sw_right = pos2(stage.right() - right_gap, stage.top() + 22.0);
+                let (sw_left, flip) = multiview::switch(ui, &painter, sw_right, "multi_toggle", false, tr("多屏"), alpha);
+                if flip {
+                    self.multi.enable();
+                    self.show_osd(&ctx, tr("多屏已开启：点空白格添加视频"));
+                }
+                let right_gap = stage.right() - sw_left + 18.0;
                 draw_top_bar(&painter, stage, &s, plays, private, alpha, right_gap);
                 if self.frameless && close_button(ui, stage, alpha) {
                     ctx.send_viewport_cmd(ViewportCommand::Close);
@@ -1785,6 +1902,7 @@ impl eframe::App for App {
     /// Runs on every wakeup, even while the window is minimized, so progress
     /// and play counts stay accurate during background playback.
     fn logic(&mut self, ctx: &egui::Context, _frame: &mut eframe::Frame) {
+        self.multi.pump();
         let Some(player) = &mut self.player else { return };
         let now = ctx.input(|i| i.time);
         for ev in player.pump() {
@@ -1910,6 +2028,7 @@ impl eframe::App for App {
         self.library.shut_down(&egui::Context::default());
         self.scanner.quit();
         self.tracker.shutdown();
+        self.multi.shut_down(gl);
         if let (Some(v), Some(gl)) = (self.video.take(), gl) {
             v.destroy(gl);
         }

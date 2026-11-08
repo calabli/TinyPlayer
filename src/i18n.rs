@@ -51,7 +51,9 @@ fn fill(template: &str, args: &[&dyn Display]) -> String {
 mod tests {
     use super::*;
 
-    const SOURCES: [(&str, &str); 13] = [
+    const SOURCES: [(&str, &str); 15] = [
+        ("multiview", include_str!("multiview.rs")),
+        ("split_layout", include_str!("split_layout.rs")),
         ("app", include_str!("app.rs")),
         ("audio_fx", include_str!("audio_fx.rs")),
         ("library", include_str!("library.rs")),

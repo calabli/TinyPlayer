@@ -67,6 +67,13 @@ impl Tracker {
         tracker
     }
 
+    /// A tracker for an extra multi-view player: same rules and settings as
+    /// the main one, but without the startup clean-up `new` does (that must
+    /// run once per launch, not every time a pane opens).
+    pub fn for_pane(settings: Settings, incognito: bool) -> Self {
+        Self { store: Store::open_default().ok(), settings, incognito, current: None, last_tick: None }
+    }
+
     fn writes_enabled(&self) -> bool {
         !self.incognito && self.store.is_some()
     }
