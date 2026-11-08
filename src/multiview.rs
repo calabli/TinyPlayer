@@ -121,6 +121,19 @@ pub struct Actions {
     pub load: Option<(u32, String)>,
     pub back: bool,
     pub osd: Option<String>,
+    /// The multi-view switch was turned off; the app decides what follows.
+    pub exit: bool,
+}
+
+/// What turning multi-view off leads to.
+#[derive(Debug, PartialEq)]
+pub enum Exit {
+    /// More than one video is playing: they'd have to be closed first.
+    Blocked,
+    /// The main player's video (or nothing) carries on as a single video.
+    Main,
+    /// The one video left is in another slot: the main player takes it over.
+    Pane { path: String, position: f64, paused: bool },
 }
 
 pub struct MultiView {
@@ -151,6 +164,8 @@ pub struct MultiView {
     solo_seen_fullscreen: bool,
     /// The whole area multi-view drew in last frame.
     stage: Rect,
+    /// Where files being dragged in are, to mark the slot they'll replace.
+    pub drop_at: Option<Pos2>,
 }
 
 impl Default for MultiView {
@@ -173,6 +188,7 @@ impl Default for MultiView {
             solo_was_fullscreen: false,
             solo_seen_fullscreen: false,
             stage: Rect::NOTHING,
+            drop_at: None,
         }
     }
 }
@@ -196,6 +212,19 @@ impl MultiView {
         self.menu = None;
         self.drag = None;
         self.maximized = None;
+    }
+
+    /// What turning multi-view off would do now.
+    pub fn exit_plan(&self, main: &Player) -> Exit {
+        let videos: Vec<Content> = self.layout.contents().into_iter().filter(|c| !self.is_empty(*c, main)).collect();
+        match videos[..] {
+            [Content::Pane(id)] => match self.panes.get(&id).map(|p| &p.player.state) {
+                Some(s) if !s.path.is_empty() => Exit::Pane { path: s.path.clone(), position: s.position, paused: s.paused },
+                _ => Exit::Main,
+            },
+            [] | [_] => Exit::Main,
+            _ => Exit::Blocked,
+        }
     }
 
     /// The video filling the whole area, if any (and still in the layout).
@@ -551,6 +580,7 @@ impl MultiView {
             self.draw_video(&p, frame, content, stage, main_texture, ppp, empty);
             self.slot_chrome(ui, &p, id, content, stage, false, main, chrome, pointer, &mut out);
             self.hide_cursor(&ctx, stage, main, chrome, pointer);
+            self.drop_hint(&p, main);
             return out;
         }
 
@@ -565,6 +595,7 @@ impl MultiView {
             self.slot_chrome(ui, &p, id, content, grid, false, main, chrome, pointer, &mut out);
             self.top_bar(ui, &p, stage, main, &mut out);
             self.hide_cursor(&ctx, grid, main, chrome, pointer);
+            self.drop_hint(&p, main);
             return out;
         }
 
@@ -609,7 +640,33 @@ impl MultiView {
         self.top_bar(ui, &p, stage, main, &mut out);
         self.add_menu(ui, playlist, &mut out);
         self.hide_cursor(&ctx, grid, main, chrome, pointer);
+        self.drop_hint(&p, main);
         out
+    }
+
+    /// Outlines the slot that files being dragged in will go to.
+    fn drop_hint(&self, p: &egui::Painter, main: &Player) {
+        let Some((id, content)) = self.drop_at.and_then(|q| self.slot_at(q)) else { return };
+        let Some(r) = self.slot_rect(id) else { return };
+        p.rect_filled(r, 3.0, theme::scrim(120));
+        p.rect_stroke(r, 3.0, Stroke::new(3.0, ACCENT), StrokeKind::Inside);
+        let text = if self.is_empty(content, main) { tr("松开在这里播放") } else { tr("松开替换这个画面") };
+        p.text(r.center(), Align2::CENTER_CENTER, text, FontId::proportional(16.0), TEXT);
+    }
+
+    /// Where a slot is on screen now.
+    fn slot_rect(&self, id: u32) -> Option<Rect> {
+        if self.solo_slot().is_some_and(|(s, _)| s == id) {
+            return Some(self.stage);
+        }
+        if self.max_slot().is_some_and(|(s, _)| s == id) {
+            return Some(self.grid);
+        }
+        if let Some(f) = self.layout.floats.iter().find(|f| f.id == id) {
+            return Some(Layout::float_rect(f, self.grid));
+        }
+        let (leaves, _) = self.layout.rects(self.grid);
+        leaves.into_iter().find(|(s, _, _)| *s == id).map(|(_, _, r)| inner(r))
     }
 
     /// Hides the pointer over a playing video once the mouse rests.
@@ -1030,7 +1087,7 @@ impl MultiView {
         let mut rx = band.right() - 14.0;
         let (sw_left, off) = switch(ui, p, pos2(rx, cy), "mv_toggle", true, tr("多屏"), 1.0);
         if off {
-            self.disable(&ctx);
+            out.exit = true;
         }
         rx = sw_left - 14.0;
         p.line_segment([pos2(rx, cy - 8.0), pos2(rx, cy + 8.0)], Stroke::new(1.0, Color32::from_rgb(0x30, 0x36, 0x3D)));

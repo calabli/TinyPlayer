@@ -169,6 +169,9 @@ pub struct App {
     multi: MultiView,
     /// Files dropped while in multi-view, placed by slot in flush_open.
     multi_drop: Vec<String>,
+    /// A video the main player takes over from a multi-view slot: it carries
+    /// on from this position (and pause state) once loaded.
+    take_over: Option<(String, f64, bool)>,
 }
 
 impl App {
@@ -277,6 +280,7 @@ impl App {
             media_keys,
             multi: MultiView::default(),
             multi_drop: Vec::new(),
+            take_over: None,
         }
     }
 
@@ -1391,7 +1395,7 @@ impl App {
     /// Files dropped in multi-view: onto an extra slot (or an empty one)
     /// they play there; onto the main slot they replace the main video.
     fn drop_into_multi(&mut self, ctx: &egui::Context, files: Vec<String>) {
-        let pos = ctx.input(|i| i.pointer.latest_pos());
+        let pos = float_window::pointer_in_window(ctx).or_else(|| ctx.input(|i| i.pointer.latest_pos()));
         let target = pos.and_then(|q| self.multi.slot_at(q)).or_else(|| {
             self.multi.layout.leaves().into_iter().find(|(_, c)| *c == crate::split_layout::Content::Empty)
         });
@@ -1401,6 +1405,23 @@ impl App {
         };
         let Some(first) = files.into_iter().next() else { return };
         self.load_into_slot(ctx, slot, first);
+    }
+
+    /// Turning multi-view off. With one video left it plays on as a single
+    /// video, from where it was; with several, they have to be closed first.
+    fn exit_multi(&mut self, ctx: &egui::Context) {
+        let Some(main) = &self.player else { return };
+        match self.multi.exit_plan(main) {
+            multiview::Exit::Blocked => {
+                self.show_osd(ctx, tr("多个视频在播放，先关闭其他画面，只剩一个时才能退出多屏"));
+            }
+            multiview::Exit::Main => self.multi.disable(ctx),
+            multiview::Exit::Pane { path, position, paused } => {
+                self.multi.disable(ctx);
+                self.take_over = Some((path.clone(), position, paused));
+                self.pending_open.push(path);
+            }
+        }
     }
 
     fn load_into_slot(&mut self, ctx: &egui::Context, slot: u32, path: String) {
@@ -1596,6 +1617,13 @@ impl eframe::App for App {
             }
             let items: Vec<(String, String)> = self.playlist.items.iter().map(|i| (i.title.clone(), i.path.clone())).collect();
             let gpa = self.get_proc_address.clone();
+            // Files being dragged in: show which slot they'll replace.
+            self.multi.drop_at = if ctx.input(|i| !i.raw.hovered_files.is_empty()) {
+                ctx.request_repaint_after_secs(0.05);
+                float_window::pointer_in_window(&ctx).or_else(|| ctx.input(|i| i.pointer.latest_pos()))
+            } else {
+                None
+            };
             let acts = match &self.player {
                 Some(main) => self.multi.show(ui, frame, gpa.as_ref(), stage, main, main_texture, &items, chrome),
                 None => multiview::Actions::default(),
@@ -1613,6 +1641,9 @@ impl eframe::App for App {
             }
             if let Some(text) = acts.osd {
                 self.show_osd(&ctx, text);
+            }
+            if acts.exit {
+                self.exit_multi(&ctx);
             }
             if acts.back {
                 self.multi.disable(&ctx);
@@ -1912,14 +1943,22 @@ impl eframe::App for App {
                         _ => Vec::new(),
                     };
                     self.marks = Marks { key, chapters: player.chapters(), bookmarks };
-                    match self.tracker.file_loaded(&player.state) {
-                        Resume::Resumed(pos) => {
-                            player.seek_to(pos, true);
-                            let msg = tf("已从 {} 继续 · Home 从头", &[&fmt_time(pos)]);
-                            self.osd = Some((msg, now, 3.5));
+                    let resume = self.tracker.file_loaded(&player.state);
+                    let taken = self.take_over.take().filter(|(path, _, _)| *path == player.state.path);
+                    if let Some((_, pos, paused)) = taken {
+                        // Taken over from a multi-view slot: it just carries on.
+                        player.seek_to(pos, true);
+                        player.mpv.set_flag("pause", paused);
+                    } else {
+                        match resume {
+                            Resume::Resumed(pos) => {
+                                player.seek_to(pos, true);
+                                let msg = tf("已从 {} 继续 · Home 从头", &[&fmt_time(pos)]);
+                                self.osd = Some((msg, now, 3.5));
+                            }
+                            Resume::Ask(pos) => self.resume_prompt = Some((pos, now)),
+                            Resume::None => {}
                         }
-                        Resume::Ask(pos) => self.resume_prompt = Some((pos, now)),
-                        Resume::None => {}
                     }
                 }
                 Event::EndFile => {

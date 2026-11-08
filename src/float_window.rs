@@ -99,6 +99,16 @@ pub fn resized(start: Rect, grip: Grip, moved: Vec2, aspect: f32, min: Vec2, max
     Rect::from_min_size(pos2(left, top), new)
 }
 
+/// Where the mouse is, in this window's points, read from the system. egui
+/// stops hearing about the mouse while files are dragged in from outside, so
+/// this is the only way to know where they're dropped.
+pub fn pointer_in_window(ctx: &eframe::egui::Context) -> Option<Pos2> {
+    let inner = ctx.input(|i| i.viewport().inner_rect)?;
+    let scale = cursor_scale(ctx.pixels_per_point());
+    let at = cursor_pos()?;
+    Some(pos2(at.x / scale, at.y / scale) - inner.min.to_vec2())
+}
+
 /// Screen units per egui point.
 fn cursor_scale(pixels_per_point: f32) -> f32 {
     if cfg!(windows) { pixels_per_point } else { 1.0 }
