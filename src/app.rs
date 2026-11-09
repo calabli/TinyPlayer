@@ -1415,9 +1415,9 @@ impl App {
             multiview::Exit::Blocked => {
                 self.show_osd(ctx, tr("Several videos are playing. Close the others first; multi-view turns off with one left"));
             }
-            multiview::Exit::Main => self.multi.disable(ctx),
+            multiview::Exit::Main => self.multi.disable(Some(main)),
             multiview::Exit::Pane { path, position, paused } => {
-                self.multi.disable(ctx);
+                self.multi.disable(Some(main));
                 self.take_over = Some((path.clone(), position, paused));
                 self.pending_open.push(path);
             }
@@ -1646,7 +1646,7 @@ impl eframe::App for App {
                 self.exit_multi(&ctx);
             }
             if acts.back {
-                self.multi.disable(&ctx);
+                self.multi.disable(self.player.as_ref());
                 if let Some(p) = &self.player {
                     p.stop();
                 }

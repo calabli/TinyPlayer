@@ -429,6 +429,11 @@ impl Player {
         self.mpv.set_double("video-pan-y", v.pan_y);
     }
 
+    /// Enlarges the video to fill its area, cropping the black bars, or fits it back.
+    pub fn set_fill(&self, on: bool) {
+        self.mpv.set_double("panscan", if on { 1.0 } else { 0.0 });
+    }
+
     /// `area` is in mpv's `WxH+X+Y` form; None shows the whole frame.
     pub fn set_crop(&self, area: Option<&str>) {
         self.mpv.set_property_string("video-crop", area.unwrap_or(""));

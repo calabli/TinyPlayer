@@ -4,6 +4,11 @@ English | [简体中文](CHANGELOG.md)
 
 The in-app update dialog shows the entries of the new version, so each one is written for users.
 
+## 0.1.21
+
+- In multi-view, double-clicking a video, pressing F or clicking the button at the right end of its control bar makes it fill its own slot with the black bars cropped away, instead of going to the monitor's full screen; double-click again or press Esc to see the whole video
+- New English documentation
+
 ## 0.1.20
 
 - Updated how the packages are built and released; the player works the same as 0.1.19
