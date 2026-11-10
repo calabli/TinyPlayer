@@ -186,12 +186,11 @@ impl Playlist {
         }
         if let [single] = paths {
             let p = Path::new(single);
-            if fill_folder && !p.is_dir() && is_media(p) {
-                if let (Some(dir), Some(name)) = (p.parent(), p.file_name()) {
+            if fill_folder && !p.is_dir() && is_media(p)
+                && let (Some(dir), Some(name)) = (p.parent(), p.file_name()) {
                     let name = name.to_string_lossy().into_owned();
                     self.pending_fill = Some((self.generation, dir.to_path_buf(), name));
                 }
-            }
         }
         self.items = items.into_iter().map(Item::new).collect();
         if self.items.is_empty() {

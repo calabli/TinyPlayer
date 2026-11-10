@@ -6,6 +6,7 @@
 use std::collections::{BTreeMap, HashMap, HashSet};
 use std::path::{Path, PathBuf};
 use std::rc::Rc;
+use std::sync::mpsc;
 use std::time::Instant;
 
 use eframe::egui::{
@@ -25,8 +26,8 @@ const NAV_W: f32 = 188.0;
 const CARD_MIN_W: f32 = 200.0;
 const GAP: f32 = 16.0;
 const META_H: f32 = 54.0;
-/// Thumbnails decoded per frame, so scrolling a big library stays smooth.
-const THUMB_LOADS_PER_FRAME: usize = 4;
+/// Thumbnails the loader may have waiting at once.
+const THUMB_QUEUE: usize = 12;
 const FINISHED: f32 = 0.95;
 /// Thumbnail textures kept in memory (~0.5 MB each at 480 px). The least
 /// recently shown ones are dropped beyond this and reloaded on demand.
@@ -97,14 +98,21 @@ struct GridKey {
     folder: Option<i64>,
 }
 
+/// A folder's cells and play-all list, for a library revision and location.
+type CachedFolder = (u64, Option<FolderLoc>, Rc<Vec<Cell>>, Rc<Vec<String>>);
+/// The nav's counts for a library revision: continue / recent / played, and each tag's.
+type NavCounts = (u64, [usize; 3], Vec<(String, usize)>);
+/// A folder card's cover videos, video count, total length and watched count.
+type FolderStats = (Vec<i64>, usize, f64, usize);
+
 /// Sorting and counting thousands of videos on every frame would make the
 /// page sluggish, so the results are kept until the library or view changes.
 #[derive(Default)]
 struct Cached {
     grid: Option<(GridKey, Rc<Vec<Cell>>, f64)>,
-    folder: Option<(u64, Option<FolderLoc>, Rc<Vec<Cell>>, Rc<Vec<String>>)>,
-    folder_stats: HashMap<FolderLoc, (Vec<i64>, usize, f64, usize)>,
-    nav: Option<(u64, [usize; 3], Vec<(String, usize)>)>,
+    folder: Option<CachedFolder>,
+    folder_stats: HashMap<FolderLoc, FolderStats>,
+    nav: Option<NavCounts>,
     /// Private mode was on for `folder_stats`.
     hidden: bool,
 }
@@ -140,6 +148,7 @@ pub struct LibraryView {
     thumbs: HashMap<i64, (String, TextureHandle, u64)>,
     frame: u64,
     thumb_failed: HashSet<i64>,
+    thumb_loader: Option<ThumbLoader>,
     manager: Manager,
     /// Counts reloads of `videos`.
     revision: u64,
@@ -181,6 +190,7 @@ impl LibraryView {
             thumbs: HashMap::new(),
             frame: 0,
             thumb_failed: HashSet::new(),
+            thumb_loader: None,
             manager: Manager::new(),
             revision: 0,
             rescan: false,
@@ -291,11 +301,10 @@ impl LibraryView {
         if self.folder_loc.as_ref().is_some_and(|l| !self.folders.iter().any(|x| x.id == l.root)) {
             self.folder_loc = None;
         }
-        if let View::Favorites(Some(c)) = self.view {
-            if !self.collections.iter().any(|x| x.id == c) {
+        if let View::Favorites(Some(c)) = self.view
+            && !self.collections.iter().any(|x| x.id == c) {
                 self.view = View::Favorites(None);
             }
-        }
     }
 
     fn video(&self, id: i64) -> Option<&Video> {
@@ -329,11 +338,10 @@ impl LibraryView {
             tags: self.tags_sel.clone(),
             folder: self.folder_sel,
         };
-        if let Some((cached, cells, total)) = &self.cached.grid {
-            if *cached == key {
+        if let Some((cached, cells, total)) = &self.cached.grid
+            && *cached == key {
                 return (cells.clone(), *total);
             }
-        }
         let videos = self.filtered();
         let total = videos.iter().map(|v| v.duration).sum();
         let cells: Rc<Vec<Cell>> = Rc::new(videos.iter().map(|v| Cell::Video(v.id)).collect());
@@ -380,6 +388,7 @@ impl LibraryView {
         }
         self.rescan |= self.manager.watch_disks(ui.ctx(), &self.folders);
         self.reload_if_dirty();
+        self.receive_thumbs(ui.ctx());
         if self.cached.hidden != self.hide_history {
             self.cached.hidden = self.hide_history;
             self.cached.folder_stats.clear();
@@ -468,19 +477,14 @@ impl LibraryView {
 
     fn manage(&mut self, ui: &mut egui::Ui, p: &egui::Painter, nav: Rect, content: Rect) -> Option<Action> {
         self.cached.folder_stats.clear();
-        let mut loads = 0;
-        let mut waiting = false;
         let mut thumbs = HashMap::new();
         for id in self.manager.visible() {
-            waiting |= self.ensure_thumb(ui.ctx(), id, &mut loads);
+            self.ensure_thumb(ui.ctx(), id);
             if let Some(texture) = self.use_thumb(id) {
                 thumbs.insert(id, texture);
             }
         }
         self.evict_thumbs();
-        if waiting {
-            ui.ctx().request_repaint();
-        }
         let lib = self.lib.as_ref()?;
         let data = library_manage::Data {
             lib,
@@ -853,14 +857,13 @@ impl LibraryView {
 
         // Breadcrumb: All folders / root / a / b
         let mut crumbs: Vec<(String, Option<FolderLoc>)> = vec![(tr("All folders").into(), None)];
-        if let Some(loc) = &self.folder_loc {
-            if let Some(root) = self.folders.iter().find(|f| f.id == loc.root) {
+        if let Some(loc) = &self.folder_loc
+            && let Some(root) = self.folders.iter().find(|f| f.id == loc.root) {
                 crumbs.push((base_name(&root.path), Some(FolderLoc { root: loc.root, parts: Vec::new() })));
                 for i in 0..loc.parts.len() {
                     crumbs.push((loc.parts[i].clone(), Some(FolderLoc { root: loc.root, parts: loc.parts[..=i].to_vec() })));
                 }
             }
-        }
         let mut x = header.left();
         // "Up" arrow.
         if self.folder_loc.is_some() {
@@ -927,11 +930,10 @@ impl LibraryView {
     /// Cells for the current folder location, plus every video below it
     /// (recursive, natural order) for "Play all".
     fn folder_list(&mut self) -> (Rc<Vec<Cell>>, Rc<Vec<String>>) {
-        if let Some((revision, loc, cells, play_all)) = &self.cached.folder {
-            if *revision == self.revision && *loc == self.folder_loc {
+        if let Some((revision, loc, cells, play_all)) = &self.cached.folder
+            && *revision == self.revision && *loc == self.folder_loc {
                 return (cells.clone(), play_all.clone());
             }
-        }
         let (cells, play_all) = self.folder_cells();
         let (cells, play_all) = (Rc::new(cells), Rc::new(play_all));
         self.cached.folder = Some((self.revision, self.folder_loc.clone(), cells.clone(), play_all.clone()));
@@ -1007,7 +1009,7 @@ impl LibraryView {
         v.into_iter().map(|(_, p)| p).collect()
     }
 
-    fn folder_stats(&self, loc: &FolderLoc) -> (Vec<i64>, usize, f64, usize) {
+    fn folder_stats(&self, loc: &FolderLoc) -> FolderStats {
         let Some(dir) = self.loc_path(loc) else { return (Vec::new(), 0, 0.0, 0) };
         let mut inside: Vec<&Video> = self
             .videos
@@ -1033,8 +1035,6 @@ impl LibraryView {
         let card_h = thumb_h + META_H;
         let rows = cells.len().div_ceil(cols);
         let total_h = rows as f32 * (card_h + GAP);
-        let mut loads = 0;
-        let mut pending_thumbs = false;
         let mut events: Vec<CardEvent> = Vec::new();
 
         ui.scope_builder(egui::UiBuilder::new().max_rect(rect), |ui| {
@@ -1054,9 +1054,7 @@ impl LibraryView {
                         match cell {
                             Cell::Video(id) => {
                                 let id = *id;
-                                if self.ensure_thumb(ui.ctx(), id, &mut loads) {
-                                    pending_thumbs = true;
-                                }
+                                self.ensure_thumb(ui.ctx(), id);
                                 let tex = self.use_thumb(id);
                                 let Some(v) = self.video(id) else { continue };
                                 let rank = ranked.then_some(i + 1);
@@ -1075,9 +1073,7 @@ impl LibraryView {
                                 };
                                 let (covers, count, total, watched) = stats;
                                 for &id in &covers {
-                                    if self.ensure_thumb(ui.ctx(), id, &mut loads) {
-                                        pending_thumbs = true;
-                                    }
+                                    self.ensure_thumb(ui.ctx(), id);
                                 }
                                 let texs: Vec<Option<egui::TextureId>> =
                                     covers.iter().map(|id| self.use_thumb(*id)).collect();
@@ -1090,9 +1086,6 @@ impl LibraryView {
                 }
             });
         });
-        if pending_thumbs {
-            ui.ctx().request_repaint();
-        }
         self.evict_thumbs();
 
         for ev in events {
@@ -1170,26 +1163,36 @@ impl LibraryView {
         }
     }
 
-    /// Loads the thumbnail texture for `id` if allowed this frame.
-    /// Returns true if a load had to be deferred to a later frame.
-    fn ensure_thumb(&mut self, ctx: &egui::Context, id: i64, loads: &mut usize) -> bool {
+    /// Asks the loader for the thumbnail of `id`, unless it's here, failed
+    /// or already asked for. The loader repaints when one is ready; a
+    /// thumbnail that found the queue full is asked for again then.
+    fn ensure_thumb(&mut self, ctx: &egui::Context, id: i64) {
         if self.thumbs.contains_key(&id) || self.thumb_failed.contains(&id) {
-            return false;
+            return;
         }
-        let Some(path) = self.video(id).and_then(|v| v.thumb.clone()) else { return false };
-        if *loads >= THUMB_LOADS_PER_FRAME {
-            return true;
-        }
-        *loads += 1;
-        match load_thumb(ctx, id, &path) {
-            Some(t) => {
-                self.thumbs.insert(id, (path, t, self.frame));
+        let Some(path) = self.video(id).and_then(|v| v.thumb.clone()) else { return };
+        let loader = self.thumb_loader.get_or_insert_with(|| ThumbLoader::start(ctx.clone()));
+        loader.request(id, path);
+    }
+
+    /// Takes the decoded thumbnails and uploads them as textures.
+    fn receive_thumbs(&mut self, ctx: &egui::Context) {
+        let Some(loader) = &mut self.thumb_loader else { return };
+        for (id, path, image) in loader.take() {
+            // The library may have reloaded meanwhile: the video gone, or its thumbnail remade.
+            if self.videos.get(self.index.get(&id).copied().unwrap_or(usize::MAX)).and_then(|v| v.thumb.as_ref()) != Some(&path) {
+                continue;
             }
-            None => {
-                self.thumb_failed.insert(id);
+            match image {
+                Some(image) => {
+                    let texture = ctx.load_texture(format!("thumb-{id}"), image, egui::TextureOptions::LINEAR);
+                    self.thumbs.insert(id, (path, texture, self.frame));
+                }
+                None => {
+                    self.thumb_failed.insert(id);
+                }
             }
         }
-        false
     }
 
     // ---- Popups --------------------------------------------------------
@@ -1338,6 +1341,7 @@ fn matches_search(v: &Video, words: &[String]) -> bool {
     words.iter().all(|w| hay.contains(w.as_str()))
 }
 
+#[allow(clippy::too_many_arguments)]
 fn draw_card(
     ui: &mut egui::Ui,
     p: &egui::Painter,
@@ -1691,12 +1695,63 @@ pub(crate) fn placeholder_color(id: i64) -> Color32 {
     Color32::from_rgb(r, g, b)
 }
 
-fn load_thumb(ctx: &egui::Context, id: i64, path: &str) -> Option<TextureHandle> {
+/// Reads and decodes a thumbnail file.
+fn decode_thumb(path: &str) -> Option<egui::ColorImage> {
     let bytes = std::fs::read(path).ok()?;
     let img = image::load_from_memory_with_format(&bytes, image::ImageFormat::Jpeg).ok()?.to_rgba8();
     let size = [img.width() as usize, img.height() as usize];
-    let color = egui::ColorImage::from_rgba_unmultiplied(size, img.as_raw());
-    Some(ctx.load_texture(format!("thumb-{id}"), color, egui::TextureOptions::LINEAR))
+    Some(egui::ColorImage::from_rgba_unmultiplied(size, img.as_raw()))
+}
+
+type ThumbResult = (i64, String, Option<egui::ColorImage>);
+
+/// Reads and decodes thumbnails on a thread of its own, so a slow disk or a
+/// fast scroll doesn't hold up the interface.
+struct ThumbLoader {
+    jobs: mpsc::Sender<(i64, String)>,
+    results: mpsc::Receiver<ThumbResult>,
+    /// Asked for and not back yet.
+    waiting: HashSet<i64>,
+}
+
+impl ThumbLoader {
+    fn start(ctx: egui::Context) -> Self {
+        let (jobs, todo) = mpsc::channel::<(i64, String)>();
+        let (done, results) = mpsc::channel();
+        // It ends when this loader, and so `jobs`, is dropped.
+        let spawned = std::thread::Builder::new().name("thumb-loader".into()).spawn(move || {
+            for (id, path) in todo {
+                let image = decode_thumb(&path);
+                if done.send((id, path, image)).is_err() {
+                    break;
+                }
+                ctx.request_repaint();
+            }
+        });
+        if let Err(e) = spawned {
+            eprintln!("thumbnail loader: {e}");
+        }
+        Self { jobs, results, waiting: HashSet::new() }
+    }
+
+    /// Queues a thumbnail unless it's queued already or the queue is full:
+    /// what scrolls past quickly shouldn't keep the loader busy afterwards.
+    fn request(&mut self, id: i64, path: String) {
+        if self.waiting.len() >= THUMB_QUEUE || self.waiting.contains(&id) {
+            return;
+        }
+        if self.jobs.send((id, path)).is_ok() {
+            self.waiting.insert(id);
+        }
+    }
+
+    fn take(&mut self) -> Vec<ThumbResult> {
+        let out: Vec<ThumbResult> = self.results.try_iter().collect();
+        for (id, ..) in &out {
+            self.waiting.remove(id);
+        }
+        out
+    }
 }
 
 pub(crate) fn elide(p: &egui::Painter, text: &str, font: FontId, max_w: f32) -> String {

@@ -46,11 +46,10 @@ fn english(key: &str) -> &str {
 /// Translates `key`. Text without an entry, like a user's own collection
 /// name, comes back unchanged.
 pub fn tr(key: &str) -> &str {
-    if CHINESE.load(Ordering::Relaxed) {
-        if let Some(zh) = lookup_zh(key) {
+    if CHINESE.load(Ordering::Relaxed)
+        && let Some(zh) = lookup_zh(key) {
             return zh;
         }
-    }
     english(key)
 }
 

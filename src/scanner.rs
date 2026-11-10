@@ -108,7 +108,7 @@ fn probe_all(lib: &Library, pending: Vec<(i64, String)>, cmds: &Receiver<Cmd>, s
             scope.spawn(move || {
                 let Ok(prober) = Prober::new(&work_dir) else { return };
                 loop {
-                    crate::background::wait(&quit);
+                    crate::background::wait(quit);
                     let next = queue.lock().ok().and_then(|mut q| q.pop_front());
                     let Some((id, path)) = next else { break };
                     let info = prober.probe(Path::new(&path), &thumbs.join(format!("{id}.jpg")));

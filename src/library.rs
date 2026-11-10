@@ -110,6 +110,9 @@ pub const SCHEMA: &str = "
         added_at      INTEGER NOT NULL,
         PRIMARY KEY (collection_id, video_id)
     );
+    -- `videos()` asks for each video's collections; without this every video
+    -- scans the whole table (seconds for a big library with many favorites).
+    CREATE INDEX IF NOT EXISTS collection_items_video ON collection_items(video_id);
     CREATE TABLE IF NOT EXISTS folder_sets (
         id         INTEGER PRIMARY KEY,
         name       TEXT NOT NULL,
@@ -127,6 +130,17 @@ pub const SCHEMA: &str = "
         PRIMARY KEY (video_id, tag_id)
     );
 ";
+
+/// Every video with its progress, plays, tags and collections.
+const VIDEOS_SQL: &str = "SELECT v.id, v.path, v.title, v.folder_id, v.duration, v.width, v.height, v.thumb, v.added_at,
+                    h.position, h.updated_at,
+                    (SELECT COUNT(*) FROM play_events p WHERE p.key = v.key),
+                    (SELECT GROUP_CONCAT(t.name, char(31)) FROM video_tags vt JOIN tags t ON t.id = vt.tag_id
+                      WHERE vt.video_id = v.id),
+                    (SELECT GROUP_CONCAT(ci.collection_id) FROM collection_items ci WHERE ci.video_id = v.id),
+                    v.size, v.mtime
+             FROM videos v LEFT JOIN history h ON h.key = v.key
+             WHERE v.missing = 0 AND v.folder_id IN (SELECT id FROM folders)";
 
 impl Library {
     pub fn open(path: &Path) -> Result<Self, String> {
@@ -385,16 +399,7 @@ impl Library {
 
     /// Every present video with its tags, resume position and play count.
     pub fn videos(&self) -> Vec<Video> {
-        let Ok(mut stmt) = self.db.prepare(
-            "SELECT v.id, v.path, v.title, v.folder_id, v.duration, v.width, v.height, v.thumb, v.added_at,
-                    h.position, h.updated_at,
-                    (SELECT COUNT(*) FROM play_events p WHERE p.key = v.key),
-                    (SELECT GROUP_CONCAT(t.name, char(31)) FROM video_tags vt JOIN tags t ON t.id = vt.tag_id
-                      WHERE vt.video_id = v.id),
-                    (SELECT GROUP_CONCAT(ci.collection_id) FROM collection_items ci WHERE ci.video_id = v.id),
-                    v.size, v.mtime
-             FROM videos v LEFT JOIN history h ON h.key = v.key
-             WHERE v.missing = 0 AND v.folder_id IN (SELECT id FROM folders)",
+        let Ok(mut stmt) = self.db.prepare(VIDEOS_SQL
         ) else {
             return Vec::new();
         };
@@ -546,6 +551,30 @@ pub fn display_path(p: &Path) -> String {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    /// Each per-video lookup in the library's main query has to use an
+    /// index: a scan there repeats for every video, and took seconds.
+    #[test]
+    fn the_video_list_never_scans_a_table_per_video() {
+        let dir = std::env::temp_dir().join(format!("tinyplayer-lib-plan-{}", std::process::id()));
+        let _ = std::fs::remove_dir_all(&dir);
+        std::fs::create_dir_all(&dir).unwrap();
+        let db = dir.join("t.db");
+        // history.rs owns the play tables and their index.
+        let _store = crate::history::Store::open(&db).unwrap();
+        // A library from before the index existed gets it on opening.
+        {
+            let lib = Library::open(&db).unwrap();
+            lib.db.execute_batch("DROP INDEX collection_items_video").unwrap();
+        }
+        let lib = Library::open(&db).unwrap();
+        let mut stmt = lib.db.prepare(&format!("EXPLAIN QUERY PLAN {VIDEOS_SQL}")).unwrap();
+        let plan: Vec<String> = stmt.query_map([], |r| r.get::<_, String>(3)).unwrap().flatten().collect();
+        let nested = plan.iter().skip_while(|step| !step.contains("SUBQUERY")).filter(|step| step.contains("SCAN")).collect::<Vec<_>>();
+        assert!(nested.is_empty(), "{plan:#?}");
+        assert!(plan.iter().any(|step| step.contains("collection_items_video")), "{plan:#?}");
+        let _ = std::fs::remove_dir_all(&dir);
+    }
 
     #[test]
     fn moving_a_file_keeps_its_records() {

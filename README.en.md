@@ -266,7 +266,7 @@ The window redraws only when mpv has a new frame or there's input, so a paused v
 - [x] Settings: playback, picture (hardware decoding, aspect ratio), subtitles (auto-load, size, position, language), history, shortcuts
 - [x] Windows portable package
 - [x] macOS package: .app, bundled libraries, ad hoc signing and dmg verified on an Apple silicon Mac
-- [ ] macOS notarization: the script is ready, a Developer ID certificate is needed
+- [ ] macOS notarization: the script and CI are ready, a Developer ID certificate is needed. Once the repository's Actions secrets `MACOS_CERT_P12` (the certificate's .p12 in base64), `MACOS_CERT_PASSWORD`, `APPLE_ID`, `APPLE_TEAM_ID` and `APPLE_APP_PASSWORD` (an app-specific password) are set, CI signs and notarizes by itself; without them it still signs ad hoc
 
 ## License
 

@@ -144,6 +144,9 @@ fn track(child: Child) -> u32 {
     pid
 }
 
+// A child is dropped only after `try_wait` has collected it, or has failed
+// (so there's nothing more to collect).
+#[allow(clippy::zombie_processes)]
 fn check(pid: u32) -> Run {
     let Ok(mut running) = RUNNING.lock() else { return Run::Stopped };
     let Some(at) = running.iter().position(|c| c.id() == pid) else { return Run::Stopped };
@@ -233,7 +236,7 @@ fn download_size(url: &str) -> u64 {
         .filter_map(|l| l.split_once(':'))
         .filter(|(name, _)| name.eq_ignore_ascii_case("content-length"))
         .filter_map(|(_, value)| value.trim().parse().ok())
-        .last()
+        .next_back()
         .unwrap_or(0)
 }
 
@@ -580,10 +583,6 @@ impl Updater {
         })
     }
 
-    pub fn downloading(&self) -> bool {
-        matches!(self.phase, Phase::Downloading { .. })
-    }
-
     /// Hands over the update to install; a second call gets nothing, so it
     /// can't be installed twice.
     pub fn take_prepared(&mut self) -> Option<Prepared> {
@@ -723,7 +722,7 @@ mod tests {
         let mut u = Updater::new();
         u.phase = Phase::Downloading { version: "1.0".into(), done: 0, total: 0 };
         u.check(&ctx);
-        assert!(u.downloading());
+        assert!(matches!(u.phase, Phase::Downloading { .. }));
         u.phase = Phase::Failed { version: "1.0".into(), reason: "x" };
         assert!(matches!(u.dialog(), Some(Dialog::Failed { .. })));
         u.dismiss();

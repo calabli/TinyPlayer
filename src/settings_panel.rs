@@ -47,6 +47,7 @@ const ROW_H: f32 = 58.0;
 const DEVICE_ROW_H: f32 = 44.0;
 const VOLUME_STEP: f64 = 5.0;
 
+#[allow(clippy::too_many_arguments)]
 pub fn show(
     ui: &mut egui::Ui,
     full: Rect,

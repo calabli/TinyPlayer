@@ -597,13 +597,12 @@ impl App {
         ctx.request_repaint();
         let screen = ctx.input(|i| i.viewport().monitor_size).unwrap_or(vec2(f32::MAX, f32::MAX));
         let target = resize.target(ctx.pixels_per_point(), aspect, PIP_MIN_SIZE.into(), screen);
-        if let (Some(target), Some(window)) = (target, window) {
-            if target != window {
+        if let (Some(target), Some(window)) = (target, window)
+            && target != window {
                 self.pip_side = target.width().max(target.height());
                 ctx.send_viewport_cmd(ViewportCommand::InnerSize(target.size()));
                 ctx.send_viewport_cmd(ViewportCommand::OuterPosition(target.min));
             }
-        }
     }
 
     /// Writes any device volume that's due. `force` skips the wait.
@@ -755,11 +754,10 @@ impl App {
         p.set_view(self.view);
         p.set_crop(None);
         p.set_panorama(format.is_some(), &self.tracker.settings);
-        if remember && !self.tracker.incognito {
-            if let (Some(store), Some(key)) = (&self.tracker.store, crate::history::file_key(&p.state.path)) {
+        if remember && !self.tracker.incognito
+            && let (Some(store), Some(key)) = (&self.tracker.store, crate::history::file_key(&p.state.path)) {
                 store.set_value(&format!("vr:{key}"), vr::Format::stored(format));
             }
-        }
         let text = format.map_or_else(|| tr("VR panorama off").to_string(), |f| format!("VR  {}", f.label()));
         self.show_osd(ctx, text);
     }
@@ -916,12 +914,11 @@ impl App {
     }
 
     fn add_folder_dialog(&mut self) {
-        if let Some(dir) = rfd::FileDialog::new().set_title(tr("Add to library")).pick_folder() {
-            if self.library.add_folder(&dir.to_string_lossy()) {
+        if let Some(dir) = rfd::FileDialog::new().set_title(tr("Add to library")).pick_folder()
+            && self.library.add_folder(&dir.to_string_lossy()) {
                 self.scanner.scan();
                 self.show_library = true;
             }
-        }
     }
 
     fn library_locked(&self) -> bool {
@@ -957,7 +954,7 @@ impl App {
         let right = |password: &str| library_lock::verify(&sealed, password);
         let mut close = false;
         let mut enter = false;
-        let mut then: Option<Box<dyn FnOnce(&mut Self)>> = None;
+        let mut then: Option<Then> = None;
         let password_field = |ui: &mut egui::Ui, text: &mut String, hint: &str, focus: bool, enter: &mut bool| {
             let edit = ui.add(egui::TextEdit::singleline(text).password(true).hint_text(hint).desired_width(f32::INFINITY));
             if focus && !edit.has_focus() && !edit.lost_focus() {
@@ -1162,7 +1159,7 @@ impl App {
         let mut want_chapter: Option<bool> = None;
 
         // The settings overlay is modal: only its own shortcuts apply.
-        if keys.iter().any(|k| *k == Key::Comma) && cmd {
+        if keys.contains(&Key::Comma) && cmd {
             self.settings_open = !self.settings_open;
             return;
         }
@@ -1356,7 +1353,7 @@ impl App {
         if self.pending_open.is_empty() {
             return;
         }
-        let paths: Vec<String> = self.pending_open.drain(..).collect();
+        let paths: Vec<String> = std::mem::take(&mut self.pending_open);
         let fill = self.tracker.settings.fill_folder;
         if let Some(i) = self.playlist.set_files(&paths, fill) {
             self.play_index(i);
@@ -1491,6 +1488,9 @@ impl App {
     }
 }
 
+/// What a lock dialog does to the app once it closes.
+type Then = Box<dyn FnOnce(&mut App)>;
+
 impl eframe::App for App {
     fn ui(&mut self, ui: &mut egui::Ui, frame: &mut eframe::Frame) {
         let ctx = ui.ctx().clone();
@@ -1507,8 +1507,8 @@ impl eframe::App for App {
         // Remember where the window is (skip fullscreen/minimized states).
         ctx.input(|i| {
             let vp = i.viewport();
-            if !self.pip && vp.fullscreen != Some(true) && vp.minimized != Some(true) {
-                if let (Some(outer), Some(inner)) = (vp.outer_rect, vp.inner_rect) {
+            if !self.pip && vp.fullscreen != Some(true) && vp.minimized != Some(true)
+                && let (Some(outer), Some(inner)) = (vp.outer_rect, vp.inner_rect) {
                     let maximized = vp.maximized == Some(true);
                     let prev = self.window_place;
                     self.window_place = Some(if maximized {
@@ -1518,7 +1518,6 @@ impl eframe::App for App {
                         crate::WindowPlace::from_rects(outer, inner, false)
                     });
                 }
-            }
         });
         let painter = ui.painter().clone();
         let playing = self.player.as_ref().is_some_and(|p| !p.state.idle);
@@ -1588,8 +1587,8 @@ impl eframe::App for App {
             full
         };
         let mut main_texture = None;
-        if !s.idle && video_rect.width() >= 1.0 && video_rect.height() >= 1.0 {
-            if let (Some(video), Some(render), Some(gl)) = (&mut self.video, &self.render, frame.gl()) {
+        if !s.idle && video_rect.width() >= 1.0 && video_rect.height() >= 1.0
+            && let (Some(video), Some(render), Some(gl)) = (&mut self.video, &self.render, frame.gl()) {
                 let ppp = ctx.pixels_per_point();
                 let px = [(video_rect.width() * ppp).round() as i32, (video_rect.height() * ppp).round() as i32];
                 let aspect = px[0].max(1) as f64 / px[1].max(1) as f64;
@@ -1610,14 +1609,15 @@ impl eframe::App for App {
                     Err(e) => self.vr_error = Some(e),
                 }
             }
-        }
         if multi {
             let now = ctx.input(|i| i.time);
             let chrome = now - self.last_activity < HIDE_AFTER;
             if chrome {
                 ctx.request_repaint_after_secs((HIDE_AFTER - (now - self.last_activity)).max(0.05) as f32);
             }
-            let items: Vec<(String, String)> = self.playlist.items.iter().map(|i| (i.title.clone(), i.path.clone())).collect();
+            // The add-video menu lists the first few; a long playlist isn't copied each frame.
+            let items: Vec<(String, String)> =
+                self.playlist.items.iter().take(multiview::MENU_ITEMS).map(|i| (i.title.clone(), i.path.clone())).collect();
             let gpa = self.get_proc_address.clone();
             // Files being dragged in: show which slot they'll replace.
             self.multi.drop_at = if ctx.input(|i| !i.raw.hovered_files.is_empty()) {
@@ -1630,14 +1630,13 @@ impl eframe::App for App {
                 Some(main) => self.multi.show(ui, frame, gpa.as_ref(), stage, main, main_texture, &items, chrome),
                 None => multiview::Actions::default(),
             };
-            if let Some(slot) = acts.open_file_for {
-                if let Some(file) = rfd::FileDialog::new()
+            if let Some(slot) = acts.open_file_for
+                && let Some(file) = rfd::FileDialog::new()
                     .add_filter(tr("Media files"), playlist::MEDIA_EXTS)
                     .pick_file()
                 {
                     self.load_into_slot(&ctx, slot, file.to_string_lossy().into_owned());
                 }
-            }
             if let Some((slot, path)) = acts.load {
                 self.load_into_slot(&ctx, slot, path);
             }
@@ -1753,12 +1752,11 @@ impl eframe::App for App {
                 if self.frameless && close_button(ui, stage, alpha) {
                     ctx.send_viewport_cmd(ViewportCommand::Close);
                 }
-                if let Some(fav) = self.current_fav {
-                    if fav_button(ui, stage, &s.title, fav, alpha) {
+                if let Some(fav) = self.current_fav
+                    && fav_button(ui, stage, &s.title, fav, alpha) {
                         let ctx = ui.ctx().clone();
                         self.toggle_favorite(&ctx);
                     }
-                }
                 if back_button(ui, stage, alpha) {
                     // Stopping returns to the library; progress is saved on EndFile.
                     if let Some(p) = &self.player {
@@ -1770,8 +1768,8 @@ impl eframe::App for App {
             }
             self.draw_resume_prompt(ui, stage, now);
 
-            if self.quick.open {
-                if let Some(player) = &self.player {
+            if self.quick.open
+                && let Some(player) = &self.player {
                     self.quick.vr = self.vr;
                     self.quick.fov = self.vr_look.fov_degrees();
                     self.quick.sleep = self.sleep.mode();
@@ -1781,8 +1779,8 @@ impl eframe::App for App {
                         self.tracker.save_settings();
                         player.apply_settings(&self.tracker.settings);
                     }
-                    if act.load_subtitle {
-                        if let Some(file) = rfd::FileDialog::new()
+                    if act.load_subtitle
+                        && let Some(file) = rfd::FileDialog::new()
                             .set_title(tr("Load subtitle file"))
                             .add_filter(tr("Subtitles"), &["srt", "ass", "ssa", "vtt", "sub", "sup", "idx"])
                             .pick_file()
@@ -1791,7 +1789,6 @@ impl eframe::App for App {
                             let _ = player.mpv.command(&["sub-add", &f, "select"]);
                             self.osd = Some(("SUBTITLE  LOADED".into(), now, OSD_SECS));
                         }
-                    }
                     if act.more_settings {
                         self.settings_open = true;
                     }
@@ -1811,16 +1808,14 @@ impl eframe::App for App {
                         self.set_vr(&ctx, format, true);
                     }
                 }
-            }
 
             // Edge handle: "‹" while paused opens the playlist, "›" closes it.
             let show_handle = !self.pip && (self.sidebar_open || s.paused);
             let ha = ctx.animate_bool_with_time(ui.scope_id().with("edge_handle"), show_handle, 0.15);
-            if ha > 0.0 && self.drag_from.is_none() {
-                if draw_edge_handle(ui, stage, self.sidebar_open, ha) {
+            if ha > 0.0 && self.drag_from.is_none()
+                && draw_edge_handle(ui, stage, self.sidebar_open, ha) {
                     self.toggle_sidebar();
                 }
-            }
         }
 
         // ---- OSD ----
@@ -1877,13 +1872,11 @@ impl eframe::App for App {
             if let Some((id, volume)) = act.device_volume {
                 self.set_device_volume(&ctx, &id, volume);
             }
-            if let Some(id) = act.forget_device {
-                if self.device_volumes.forget(&id) {
-                    if let Some(store) = &self.tracker.store {
+            if let Some(id) = act.forget_device
+                && self.device_volumes.forget(&id)
+                    && let Some(store) = &self.tracker.store {
                         store.remove_device_volume(&id);
                     }
-                }
-            }
             if act.check_update {
                 self.update_check_manual = true;
                 self.updater.check(&ctx);
@@ -2069,11 +2062,10 @@ impl eframe::App for App {
             store.set_value("window", &place.encode());
         }
         self.save_device_volume(0.0, true);
-        if self.updater.install_on_exit {
-            if let Some(prepared) = self.updater.take_prepared() {
+        if self.updater.install_on_exit
+            && let Some(prepared) = self.updater.take_prepared() {
                 update::install(&prepared, false);
             }
-        }
         // Everything that might still be running stops here. Should something
         // hang, the watchdog ends the process anyway.
         std::thread::spawn(|| {
@@ -2265,13 +2257,12 @@ impl App {
         painter.line_segment([pos2(vol.left(), cy), pos2(vol.right(), cy)], Stroke::new(3.0, a(Color32::from_white_alpha(45))));
         painter.line_segment([pos2(vol.left(), cy), pos2(vx, cy)], Stroke::new(3.0, a(ACCENT)));
         knob(&painter, pos2(vx, cy), 5.0, alpha);
-        if let Some(p) = vresp.interact_pointer_pos() {
-            if vresp.dragged() || vresp.clicked() {
+        if let Some(p) = vresp.interact_pointer_pos()
+            && (vresp.dragged() || vresp.clicked()) {
                 let v = ((p.x - vol.left()) / vol.width()).clamp(0.0, 1.0) as f64 * 100.0;
                 player.set_volume(v);
                 osd = Some(format!("VOLUME  {}%", v.round()));
             }
-        }
         if vresp.hovered() {
             ctx.set_cursor_icon(CursorIcon::PointingHand);
         }
@@ -2366,11 +2357,10 @@ impl App {
         if toggle_list {
             self.toggle_sidebar();
         }
-        if want_stop {
-            if let Some(p) = &self.player {
+        if want_stop
+            && let Some(p) = &self.player {
                 p.stop();
             }
-        }
         if want_prev {
             self.play_prev(&ctx);
         }

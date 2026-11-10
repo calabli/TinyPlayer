@@ -59,11 +59,10 @@ impl Tracker {
         let settings = store.as_ref().map(|s| s.load_settings()).unwrap_or_default();
         let tracker = Self { store, settings, incognito: false, current: None, last_tick: None };
         // If the app crashed last time, "clear on exit" never ran — do it now.
-        if tracker.settings.clear_on_exit {
-            if let Some(s) = &tracker.store {
+        if tracker.settings.clear_on_exit
+            && let Some(s) = &tracker.store {
                 s.clear_history();
             }
-        }
         tracker
     }
 
@@ -150,14 +149,13 @@ impl Tracker {
             let needed = history::COUNT_AFTER_SECS.min(state.duration * 0.1);
             if cur.watched >= needed {
                 cur.counted = true;
-                if !self.incognito {
-                    if let (Some(store), Some(key)) = (&self.store, &cur.key) {
+                if !self.incognito
+                    && let (Some(store), Some(key)) = (&self.store, &cur.key) {
                         cur.event_id = store.record_play(key, &cur.path, cur.started_at);
                         if cur.event_id.is_some() {
                             cur.plays += 1;
                         }
                     }
-                }
             }
         }
 
@@ -205,11 +203,10 @@ impl Tracker {
     /// Call once on shutdown.
     pub fn shutdown(&mut self) {
         self.finish();
-        if self.settings.clear_on_exit {
-            if let Some(s) = &self.store {
+        if self.settings.clear_on_exit
+            && let Some(s) = &self.store {
                 s.clear_history();
             }
-        }
     }
 
     pub fn recent(&self, n: usize) -> Vec<Entry> {

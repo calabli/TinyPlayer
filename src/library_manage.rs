@@ -110,6 +110,10 @@ enum Row {
     Video { id: i64, with_path: bool },
 }
 
+/// What a duplicate search was run on: the options, the library's revision,
+/// the folder set, the number of videos and the folder it was limited to.
+type Searched = (Options, u64, Option<i64>, usize, Option<PathBuf>);
+
 struct Dir {
     root: i64,
     path: PathBuf,
@@ -118,7 +122,20 @@ struct Dir {
 
 enum Dialog {
     NewSet { name: String, picked: Vec<i64>, error: Option<&'static str> },
-    Move { ids: Vec<i64>, folders: Vec<PathBuf>, dirs: Vec<Dir>, filter: String, pick: Option<usize>, new_name: String, error: Option<&'static str> },
+    Move {
+        ids: Vec<i64>,
+        folders: Vec<PathBuf>,
+        dirs: Vec<Dir>,
+        filter: String,
+        pick: Option<usize>,
+        new_name: String,
+        error: Option<&'static str>,
+        /// The folders matching a filter text, kept until the text or `dirs` changes.
+        shown: Option<(String, Vec<usize>)>,
+        /// For the picked folder: whether it's on another disk, and whether a
+        /// name there clashes. Asking the disk every frame would be slow.
+        check: Option<(usize, bool, bool)>,
+    },
     Trash { ids: Vec<i64> },
     Rename { id: i64, stem: String, error: Option<&'static str> },
     Tag { ids: Vec<i64>, name: String, error: Option<&'static str> },
@@ -189,7 +206,7 @@ pub struct Manager {
     ignored: Option<HashSet<String>>,
     marked: HashSet<i64>,
     /// What `groups` was found from; None until the first search.
-    searched: Option<(Options, u64, Option<i64>, usize, Option<PathBuf>)>,
+    searched: Option<Searched>,
     /// Only look for duplicates under this folder, and in its subfolders.
     dup_scope: Option<PathBuf>,
     searching: Option<(Receiver<Vec<Group>>, Arc<Comparing>)>,
@@ -459,11 +476,10 @@ impl Manager {
             descending: self.descending,
             offline: self.disks.offline.clone(),
         };
-        if let Some((cached, rows)) = &self.rows {
-            if *cached == key {
+        if let Some((cached, rows)) = &self.rows
+            && *cached == key {
                 return rows.clone();
             }
-        }
         let rows = Rc::new(self.rows(d));
         self.rows = Some((key, rows.clone()));
         rows
@@ -899,7 +915,7 @@ impl Manager {
         for folder in d.folders.iter().filter(|f| !self.disks.offline.contains(&f.id)) {
             walk(folder.id, Path::new(&folder.path), 0, &mut dirs);
         }
-        self.dialog = Some(Dialog::Move { ids, folders, dirs, filter: String::new(), pick: None, new_name: String::new(), error: None });
+        self.dialog = Some(Dialog::Move { ids, folders, dirs, filter: String::new(), pick: None, new_name: String::new(), error: None, shown: None, check: None });
     }
 
     // ---- Duplicates ----------------------------------------------------
@@ -1171,28 +1187,35 @@ impl Manager {
                         }
                     });
                 }
-                Dialog::Move { ids, folders, dirs, filter, pick, new_name, error } => {
+                Dialog::Move { ids, folders, dirs, filter, pick, new_name, error, shown, check } => {
                     ui.label(tf("Move {} items to", &[&(ids.len() + folders.len())]));
                     ui.add_space(6.0);
                     ui.add(egui::TextEdit::singleline(filter).hint_text(tr("Search folders")).desired_width(f32::INFINITY));
                     ui.add_space(6.0);
-                    let needle = filter.to_lowercase();
-                    egui::ScrollArea::vertical().max_height(240.0).auto_shrink([false, true]).show(ui, |ui| {
-                        for (i, dir) in dirs.iter().enumerate() {
-                            let text = dir.path.to_string_lossy();
-                            if !text.to_lowercase().contains(&needle) {
-                                continue;
-                            }
+                    if shown.as_ref().is_none_or(|(text, _)| text != filter) {
+                        let needle = filter.to_lowercase();
+                        let matching = dirs.iter().enumerate().filter(|(_, dir)| dir.path.to_string_lossy().to_lowercase().contains(&needle));
+                        *shown = Some((filter.clone(), matching.map(|(i, _)| i).collect()));
+                    }
+                    let rows: &[usize] = shown.as_ref().map_or(&[], |(_, rows)| rows);
+                    let row_h = ui.spacing().interact_size.y;
+                    // Only the rows in view are laid out: a library can have thousands of folders.
+                    egui::ScrollArea::vertical().max_height(240.0).auto_shrink([false, true]).show_rows(ui, row_h, rows.len(), |ui, range| {
+                        for &i in &rows[range] {
+                            let dir = &dirs[i];
                             ui.horizontal(|ui| {
                                 ui.add_space(dir.depth as f32 * 14.0);
-                                if ui.selectable_label(*pick == Some(i), base_name(&text)).clicked() {
+                                if ui.selectable_label(*pick == Some(i), base_name(&dir.path.to_string_lossy())).clicked() {
                                     *pick = Some(i);
                                     *error = None;
                                 }
                             });
                         }
                     });
-                    let chosen: Vec<&Video> = d.videos.iter().filter(|v| ids.contains(&v.id)).collect();
+                    let chosen = |ids: &[i64]| -> Vec<&Video> {
+                        let ids: HashSet<i64> = ids.iter().copied().collect();
+                        d.videos.iter().filter(|v| ids.contains(&v.id)).collect()
+                    };
                     ui.add_space(6.0);
                     ui.horizontal(|ui| {
                         ui.add(egui::TextEdit::singleline(new_name).hint_text(tr("New folder name")).desired_width(280.0));
@@ -1208,6 +1231,8 @@ impl Manager {
                                         let at = pick.map_or(dirs.len(), |i| i + 1);
                                         dirs.insert(at, Dir { root, path, depth: depth + 1 });
                                         *pick = Some(at);
+                                        *shown = None;
+                                        *check = None;
                                         new_name.clear();
                                         *error = None;
                                     } else {
@@ -1217,15 +1242,23 @@ impl Manager {
                             }
                         }
                     });
-                    if let Some(dir) = pick.and_then(|i| dirs.get(i)) {
+                    if let Some((at, dir)) = pick.and_then(|i| dirs.get(i).map(|dir| (i, dir))) {
                         ui.add_space(6.0);
                         ui.label(dir.path.to_string_lossy());
-                        let other_disk = chosen.iter().any(|v| !file_move::same_disk(Path::new(&v.path), &dir.path))
-                            || folders.iter().any(|f| !file_move::same_disk(f, &dir.path));
+                        let (_, other_disk, clash) = *check.filter(|(i, ..)| *i == at).get_or_insert_with(|| {
+                            let chosen = chosen(ids);
+                            let other_disk = chosen.iter().any(|v| !file_move::same_disk(Path::new(&v.path), &dir.path))
+                                || folders.iter().any(|f| !file_move::same_disk(f, &dir.path));
+                            let clash = chosen
+                                .iter()
+                                .any(|v| dir.path.join(base_name(&v.path)).exists() && Path::new(&v.path).parent() != Some(dir.path.as_path()));
+                            (at, other_disk, clash)
+                        });
+                        *check = Some((at, other_disk, clash));
                         if other_disk {
                             ui.colored_label(theme::text_2(), tr("This is another disk: files are copied and checked before the originals go"));
                         }
-                        if chosen.iter().any(|v| dir.path.join(base_name(&v.path)).exists() && Path::new(&v.path).parent() != Some(dir.path.as_path())) {
+                        if clash {
                             ui.colored_label(theme::text_2(), tr("A file with this name exists. Both are kept and the new one is renamed."));
                         }
                     }
@@ -1250,7 +1283,7 @@ impl Manager {
                                         .map(|f| Task::Folder(FolderJob { from: f.clone(), to_dir: dir.path.clone(), folder_id: dir.root }))
                                         .collect();
                                     jobs.extend(
-                                        chosen
+                                        chosen(ids)
                                             .iter()
                                             .filter(|v| Path::new(&v.path).parent() != Some(dir.path.as_path()))
                                             .filter(|v| !folders.iter().any(|f| Path::new(&v.path).starts_with(f)))
@@ -1415,11 +1448,10 @@ impl Manager {
                 ui.colored_label(theme::text_2(), tr("Checking the copy"));
             }
             ui.add_space(6.0);
-            if ui.button(tr("Cancel")).clicked() {
-                if let Some(mover) = &self.mover {
+            if ui.button(tr("Cancel")).clicked()
+                && let Some(mover) = &self.mover {
                     mover.cancel();
                 }
-            }
         });
     }
 

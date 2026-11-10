@@ -13,11 +13,10 @@ fn main() {
 fn embed_icon() {
     println!("cargo:rerun-if-changed=assets/app.rc");
     println!("cargo:rerun-if-changed=assets/icon.ico");
-    if std::env::var("CARGO_CFG_TARGET_OS").as_deref() == Ok("windows") {
-        if let Err(e) = embed_resource::compile("assets/app.rc", embed_resource::NONE).manifest_optional() {
+    if std::env::var("CARGO_CFG_TARGET_OS").as_deref() == Ok("windows")
+        && let Err(e) = embed_resource::compile("assets/app.rc", embed_resource::NONE).manifest_optional() {
             println!("cargo:warning=couldn't embed the exe icon: {e}");
         }
-    }
 }
 
 fn copy_libmpv() {
@@ -48,9 +47,8 @@ fn copy_libmpv() {
         (Ok(s), Ok(d)) => s.len() != d.len(),
         _ => true,
     };
-    if needs_copy {
-        if let Err(e) = std::fs::copy(&src, &dst) {
+    if needs_copy
+        && let Err(e) = std::fs::copy(&src, &dst) {
             println!("cargo:warning=failed to copy libmpv: {e}");
         }
-    }
 }

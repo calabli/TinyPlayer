@@ -12,14 +12,53 @@ jobs:
   macos:
     name: macOS arm64
     runs-on: macos-15
+    env:
+      HAS_SIGNING: ${{ secrets.MACOS_CERT_P12 != '' }}
     steps:
       - uses: actions/checkout@v7
       - uses: dtolnay/rust-toolchain@stable
+        with:
+          components: clippy
       - uses: Swatinem/rust-cache@v2
       - name: Install libmpv and bundling tools
         run: brew install mpv dylibbundler
       - name: Unit tests
         run: cargo test --locked
+      # Only on manual runs (the check before a release is tagged): a new
+      # Rust version can add lints, and that shouldn't stop a tagged release.
+      - name: Lint
+        if: github.event_name == 'workflow_dispatch'
+        run: cargo clippy --locked --all-targets -- -D warnings
+      # With the signing secrets set, the app is signed with a Developer ID
+      # and notarized, so it opens without a Gatekeeper warning. Without
+      # them it's signed ad hoc, as before.
+      - name: Import the signing certificate
+        if: env.HAS_SIGNING == 'true'
+        env:
+          MACOS_CERT_P12: ${{ secrets.MACOS_CERT_P12 }}
+          MACOS_CERT_PASSWORD: ${{ secrets.MACOS_CERT_PASSWORD }}
+          APPLE_ID: ${{ secrets.APPLE_ID }}
+          APPLE_TEAM_ID: ${{ secrets.APPLE_TEAM_ID }}
+          APPLE_APP_PASSWORD: ${{ secrets.APPLE_APP_PASSWORD }}
+        run: |
+          KEYCHAIN="$RUNNER_TEMP/signing.keychain-db"
+          KEYCHAIN_PASSWORD=$(uuidgen)
+          security create-keychain -p "$KEYCHAIN_PASSWORD" "$KEYCHAIN"
+          security set-keychain-settings -lut 21600 "$KEYCHAIN"
+          security unlock-keychain -p "$KEYCHAIN_PASSWORD" "$KEYCHAIN"
+          echo "$MACOS_CERT_P12" | base64 --decode > "$RUNNER_TEMP/cert.p12"
+          security import "$RUNNER_TEMP/cert.p12" -k "$KEYCHAIN" -P "$MACOS_CERT_PASSWORD" -T /usr/bin/codesign
+          rm "$RUNNER_TEMP/cert.p12"
+          security set-key-partition-list -S apple-tool:,apple: -s -k "$KEYCHAIN_PASSWORD" "$KEYCHAIN" >/dev/null
+          security list-keychains -d user -s "$KEYCHAIN" login.keychain-db
+          security default-keychain -s "$KEYCHAIN"
+          xcrun notarytool store-credentials tinyplayer-notary --apple-id "$APPLE_ID" \
+            --team-id "$APPLE_TEAM_ID" --password "$APPLE_APP_PASSWORD" --keychain "$KEYCHAIN"
+          IDENTITY=$(security find-identity -v -p codesigning "$KEYCHAIN" | sed -n 's/.*"\(Developer ID Application[^"]*\)".*/\1/p' | head -1)
+          [ -n "$IDENTITY" ] || { echo "No Developer ID Application certificate in MACOS_CERT_P12"; exit 1; }
+          echo "SIGN_IDENTITY=$IDENTITY" >> "$GITHUB_ENV"
+          echo "NOTARY_PROFILE=tinyplayer-notary" >> "$GITHUB_ENV"
+          echo "NOTARY_KEYCHAIN=$KEYCHAIN" >> "$GITHUB_ENV"
       - name: Package
         run: scripts/package-macos.sh
       - name: Collect third-party sources
@@ -41,6 +80,8 @@ jobs:
     steps:
       - uses: actions/checkout@v7
       - uses: dtolnay/rust-toolchain@stable
+        with:
+          components: clippy
       - uses: Swatinem/rust-cache@v2
       # Both come from one release, so the sources collected below match the DLL.
       - name: Download libmpv and ffmpeg
@@ -54,6 +95,11 @@ jobs:
           7z e ffmpeg-x86_64-git-*.7z ffmpeg.exe -otools
       - name: Unit tests
         run: cargo test --locked
+      # Only on manual runs (the check before a release is tagged): a new
+      # Rust version can add lints, and that shouldn't stop a tagged release.
+      - name: Lint
+        if: github.event_name == 'workflow_dispatch'
+        run: cargo clippy --locked --all-targets -- -D warnings
       - name: Load libmpv and read a real video
         run: |
           tools\ffmpeg.exe -v error -f lavfi -i testsrc2=size=320x180:rate=24:duration=4 -pix_fmt yuv420p sample.mp4

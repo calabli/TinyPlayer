@@ -693,15 +693,14 @@ impl Cursor<'_> {
         self.p.text(pos2(self.body.right(), cy), Align2::RIGHT_CENTER, text, FontId::monospace(12.0), TXT_2);
         hover_hand(&self.ctx, &resp);
         self.y += 26.0;
-        if let Some(pos) = resp.interact_pointer_pos() {
-            if resp.dragged() || resp.clicked() {
+        if let Some(pos) = resp.interact_pointer_pos()
+            && (resp.dragged() || resp.clicked()) {
                 let f = ((pos.x - track.left()) / track.width()).clamp(0.0, 1.0);
                 let v = (f * 200.0 - 100.0).round() as i64;
                 // Snap to 0 near the middle so it's easy to get back to neutral.
                 let v = if v.abs() <= 3 { 0 } else { v };
                 return (v != value).then_some(v);
             }
-        }
         None
     }
 

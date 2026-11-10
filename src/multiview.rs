@@ -203,11 +203,10 @@ impl MultiView {
 
     /// Back to one video: extra players stop, the main one keeps playing.
     pub fn disable(&mut self, main: Option<&Player>) {
-        if self.filled.contains(&Content::Main) {
-            if let Some(m) = main {
+        if self.filled.contains(&Content::Main)
+            && let Some(m) = main {
                 m.set_fill(false);
             }
-        }
         self.filled.clear();
         if self.focus_sound {
             // Whatever plays on alone has its sound back.
@@ -544,11 +543,10 @@ impl MultiView {
     }
 
     fn close_slot(&mut self, slot: u32) {
-        if let Some(Content::Pane(id)) = self.layout.remove(slot) {
-            if let Some(p) = self.panes.remove(&id) {
+        if let Some(Content::Pane(id)) = self.layout.remove(slot)
+            && let Some(p) = self.panes.remove(&id) {
                 self.dead.push(p);
             }
-        }
         if self.layout.find(self.focus).is_none() || self.focus == Content::Empty {
             self.focus = Content::Main;
         }
@@ -559,11 +557,10 @@ impl MultiView {
         order.extend(self.layout.contents().into_iter().filter(|c| matches!(c, Content::Pane(_))));
         let leftover = self.layout.apply_preset(preset, &order);
         for c in leftover {
-            if let Content::Pane(id) = c {
-                if let Some(p) = self.panes.remove(&id) {
+            if let Content::Pane(id) = c
+                && let Some(p) = self.panes.remove(&id) {
                     self.dead.push(p);
                 }
-            }
         }
         if self.layout.find(self.focus).is_none() {
             self.focus = Content::Main;
@@ -700,6 +697,7 @@ impl MultiView {
         }
     }
 
+    #[allow(clippy::too_many_arguments)]
     fn draw_video(&mut self, p: &egui::Painter, frame: &mut eframe::Frame, content: Content, r: Rect, main_tex: Option<TextureId>, ppp: f32, empty: bool) {
         let uv = Rect::from_min_max(pos2(0.0, 0.0), pos2(1.0, 1.0));
         let content = if empty { Content::Empty } else { content };
@@ -933,13 +931,11 @@ impl MultiView {
             let frac = if s.muted { 0.0 } else { (s.volume / 100.0).clamp(0.0, 1.0) as f32 };
             p.line_segment([pos2(vol.left(), cy), pos2(vol.right(), cy)], Stroke::new(3.0, Color32::from_white_alpha(50)));
             p.line_segment([pos2(vol.left(), cy), pos2(vol.left() + frac * vol.width(), cy)], Stroke::new(3.0, TEXT));
-            if let Some(q) = vr.interact_pointer_pos() {
-                if vr.dragged() || vr.clicked() {
-                    if let Some(pl) = self.player(content, main) {
+            if let Some(q) = vr.interact_pointer_pos()
+                && (vr.dragged() || vr.clicked())
+                    && let Some(pl) = self.player(content, main) {
                         pl.set_volume(((q.x - vol.left()) / vol.width()).clamp(0.0, 1.0) as f64 * 100.0);
                     }
-                }
-            }
             if vr.hovered() {
                 ctx.set_cursor_icon(CursorIcon::PointingHand);
             }
@@ -1018,11 +1014,10 @@ impl MultiView {
                     if let Some((_, _, r)) = leaves.iter().find(|(id, _, r)| *id != from && r.contains(q)) {
                         p.rect_stroke(inner(*r).shrink(3.0), 3.0, Stroke::new(2.0, ACCENT), StrokeKind::Inside);
                     }
-                    if released {
-                        if let Some((to, _, _)) = leaves.iter().find(|(id, _, r)| *id != from && r.contains(q)) {
+                    if released
+                        && let Some((to, _, _)) = leaves.iter().find(|(id, _, r)| *id != from && r.contains(q)) {
                             self.layout.swap(from, *to);
                         }
-                    }
                 }
             }
             Drag::MoveFloat { id, grab } => {
@@ -1149,7 +1144,7 @@ impl MultiView {
                         if !playlist.is_empty() {
                             ui.add_space(2.0);
                             ui.label(egui::RichText::new(tr("From the playlist")).size(11.0).color(TEXT_3));
-                            for (title, path) in playlist.iter().take(10) {
+                            for (title, path) in playlist.iter().take(MENU_ITEMS) {
                                 if menu_item(ui, title) {
                                     out.load = Some((slot, path.clone()));
                                     close = true;
@@ -1167,6 +1162,9 @@ impl MultiView {
         }
     }
 }
+
+/// Playlist entries the add-video menu offers.
+pub const MENU_ITEMS: usize = 10;
 
 /// Width of the add-video menu.
 const MENU_W: f32 = 220.0;

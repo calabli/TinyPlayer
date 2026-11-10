@@ -83,12 +83,11 @@ fn drop_numbering(text: &str) -> String {
         // Full-width brackets too, as Chinese text uses them.
         let open = matches!(chars[i], '(' | '\u{FF08}');
         let close = (i + 1..chars.len()).find(|&j| !chars[j].is_ascii_digit());
-        if let (true, Some(end)) = (open, close) {
-            if end > i + 1 && matches!(chars[end], ')' | '\u{FF09}') {
+        if let (true, Some(end)) = (open, close)
+            && end > i + 1 && matches!(chars[end], ')' | '\u{FF09}') {
                 i = end + 1;
                 continue;
             }
-        }
         out.push(chars[i]);
         i += 1;
     }

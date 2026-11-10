@@ -266,7 +266,7 @@ locales/
 - [x] 设置页：播放、画面（硬解、画面比例）、字幕（自动加载、大小、位置、语言）、播放记录、快捷键
 - [x] Windows 便携版打包
 - [x] macOS 打包：.app、依赖打包、临时签名、dmg 已在 Apple 芯片的 Mac 上验证
-- [ ] macOS 公证：脚本已写好，需要 Developer ID 证书
+- [ ] macOS 公证：脚本和 CI 已写好，需要 Developer ID 证书。在仓库的 Actions secrets 里设好 `MACOS_CERT_P12`（证书 .p12 的 base64）、`MACOS_CERT_PASSWORD`、`APPLE_ID`、`APPLE_TEAM_ID`、`APPLE_APP_PASSWORD`（App 专用密码）后，CI 会自动签名并公证；没设时仍做临时签名
 
 ## 许可证
 

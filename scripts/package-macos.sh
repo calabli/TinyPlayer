@@ -7,6 +7,7 @@
 #   SIGN_IDENTITY   "Developer ID Application: Name (TEAMID)"; default is ad-hoc signing
 #   NOTARY_PROFILE  keychain profile from `xcrun notarytool store-credentials`
 #                   (only used together with SIGN_IDENTITY)
+#   NOTARY_KEYCHAIN keychain holding that profile, if not the login keychain
 set -euo pipefail
 cd "$(dirname "$0")/.."
 
@@ -122,7 +123,8 @@ if [ -n "${SIGN_IDENTITY:-}" ]; then
     # Sign libraries first, then the app, with the hardened runtime for notarization.
     find "$APP/Contents/Frameworks" -name '*.dylib' -exec \
         codesign --force --timestamp --options runtime --sign "$SIGN_IDENTITY" {} \;
-    codesign --force --timestamp --options runtime --sign "$SIGN_IDENTITY" "$APP"
+    codesign --force --timestamp --options runtime --entitlements scripts/macos-entitlements.plist \
+        --sign "$SIGN_IDENTITY" "$APP"
 else
     # Ad-hoc: runs on this Mac; other Macs must allow it once under System
     # Settings → Privacy & Security.
@@ -169,9 +171,13 @@ for attempt in 1 2 3 4 5; do
 done
 rm -rf "$STAGE"
 
+if [ -n "${SIGN_IDENTITY:-}" ]; then
+    codesign --force --timestamp --sign "$SIGN_IDENTITY" "$DMG"
+fi
 if [ -n "${SIGN_IDENTITY:-}" ] && [ -n "${NOTARY_PROFILE:-}" ]; then
     echo "Notarizing (this can take a few minutes)"
-    xcrun notarytool submit "$DMG" --keychain-profile "$NOTARY_PROFILE" --wait
+    xcrun notarytool submit "$DMG" --keychain-profile "$NOTARY_PROFILE" \
+        ${NOTARY_KEYCHAIN:+--keychain "$NOTARY_KEYCHAIN"} --wait
     xcrun stapler staple "$DMG"
 fi
 
