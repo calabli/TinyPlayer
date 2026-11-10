@@ -102,6 +102,7 @@ pub struct App {
     /// Index of the playlist row being dragged.
     drag_from: Option<usize>,
     was_eof: bool,
+    sleep: crate::sleep_timer::SleepTimer,
     side_rect: Rect,
     side_scroll: f32,
     /// The sidebar shows chapters and bookmarks instead of the playlist.
@@ -233,6 +234,7 @@ impl App {
             sidebar_open: false,
             drag_from: None,
             was_eof: false,
+            sleep: Default::default(),
             side_rect: Rect::NOTHING,
             side_scroll: 0.0,
             side_marks: false,
@@ -1772,6 +1774,8 @@ impl eframe::App for App {
                 if let Some(player) = &self.player {
                     self.quick.vr = self.vr;
                     self.quick.fov = self.vr_look.fov_degrees();
+                    self.quick.sleep = self.sleep.mode();
+                    self.quick.sleep_left = self.sleep.left(std::time::Instant::now());
                     let act = self.quick.show(ui, stage, BAR_H, player, &mut self.tracker.settings, self.view);
                     if act.settings_changed {
                         self.tracker.save_settings();
@@ -1790,6 +1794,9 @@ impl eframe::App for App {
                     }
                     if act.more_settings {
                         self.settings_open = true;
+                    }
+                    if let Some(mode) = act.sleep {
+                        self.sleep.set(mode, std::time::Instant::now());
                     }
                     if act.crop_changed {
                         self.apply_crop(&ctx);
@@ -2013,8 +2020,32 @@ impl eframe::App for App {
         let eof_edge = eof && !self.was_eof;
         self.was_eof = eof;
         let idle = player.state.idle;
+        let clock = std::time::Instant::now();
+        match self.sleep.tick(clock) {
+            Some(crate::sleep_timer::Due::Warn) => self.show_osd(ctx, tr("Sleep timer: pausing in 1 minute")),
+            Some(crate::sleep_timer::Due::Pause) => {
+                if let Some(p) = &self.player {
+                    p.mpv.set_flag("pause", true);
+                    if self.multi.on {
+                        self.multi.pause_all(p);
+                    }
+                }
+                self.show_osd(ctx, tr("Sleep timer: paused"));
+            }
+            None => {}
+        }
+        if let Some(left) = self.sleep.left(clock) {
+            // Wake up for the warning and the pause even if nothing else repaints.
+            let next = if left > 60 { left - 60 } else { left };
+            ctx.request_repaint_after_secs(next as f32 + 0.2);
+        }
         if eof_edge {
-            self.on_eof();
+            if self.sleep.video_ended(clock) {
+                // Stays on the last frame instead of going on to the next video.
+                self.show_osd(ctx, tr("Sleep timer: stopped at the end of the video"));
+            } else {
+                self.on_eof();
+            }
         }
         if idle && self.recent_dirty {
             self.recent = self.tracker.recent(5);

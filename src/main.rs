@@ -31,6 +31,7 @@ mod scanner;
 mod session;
 mod settings_panel;
 mod single_instance;
+mod sleep_timer;
 mod split_layout;
 mod theme;
 mod update;

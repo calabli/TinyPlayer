@@ -158,6 +158,10 @@ pub struct MultiView {
     pub hide_bars: bool,
     /// Videos enlarged to fill their slot, black bars cropped away.
     filled: Vec<Content>,
+    /// Only the focused video has sound; the others are muted.
+    pub focus_sound: bool,
+    /// The focus and videos the mutes were last set for.
+    sound_set_for: Option<(Content, Vec<Content>)>,
     /// The whole area multi-view drew in last frame.
     stage: Rect,
     /// Where files being dragged in are, to mark the slot they'll replace.
@@ -181,6 +185,8 @@ impl Default for MultiView {
             maximized: None,
             hide_bars: false,
             filled: Vec::new(),
+            focus_sound: false,
+            sound_set_for: None,
             stage: Rect::NOTHING,
             drop_at: None,
         }
@@ -203,6 +209,14 @@ impl MultiView {
             }
         }
         self.filled.clear();
+        if self.focus_sound {
+            // Whatever plays on alone has its sound back.
+            if let Some(m) = main {
+                m.mpv.set_flag("mute", false);
+            }
+        }
+        self.focus_sound = false;
+        self.sound_set_for = None;
         self.on = false;
         self.dead.extend(self.panes.drain().map(|(_, p)| p));
         self.layout = Layout::single(Content::Main);
@@ -249,6 +263,42 @@ impl MultiView {
         }
         self.focus = content;
         self.menu = None;
+    }
+
+    /// With focus sound on, mutes every video but the focused one. It acts
+    /// when the focus or the set of videos changes, so a mute button pressed
+    /// in between stays as the user left it.
+    fn sync_sound(&mut self, main: &Player) {
+        if !self.focus_sound || self.player(self.focus, main).is_none() {
+            return;
+        }
+        let videos: Vec<Content> = self.layout.contents().into_iter().filter(|c| self.player(*c, main).is_some()).collect();
+        if self.sound_set_for.as_ref().is_some_and(|(f, v)| *f == self.focus && *v == videos) {
+            return;
+        }
+        for c in &videos {
+            if let Some(p) = self.player(*c, main) {
+                p.mpv.set_flag("mute", *c != self.focus);
+            }
+        }
+        self.sound_set_for = Some((self.focus, videos));
+    }
+
+    fn set_focus_sound(&mut self, on: bool, main: &Player) {
+        self.focus_sound = on;
+        self.sound_set_for = None;
+        if !on {
+            for p in self.players(main) {
+                p.mpv.set_flag("mute", false);
+            }
+        }
+    }
+
+    /// Pauses every video (the sleep timer).
+    pub fn pause_all(&self, main: &Player) {
+        for p in self.players(main) {
+            p.mpv.set_flag("pause", true);
+        }
     }
 
     fn toggle_max(&mut self, content: Content) {
@@ -461,6 +511,12 @@ impl MultiView {
                     p.toggle_mute();
                     osd = Some(if p.state.muted { "UNMUTE".into() } else { "MUTE".into() });
                 }
+                // One frame at a time, in the focused video only (even when linked).
+                Key::Comma | Key::Period if !ctx.input(|i| i.modifiers.command) => {
+                    let forward = *key == Key::Period;
+                    p.frame_step(forward);
+                    osd = Some(if forward { tr("Next frame").into() } else { tr("Previous frame").into() });
+                }
                 Key::Tab => {
                     // Move focus to the next slot with a video.
                     let shown: Vec<Content> = self.layout.contents().into_iter().filter(|c| !self.is_empty(*c, main)).collect();
@@ -558,6 +614,7 @@ impl MultiView {
             self.draw_video(&p, frame, content, grid, main_texture, ppp, empty);
             self.slot_chrome(ui, &p, id, content, grid, false, main, chrome, pointer, &mut out);
             self.top_bar(ui, &p, stage, main, &mut out);
+            self.sync_sound(main);
             self.hide_cursor(&ctx, grid, main, chrome, pointer);
             self.drop_hint(&p, main);
             return out;
@@ -603,6 +660,7 @@ impl MultiView {
         self.handle_drag(&ctx, &p, grid, pointer);
         self.top_bar(ui, &p, stage, main, &mut out);
         self.add_menu(ui, playlist, &mut out);
+        self.sync_sound(main);
         self.hide_cursor(&ctx, grid, main, chrome, pointer);
         self.drop_hint(&p, main);
         out
@@ -1056,6 +1114,12 @@ impl MultiView {
             out.osd = Some(if self.hide_bars { tr("Bars hidden: move the pointer to a video's bottom to show them").into() } else { tr("Bars shown").into() });
         }
         rx = bars_left - 16.0;
+        let (sound_left, flip) = switch(ui, p, pos2(rx, cy), "mv_sound", self.focus_sound, tr("Focus sound"), 1.0);
+        if flip {
+            self.set_focus_sound(!self.focus_sound, main);
+            out.osd = Some(if self.focus_sound { tr("Focus sound: only the selected video has sound").into() } else { tr("Focus sound: off, every video has sound").into() });
+        }
+        rx = sound_left - 16.0;
         let count = tf("{} / {} videos", &[&self.video_count(main), &MAX_SLOTS]);
         if rx - 120.0 > x {
             p.text(pos2(rx, cy), Align2::RIGHT_CENTER, count, FontId::monospace(11.0), theme::text_3());
@@ -1076,7 +1140,8 @@ impl MultiView {
                     .corner_radius(6.0)
                     .inner_margin(egui::Margin::symmetric(4, 4))
                     .show(ui, |ui| {
-                        ui.set_min_width(200.0);
+                        // A fixed width: left alone it grows to the window's and slides off the click.
+                        ui.set_width(MENU_W);
                         if menu_item(ui, tr("Open file…")) {
                             out.open_file_for = Some(slot);
                             close = true;
@@ -1102,6 +1167,9 @@ impl MultiView {
         }
     }
 }
+
+/// Width of the add-video menu.
+const MENU_W: f32 = 220.0;
 
 #[derive(Clone, Copy, PartialEq)]
 enum Tool {
@@ -1186,7 +1254,7 @@ pub fn switch(ui: &mut egui::Ui, p: &egui::Painter, right_center: Pos2, id: &str
 }
 
 fn menu_item(ui: &mut egui::Ui, label: &str) -> bool {
-    let (r, resp) = ui.allocate_exact_size(vec2(ui.available_width().max(200.0), 26.0), Sense::click());
+    let (r, resp) = ui.allocate_exact_size(vec2(ui.available_width(), 26.0), Sense::click());
     if resp.hovered() {
         ui.painter().rect_filled(r, 4.0, ACCENT);
         ui.ctx().set_cursor_icon(CursorIcon::PointingHand);

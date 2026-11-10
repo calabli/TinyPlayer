@@ -27,6 +27,19 @@ Close video	关闭视频
 Drop to play here	松开在这里播放
 Drop to replace this video	松开替换这个画面
 Several videos are playing. Close the others first; multi-view turns off with one left	多个视频在播放，先关闭其他画面，只剩一个时才能退出多屏
+Focus sound	只听选中
+Timer	定时
+Sleep timer	睡眠定时
+{} min	{} 分钟
+End of this video	播完当前视频
+Pauses in {}	{} 后暂停
+Pauses when this video ends, without going on to the next	播完当前视频后暂停，不接着播下一个
+Pauses playback by itself after the time you pick	到设定的时间后自动暂停播放
+Sleep timer: pausing in 1 minute	睡眠定时：1 分钟后暂停
+Sleep timer: paused	睡眠定时：已暂停
+Sleep timer: stopped at the end of the video	睡眠定时：视频已播完，停在这里
+Focus sound: only the selected video has sound	只听选中：只有选中的画面出声
+Focus sound: off, every video has sound	只听选中已关闭：所有画面都出声
 Fill the slot (double-click)	充满画面（双击）
 Fit the whole video (double-click)	显示完整画面（双击）
 Bars	进度条

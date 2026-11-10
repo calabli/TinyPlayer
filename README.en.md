@@ -109,6 +109,7 @@ During playback, the settings button on the control bar opens this panel at the 
 | Picture | Aspect ratio (original / 4:3 / 16:9 / 2.35:1 / stretch to window / 21:9), rotate left / right, mirror / flip, hardware decoding, quality enhancement (debanding and sharper scaling, more GPU work), reset |
 | Enhance | Crop (black bars / 16:9 / 4:3 / 2.35:1 / 1:1), zoom, HDR tone mapping, frame interpolation |
 | Color | Brightness, contrast, saturation, gamma, hue (-100 to +100, snapping to 0 near it), reset |
+| Timer | Sleep timer: pauses by itself after 15 / 30 / 45 / 60 / 90 minutes, or stops when the current video ends without going on to the next; it warns with 1 minute left. In multi-view it pauses every video. It only lasts until the app quits |
 
 Aspect ratio, hardware decoding, quality enhancement, subtitle size, position and style, volume normalization and the equalizer are saved, and so are HDR tone mapping and frame interpolation. The second subtitle and the channels last until the app quits; crop and zoom apply to the current file only; rotation, flipping, color and delays last until the app quits. Flipping uses a video filter on the CPU, so while it's on hardware decoding switches to copy-back mode (`auto-copy-safe`), which costs a little more; turning it off switches back. Click outside the panel or press Esc to close it; "More settings" opens the full settings window (also Ctrl/⌘+,).
 
@@ -140,7 +141,8 @@ During playback, the **Multi-view** switch at the right of the top bar plays up 
 - **Hiding the progress bars**: each slot's control bar and title bar show only while the mouse is over that slot, and hide about 2 seconds after the mouse stops (they stay while paused), and over a playing video the pointer hides too. With the top bar's **Progress bar** switch off, a control bar shows only when the mouse is at the bottom of its slot
 - **Leaving multi-view**: not possible while several videos are playing; close the others with × first. With one video left, turning **Multi-view** off makes it ordinary single-video playback, carrying on from where it was
 - **Link**: when on, play/pause, seeking and speed apply to every slot; volumes stay separate
-- In multi-view the keyboard works on the selected slot (blue outline), and Tab moves on; Space, ←/→, ↑/↓ and M work as with one video. The big control bar and the sidebar hide, and each slot has a small control bar of its own
+- **Focus sound**: with this top-bar switch on, only the selected video (blue outline) has sound and the others are muted; click another video's title bar or control bar, or press Tab, and the sound follows. A video's mute button still works in between; turning the switch off gives every video its sound back
+- In multi-view the keyboard works on the selected slot (blue outline), and Tab moves on; Space, ←/→, ↑/↓, M and , / . (frame by frame) work as with one video. The big control bar and the sidebar hide, and each slot has a small control bar of its own
 - Measured with 4 videos of 1440p (hardware decoding) at once: about 12% of one core, about 590 MB of memory
 
 ## Picture enhancement
@@ -237,6 +239,7 @@ src/
   settings_panel.rs  full settings window
   quick_panel.rs     quick settings panel during playback
   single_instance.rs single instance: hands later files to the running window
+  sleep_timer.rs     sleep timer: pauses after a while or when the current video ends
   mac_open.rs files opened from the macOS Finder
   mpv.rs      FFI for libmpv loaded at runtime + OpenGL render context
   video.rs    mpv render target (FBO → egui texture)

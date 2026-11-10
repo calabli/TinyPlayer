@@ -4,6 +4,13 @@ English | [简体中文](CHANGELOG.md)
 
 The in-app update dialog shows the entries of the new version, so each one is written for users.
 
+## 0.1.22
+
+- New sleep timer: on the quick panel's "Timer" page, pick 15 to 90 minutes to pause by itself, or stop when the current video ends
+- New "Focus sound" switch in multi-view: only the selected video has sound and the others are muted; the sound follows the selection
+- In multi-view, the , and . keys step the selected video frame by frame
+- Fixed the "Add a video" menu of an empty multi-view slot not appearing where it was clicked
+
 ## 0.1.21
 
 - In multi-view, double-clicking a video, pressing F or clicking the button at the right end of its control bar makes it fill its own slot with the black bars cropped away, instead of going to the monitor's full screen; double-click again or press Esc to see the whole video

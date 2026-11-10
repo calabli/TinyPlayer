@@ -12,6 +12,7 @@ use crate::audio_fx::{self, Channel};
 use crate::history::Settings;
 use crate::i18n::{tf, tr};
 use crate::player::{Player, Track};
+use crate::sleep_timer::{self, Mode as Sleep};
 use crate::theme::ACCENT;
 use crate::view::{View, ZOOM_STEP};
 use crate::vr::{self, Format, Layout, Span};
@@ -37,6 +38,7 @@ enum Page {
     Enhance,
     Color,
     Vr,
+    Timer,
 }
 
 #[derive(Clone, Copy, PartialEq, Default, Debug)]
@@ -70,6 +72,9 @@ pub struct QuickPanel {
     /// The playing file's format and field of view, set before each `show`.
     pub vr: Option<Format>,
     pub fov: i64,
+    /// The sleep timer's choice and seconds left, set before each `show`.
+    pub sleep: Sleep,
+    pub sleep_left: Option<u64>,
 }
 
 #[derive(Default)]
@@ -83,6 +88,8 @@ pub struct Actions {
     pub view_reset: bool,
     /// The user picked this VR format.
     pub vr: Option<Option<Format>>,
+    /// The user picked this sleep timer.
+    pub sleep: Option<Sleep>,
 }
 
 impl QuickPanel {
@@ -123,10 +130,12 @@ impl QuickPanel {
         p.rect_filled(nav, egui::CornerRadius { nw: 8, sw: 8, ne: 0, se: 0 }, NAV_BG);
 
         // Nav
-        let items = [(Page::Subtitles, tr("Subtitles")), (Page::SubStyle, tr("Styling")), (Page::Audio, tr("Audio")), (Page::Equalizer, tr("EQ")), (Page::Video, tr("Video")), (Page::Enhance, tr("Enhance")), (Page::Color, tr("Color")), (Page::Vr, tr("VR panorama"))];
-        let top = nav.center().y - items.len() as f32 * 48.0 / 2.0;
+        let items = [(Page::Subtitles, tr("Subtitles")), (Page::SubStyle, tr("Styling")), (Page::Audio, tr("Audio")), (Page::Equalizer, tr("EQ")), (Page::Video, tr("Video")), (Page::Enhance, tr("Enhance")), (Page::Color, tr("Color")), (Page::Vr, tr("VR panorama")), (Page::Timer, tr("Timer"))];
+        // Rows close up when the panel is too short for all of them.
+        let step = (nav.height() / items.len() as f32).min(48.0);
+        let top = nav.center().y - items.len() as f32 * step / 2.0;
         for (i, (page, label)) in items.into_iter().enumerate() {
-            let r = Rect::from_min_size(pos2(nav.left(), top + i as f32 * 48.0), vec2(NAV_W, 40.0));
+            let r = Rect::from_min_size(pos2(nav.left(), top + i as f32 * step + (step - 40.0).clamp(0.0, 8.0) / 2.0), vec2(NAV_W, step.min(40.0)));
             let resp = ui.interact(r, ui.scope_id().with(("qp_nav", i)), Sense::click());
             let on = self.page == page;
             if on {
@@ -162,6 +171,7 @@ impl QuickPanel {
             Page::Enhance => self.enhance(&mut c, player, s, view, &mut out),
             Page::Color => self.color(&mut c, player),
             Page::Vr => self.vr_page(&mut c, player, &mut out),
+            Page::Timer => self.timer(&mut c, &mut out),
         }
 
         // "More settings" bottom-left of the body.
@@ -437,6 +447,24 @@ impl QuickPanel {
         if c.toggle_row("qp_frameless", tr("Frameless"), s.frameless) {
             s.frameless = !s.frameless;
             out.settings_changed = true;
+        }
+    }
+
+    fn timer(&mut self, c: &mut Cursor, out: &mut Actions) {
+        c.section(tr("Sleep timer"));
+        let minutes: Vec<String> = sleep_timer::MINUTES.iter().map(|m| tf("{} min", &[m])).collect();
+        let mut opts: Vec<(&str, Sleep)> = vec![(tr("Off|short"), Sleep::Off)];
+        opts.extend(minutes.iter().zip(sleep_timer::MINUTES).map(|(l, m)| (l.as_str(), Sleep::Minutes(m))));
+        opts.push((tr("End of this video"), Sleep::EndOfVideo));
+        let cur: Vec<(&str, bool)> = opts.iter().map(|(l, v)| (*l, *v == self.sleep)).collect();
+        if let Some(i) = c.radios_cols("qp_sleep", &cur, 3) {
+            out.sleep = Some(opts[i].1);
+        }
+        c.gap(4.0);
+        match (self.sleep, self.sleep_left) {
+            (Sleep::Minutes(_), Some(left)) => c.note(&tf("Pauses in {}", &[&crate::app::fmt_time(left as f64)])),
+            (Sleep::EndOfVideo, _) => c.note(tr("Pauses when this video ends, without going on to the next")),
+            _ => c.note(tr("Pauses playback by itself after the time you pick")),
         }
     }
 
