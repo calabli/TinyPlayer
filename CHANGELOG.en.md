@@ -4,6 +4,13 @@ English | [简体中文](CHANGELOG.md)
 
 The in-app update dialog shows the entries of the new version, so each one is written for users.
 
+## 0.1.23
+
+- The library is much faster: with a large library (tens of thousands of videos) and many favorites, favoriting, tagging and coming back to the library after playback no longer freeze for seconds
+- Thumbnails load in the background, so scrolling the library is smoother
+- The move dialog is smoother, even with many folders or a target on an external drive
+- Multi-view uses less with a very long playlist
+
 ## 0.1.22
 
 - New sleep timer: on the quick panel's "Timer" page, pick 15 to 90 minutes to pause by itself, or stop when the current video ends
