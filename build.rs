@@ -36,9 +36,11 @@ fn copy_libmpv() {
         return;
     }
 
-    // OUT_DIR = target/<profile>/build/<pkg>-<hash>/out → walk up to target/<profile>
+    // OUT_DIR is target/<profile>/build/<pkg>-<hash>/out, or with newer Cargo
+    // target/<profile>/build/<pkg>/<hash>/out: the profile folder is the one
+    // above the nearest `build`, however deep this is.
     let out = PathBuf::from(std::env::var("OUT_DIR").unwrap());
-    let Some(profile_dir) = out.ancestors().nth(3) else {
+    let Some(profile_dir) = out.ancestors().find(|d| d.file_name().is_some_and(|n| n == "build")).and_then(|b| b.parent()) else {
         return;
     };
     let dst = profile_dir.join(file);
