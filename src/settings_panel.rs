@@ -255,6 +255,14 @@ pub fn show(
         y += ROW_H;
 
         let r = row(y);
+        label(r, tr("Several windows"), tr("Opening a video starts another window, each playing on its own (Ctrl/⌘+N for an empty one)"), true);
+        if toggle(ui, &p, r, "multi_window", settings.multi_window, true) {
+            settings.multi_window = !settings.multi_window;
+            out.settings_changed = true;
+        }
+        y += ROW_H;
+
+        let r = row(y);
         label(r, tr("Check for updates"), tr("Asks GitHub at most once a day. Sends no usage data"), true);
         if toggle(ui, &p, r, "auto_update", settings.auto_update, true) {
             settings.auto_update = !settings.auto_update;
@@ -321,6 +329,7 @@ pub fn show(
             ("I".into(), tr("Picture-in-picture")),
             ("H".into(), tr("Frameless playback")),
             (format!("{cmd}O"), tr("Open file")),
+            (format!("{cmd}N"), tr("New window")),
             (format!("{cmd}D"), tr("Toggle favorite")),
             (format!("{cmd}S"), tr("Screenshot to desktop")),
             (format!("{cmd}K"), tr("Search library")),

@@ -76,16 +76,28 @@ fn main() -> eframe::Result {
 
     mac_open::install();
 
-    // Already running? Hand the files to that window and exit.
-    let listener = match single_instance::acquire(&files) {
+    let store = history::Store::open_default().ok();
+    let several = store.as_ref().and_then(|s| s.get_value("multi_window")).is_some_and(|v| v == "1");
+
+    // Already running? Hand the files to that window and exit, unless
+    // several windows are allowed: then this one runs on its own.
+    let listener = match single_instance::acquire(&files, several) {
         single_instance::Role::Forwarded => return Ok(()),
         single_instance::Role::Primary(l) => l,
+        single_instance::Role::Extra => None,
     };
 
-    let place = history::Store::open_default()
-        .ok()
-        .and_then(|s| s.get_value("window"))
-        .and_then(|v| WindowPlace::decode(&v));
+    let place = store.as_ref().and_then(|s| s.get_value("window")).and_then(|v| WindowPlace::decode(&v));
+    drop(store);
+    // A further window opens a little below and right of the saved place, so
+    // it doesn't hide the first one exactly. Maximized would hide it entirely.
+    let place = if single_instance::is_extra() {
+        let step = 36.0 * (1 + std::process::id() % 4) as f32;
+        let p = place.unwrap_or(WindowPlace { x: 80.0, y: 80.0, w: 1100.0, h: 640.0, maximized: false });
+        Some(WindowPlace { x: p.x + step, y: p.y + step, maximized: false, ..p })
+    } else {
+        place
+    };
 
     let viewport_place = |vp: egui::ViewportBuilder| match place {
         Some(p) => vp.with_position([p.x, p.y]).with_maximized(p.maximized),

@@ -200,13 +200,19 @@ impl App {
         let system = cc.egui_ctx.input(|i| i.raw.system_theme);
         let light = theme::wants_light(&tracker.settings.theme, system);
         theme::apply(&cc.egui_ctx, light);
-        update::clean_up();
+        // A further window would delete an update the first one has downloaded.
+        if !crate::single_instance::is_extra() {
+            update::clean_up();
+        }
         let (fill_tx, fill_rx) = std::sync::mpsc::channel();
         // Pick up new/changed files in watched folders on every start. Nothing
         // starts before the first frame, which knows if a video is opening.
         background::set_playing(true);
         let scanner = Scanner::spawn(cc.egui_ctx.clone());
-        scanner.scan();
+        // The first window does this; two scanning at once would only repeat it.
+        if !crate::single_instance::is_extra() {
+            scanner.scan();
+        }
         let playlist = Playlist::new(tracker.settings.loop_mode, tracker.settings.shuffle);
         let hover_thumbs = HoverThumbs::spawn(cc.egui_ctx.clone(), crate::history::data_dir());
         let media_keys = MediaKeys::new(cc);
@@ -265,7 +271,8 @@ impl App {
             pending_click: None,
             updater: Updater::new(),
             update_dialog: false,
-            update_check_done: false,
+            // The first window checks; a further one doesn't ask GitHub again.
+            update_check_done: crate::single_instance::is_extra(),
             update_check_manual: false,
             crop_detect: CropDetect::new(),
             last_refresh_check: 0.0,
@@ -1135,6 +1142,14 @@ impl App {
         if ctx.egui_wants_keyboard_input() {
             return;
         }
+        if cmd && keys.contains(&Key::N) {
+            if self.tracker.settings.multi_window {
+                crate::single_instance::open_new_window(&[]);
+            } else {
+                self.show_osd(ctx, tr("Several windows are off. Turn them on in Settings → Interface"));
+            }
+            return;
+        }
         // In multi-view, keys (full screen too) go to the focused slot.
         if self.multi.on {
             if let Some(text) = self.multi.handle_keys(ctx, &keys, player) {
@@ -1972,8 +1987,15 @@ impl eframe::App for App {
         }
         let opened = crate::mac_open::take();
         if !opened.is_empty() {
-            self.pending_open.extend(opened);
-            ctx.send_viewport_cmd(ViewportCommand::Focus);
+            if self.tracker.settings.multi_window && !player.state.idle {
+                // macOS hands a file to the running app instead of starting
+                // another. A window that's playing keeps its video; one with
+                // nothing open takes the file.
+                crate::single_instance::open_new_window(&opened);
+            } else {
+                self.pending_open.extend(opened);
+                ctx.send_viewport_cmd(ViewportCommand::Focus);
+            }
         }
         if let Some(rx) = &self.instance_rx {
             while let Ok(files) = rx.try_recv() {
@@ -2058,7 +2080,10 @@ impl eframe::App for App {
     }
 
     fn on_exit(&mut self, gl: Option<&glow::Context>) {
-        if let (Some(place), Some(store)) = (self.window_place, &self.tracker.store) {
+        // Only the first window's place is kept; the others open beside it.
+        if let (Some(place), Some(store)) = (self.window_place, &self.tracker.store)
+            && !crate::single_instance::is_extra()
+        {
             store.set_value("window", &place.encode());
         }
         self.save_device_volume(0.0, true);
@@ -2073,6 +2098,10 @@ impl eframe::App for App {
             std::process::exit(0);
         });
         update::stop_all();
+        // A further window's frames folder is its own; the first one's is reused.
+        if crate::single_instance::is_extra() {
+            let _ = std::fs::remove_dir_all(crate::history::data_dir().join(format!("preview-tmp{}", crate::single_instance::work_tag())));
+        }
         self.library.shut_down(&egui::Context::default());
         self.scanner.quit();
         self.tracker.shutdown();

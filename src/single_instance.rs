@@ -1,5 +1,8 @@
 //! Single-instance support: opening a file while TinyPlayer is already
 //! running hands it to the existing window instead of starting another.
+//! With the "several windows" setting on, it starts a window of its own
+//! instead: another process, independent of the first except for the shared
+//! library and settings (see [`is_extra`]).
 //!
 //! The first instance listens on a loopback TCP port; later instances
 //! connect, send their file list, and exit. The port is derived from the
@@ -9,10 +12,27 @@
 use std::hash::{Hash, Hasher};
 use std::io::{Read, Write};
 use std::net::{Ipv4Addr, SocketAddrV4, TcpListener, TcpStream};
+use std::sync::atomic::{AtomicBool, Ordering};
 use std::sync::mpsc::Sender;
 use std::time::Duration;
 
 const MAGIC: &str = "TINYPLAYER/1\n";
+
+/// This process is a further window beside one that's already running.
+static EXTRA: AtomicBool = AtomicBool::new(false);
+
+/// Whether this is a further window. It leaves what must happen once per
+/// session to the first one: the clean-up and the update check at start, the
+/// library scan, the window's saved place and the clear-on-exit.
+pub fn is_extra() -> bool {
+    EXTRA.load(Ordering::Relaxed)
+}
+
+/// Added to the names of work folders, so windows don't share one and mix up
+/// each other's frames.
+pub fn work_tag() -> String {
+    if is_extra() { format!("-{}", std::process::id()) } else { String::new() }
+}
 
 fn port() -> u16 {
     let mut h = std::collections::hash_map::DefaultHasher::new();
@@ -31,14 +51,22 @@ pub enum Role {
     Primary(Option<TcpListener>),
     /// Another instance took our files; this process should exit.
     Forwarded,
+    /// Another instance runs, and this process is a window of its own.
+    Extra,
 }
 
-pub fn acquire(files: &[String]) -> Role {
+/// `several` is the "several windows" setting: files aren't handed to a
+/// running instance then.
+pub fn acquire(files: &[String], several: bool) -> Role {
     // Try to become the primary instance first: binding is instant, whereas
     // connecting to a port nobody listens on can stall on Windows until the
     // timeout (this used to add ~300 ms to every cold start).
     if let Ok(listener) = TcpListener::bind(addr()) {
         return Role::Primary(Some(listener));
+    }
+    if several {
+        EXTRA.store(true, Ordering::Relaxed);
+        return Role::Extra;
     }
     // The port is taken — most likely by a running TinyPlayer.
     if let Ok(mut s) = TcpStream::connect_timeout(&addr().into(), Duration::from_millis(500)) {
@@ -62,6 +90,30 @@ pub fn acquire(files: &[String]) -> Role {
     // Something else holds the port (or the other instance didn't answer):
     // run normally, just without single-instance support.
     Role::Primary(None)
+}
+
+/// Starts another TinyPlayer window, with `files` if any. The new process
+/// reads the same setting and so becomes a window of its own.
+pub fn open_new_window(files: &[String]) {
+    let Ok(exe) = std::env::current_exe() else { return };
+    let mut cmd = std::process::Command::new(exe);
+    for f in files {
+        cmd.arg(std::path::absolute(f).unwrap_or_else(|_| f.into()));
+    }
+    let spawned = cmd
+        .stdin(std::process::Stdio::null())
+        .stdout(std::process::Stdio::null())
+        .stderr(std::process::Stdio::null())
+        .spawn();
+    match spawned {
+        // Collected when it ends, so it doesn't linger as a zombie.
+        Ok(mut child) => {
+            std::thread::spawn(move || {
+                let _ = child.wait();
+            });
+        }
+        Err(e) => eprintln!("new window: {e}"),
+    }
 }
 
 /// Accepts file lists from later instances on a background thread and sends

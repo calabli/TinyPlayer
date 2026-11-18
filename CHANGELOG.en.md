@@ -4,6 +4,11 @@ English | [简体中文](CHANGELOG.md)
 
 The in-app update dialog shows the entries of the new version, so each one is written for users.
 
+## 0.1.24
+
+- New "Several windows" switch (Settings → Interface, off by default): with it on, opening a video starts another, independent player window, and Ctrl/⌘+N opens an empty one. Each window plays on its own and they share the library, the history and the settings
+- Windows changing settings at the same time no longer overwrite each other, and progress written at the same time is waited for instead of lost
+
 ## 0.1.23
 
 - The library is much faster: with a large library (tens of thousands of videos) and many favorites, favoriting, tagging and coming back to the library after playback no longer freeze for seconds

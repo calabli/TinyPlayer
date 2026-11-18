@@ -104,7 +104,7 @@ fn probe_all(lib: &Library, pending: Vec<(i64, String)>, cmds: &Receiver<Cmd>, s
 
     std::thread::scope(|scope| {
         for n in 0..workers {
-            let (tx, queue, thumbs, quit, work_dir) = (tx.clone(), &queue, &thumbs, &quit, data.join(format!("probe-{n}")));
+            let (tx, queue, thumbs, quit, work_dir) = (tx.clone(), &queue, &thumbs, &quit, data.join(format!("probe{}-{n}", crate::single_instance::work_tag())));
             scope.spawn(move || {
                 let Ok(prober) = Prober::new(&work_dir) else { return };
                 loop {

@@ -59,7 +59,9 @@ impl Tracker {
         let settings = store.as_ref().map(|s| s.load_settings()).unwrap_or_default();
         let tracker = Self { store, settings, incognito: false, current: None, last_tick: None };
         // If the app crashed last time, "clear on exit" never ran — do it now.
+        // Not from a further window: that would wipe what the first one is using.
         if tracker.settings.clear_on_exit
+            && !crate::single_instance::is_extra()
             && let Some(s) = &tracker.store {
                 s.clear_history();
             }
@@ -203,7 +205,10 @@ impl Tracker {
     /// Call once on shutdown.
     pub fn shutdown(&mut self) {
         self.finish();
+        // The window that ends the session clears; a further one closing
+        // while the first plays on mustn't.
         if self.settings.clear_on_exit
+            && !crate::single_instance::is_extra()
             && let Some(s) = &self.store {
                 s.clear_history();
             }

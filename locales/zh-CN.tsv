@@ -28,6 +28,10 @@ Drop to play here	松开在这里播放
 Drop to replace this video	松开替换这个画面
 Several videos are playing. Close the others first; multi-view turns off with one left	多个视频在播放，先关闭其他画面，只剩一个时才能退出多屏
 Focus sound	只听选中
+Several windows	多开窗口
+Opening a video starts another window, each playing on its own (Ctrl/⌘+N for an empty one)	打开视频时另开一个窗口，各自独立播放（Ctrl/⌘+N 新开空窗口）
+Several windows are off. Turn them on in Settings → Interface	多开窗口未开启，请在 设置 → 界面 中打开
+New window	新窗口
 Timer	定时
 Sleep timer	睡眠定时
 {} min	{} 分钟

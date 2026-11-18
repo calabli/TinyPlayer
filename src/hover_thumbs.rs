@@ -95,7 +95,7 @@ impl HoverThumbs {
         let (done, rx) = mpsc::channel();
         std::thread::Builder::new()
             .name("hover-thumbs".into())
-            .spawn(move || worker(jobs, done, ctx, &work_dir.join("preview-tmp")))
+            .spawn(move || worker(jobs, done, ctx, &work_dir.join(format!("preview-tmp{}", crate::single_instance::work_tag()))))
             .ok();
         Self { tx, rx, cache: Lru::new(MAX_CACHED), path: String::new(), pending: None }
     }

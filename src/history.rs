@@ -94,6 +94,9 @@ pub struct Settings {
     /// Hide the window's title bar during playback.
     pub frameless: bool,
     pub device_volume: bool,
+    /// Opening a video while TinyPlayer runs starts another window of its own,
+    /// instead of handing the file to the running one.
+    pub multi_window: bool,
 }
 
 impl Default for Settings {
@@ -130,6 +133,7 @@ impl Default for Settings {
             auto_download: true,
             frameless: false,
             device_volume: true,
+            multi_window: false,
         }
     }
 }
@@ -152,6 +156,10 @@ pub struct Entry {
 
 pub struct Store {
     db: Connection,
+    /// What each setting held when this window last read or wrote it. Saving
+    /// writes only what changed since, so a window that's been open a while
+    /// doesn't put its old values back over what another window changed.
+    saved: std::cell::RefCell<HashMap<&'static str, String>>,
 }
 
 pub fn now_secs() -> i64 {
@@ -187,6 +195,49 @@ pub fn data_dir() -> PathBuf {
     base.unwrap_or_else(std::env::temp_dir).join("TinyPlayer")
 }
 
+/// The settings as they're stored: a key and a text value each.
+fn settings_pairs(s: &Settings) -> Vec<(&'static str, String)> {
+    let b = |v: bool| if v { "1" } else { "0" }.to_string();
+    let mode = match s.resume_mode {
+        ResumeMode::Auto => "auto",
+        ResumeMode::Ask => "ask",
+        ResumeMode::Start => "start",
+    };
+    vec![
+        ("remember", b(s.remember)),
+        ("resume_mode", mode.to_string()),
+        ("min_duration", s.min_duration.to_string()),
+        ("clear_finished", b(s.clear_finished)),
+        ("clear_on_exit", b(s.clear_on_exit)),
+        ("fill_folder", b(s.fill_folder)),
+        ("loop_mode", s.loop_mode.as_str().to_string()),
+        ("shuffle", b(s.shuffle)),
+        ("hwdec", b(s.hwdec)),
+        ("aspect", s.aspect.clone()),
+        ("enhance", b(s.enhance)),
+        ("tone_mapping", s.tone_mapping.clone()),
+        ("interpolation", b(s.interpolation)),
+        ("sub_auto", b(s.sub_auto)),
+        ("sub_size", s.sub_size.to_string()),
+        ("sub_pos", s.sub_pos.to_string()),
+        ("sub_lang", s.sub_lang.clone()),
+        ("sub_font", s.sub_font.clone()),
+        ("sub_color", s.sub_color.clone()),
+        ("sub_outline", s.sub_outline.to_string()),
+        ("sub_shadow", b(s.sub_shadow)),
+        ("sub_ass_force", b(s.sub_ass_force)),
+        ("audio_norm", b(s.audio_norm)),
+        ("eq", audio_fx::encode_gains(&s.eq)),
+        ("theme", s.theme.clone()),
+        ("language", s.language.clone()),
+        ("auto_update", b(s.auto_update)),
+        ("auto_download", b(s.auto_download)),
+        ("frameless", b(s.frameless)),
+        ("device_volume", b(s.device_volume)),
+        ("multi_window", b(s.multi_window)),
+    ]
+}
+
 impl Store {
     pub fn open_default() -> Result<Self, String> {
         let dir = data_dir();
@@ -196,6 +247,9 @@ impl Store {
 
     pub fn open(path: &Path) -> Result<Self, String> {
         let db = Connection::open(path).map_err(|e| e.to_string())?;
+        // Several windows can share the file; wait for a write in progress
+        // instead of failing at once, which would lose a saved position.
+        db.busy_timeout(std::time::Duration::from_secs(3)).map_err(|e| e.to_string())?;
         db.execute_batch(
             "PRAGMA journal_mode = WAL;
              PRAGMA synchronous = NORMAL;
@@ -230,7 +284,7 @@ impl Store {
         .map_err(|e| e.to_string())?;
         // 0.1.6 made this table without names; it fails harmlessly after that.
         let _ = db.execute("ALTER TABLE device_volumes ADD COLUMN name TEXT NOT NULL DEFAULT ''", []);
-        Ok(Self { db })
+        Ok(Self { db, saved: Default::default() })
     }
 
     // ---- Settings ----
@@ -245,7 +299,7 @@ impl Store {
                 .flatten()
         };
         let flag = |k: &str, def: bool| get(k).map_or(def, |v| v == "1");
-        Settings {
+        let settings = Settings {
             remember: flag("remember", d.remember),
             resume_mode: match get("resume_mode").as_deref() {
                 Some("ask") => ResumeMode::Ask,
@@ -282,52 +336,22 @@ impl Store {
             auto_download: flag("auto_download", d.auto_download),
             frameless: flag("frameless", d.frameless),
             device_volume: flag("device_volume", d.device_volume),
-        }
+            multi_window: flag("multi_window", d.multi_window),
+        };
+        *self.saved.borrow_mut() = settings_pairs(&settings).into_iter().collect();
+        settings
     }
 
     pub fn save_settings(&self, s: &Settings) {
-        let b = |v: bool| if v { "1" } else { "0" }.to_string();
-        let mode = match s.resume_mode {
-            ResumeMode::Auto => "auto",
-            ResumeMode::Ask => "ask",
-            ResumeMode::Start => "start",
-        };
-        for (k, v) in [
-            ("remember", b(s.remember)),
-            ("resume_mode", mode.to_string()),
-            ("min_duration", s.min_duration.to_string()),
-            ("clear_finished", b(s.clear_finished)),
-            ("clear_on_exit", b(s.clear_on_exit)),
-            ("fill_folder", b(s.fill_folder)),
-            ("loop_mode", s.loop_mode.as_str().to_string()),
-            ("shuffle", b(s.shuffle)),
-            ("hwdec", b(s.hwdec)),
-            ("aspect", s.aspect.clone()),
-            ("enhance", b(s.enhance)),
-            ("tone_mapping", s.tone_mapping.clone()),
-            ("interpolation", b(s.interpolation)),
-            ("sub_auto", b(s.sub_auto)),
-            ("sub_size", s.sub_size.to_string()),
-            ("sub_pos", s.sub_pos.to_string()),
-            ("sub_lang", s.sub_lang.clone()),
-            ("sub_font", s.sub_font.clone()),
-            ("sub_color", s.sub_color.clone()),
-            ("sub_outline", s.sub_outline.to_string()),
-            ("sub_shadow", b(s.sub_shadow)),
-            ("sub_ass_force", b(s.sub_ass_force)),
-            ("audio_norm", b(s.audio_norm)),
-            ("eq", audio_fx::encode_gains(&s.eq)),
-            ("theme", s.theme.clone()),
-            ("language", s.language.clone()),
-            ("auto_update", b(s.auto_update)),
-            ("auto_download", b(s.auto_download)),
-            ("frameless", b(s.frameless)),
-            ("device_volume", b(s.device_volume)),
-        ] {
+        for (k, v) in settings_pairs(s) {
+            if self.saved.borrow().get(k) == Some(&v) {
+                continue;
+            }
             let _ = self.db.execute(
                 "INSERT INTO settings (k, v) VALUES (?1, ?2) ON CONFLICT(k) DO UPDATE SET v = ?2",
                 params![k, v],
             );
+            self.saved.borrow_mut().insert(k, v);
         }
     }
 
@@ -528,9 +552,40 @@ mod tests {
             auto_download: false,
             frameless: true,
             device_volume: false,
+            multi_window: true,
         };
         s.save_settings(&custom);
         assert_eq!(s.load_settings(), custom);
+    }
+
+    /// Two windows share the settings. One that's been open a while must not
+    /// put its old values back over what the other changed.
+    #[test]
+    fn a_window_saves_only_what_it_changed() {
+        let dir = std::env::temp_dir().join(format!("tinyplayer-settings-windows-{}", std::process::id()));
+        let _ = std::fs::remove_dir_all(&dir);
+        std::fs::create_dir_all(&dir).unwrap();
+        let path = dir.join("t.db");
+        let (a, b) = (Store::open(&path).unwrap(), Store::open(&path).unwrap());
+        let (mut in_a, mut in_b) = (a.load_settings(), b.load_settings());
+
+        in_a.theme = "light".into();
+        a.save_settings(&in_a);
+        // B still holds the old theme, and changes something else.
+        in_b.language = "en".into();
+        b.save_settings(&in_b);
+
+        let now = Store::open(&path).unwrap().load_settings();
+        assert_eq!((now.theme.as_str(), now.language.as_str()), ("light", "en"));
+        // What B changes itself is written, including back to what it held
+        // at the start.
+        in_b.theme = "system".into();
+        b.save_settings(&in_b);
+        assert_eq!(Store::open(&path).unwrap().load_settings().theme, "system");
+        in_b.theme = "dark".into();
+        b.save_settings(&in_b);
+        assert_eq!(Store::open(&path).unwrap().load_settings().theme, "dark");
+        let _ = std::fs::remove_dir_all(&dir);
     }
 
     #[test]

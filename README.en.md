@@ -48,6 +48,7 @@ libmpv is large, so it isn't committed to git.
 | C | Switch subtitles |
 | N / P, PageDown / PageUp | Next / previous |
 | Ctrl/⌘ + O | Open a file |
+| Ctrl/⌘ + N | Open a new, empty window (turn on "Several windows" first) |
 | Ctrl/⌘ + S | Screenshot to the desktop |
 | Home | Back to the start |
 | Enter / Esc | When the resume prompt shows: resume / dismiss |
@@ -118,6 +119,7 @@ Aspect ratio, hardware decoding, quality enhancement, subtitle size, position an
 Settings → Interface switches the theme and the language, at once, and saves them:
 
 - **Theme**: dark, light, or follow the system. It affects the library, the start page and the settings window; the control bar, sidebar and quick panel sit on the video and stay dark
+- **Several windows** (off by default): with it on, opening a video while TinyPlayer is already running (double-clicking a file, dropping it on the icon, the command line) starts another window instead of handing the file to the running one; Ctrl/⌘+N opens an empty one. Each window is a process of its own, with its own playback, playlist, multi-view, private mode and sleep timer, so one that hangs or closes doesn't affect the others. They share the library, the history and the settings: a window writes only the settings it changed, so they don't overwrite each other, but another window reads the new settings only when it's opened again. Windows opened later don't repeat the clean-up, update check and library scan done at start, open a little offset from the first, and closing them doesn't clear the history ("clear on exit" runs only when the first window exits). On macOS, opening a file from the Finder keeps a window that's playing and starts a new one; an empty window takes the file itself. With several windows open, the keyboard media keys and Control Center control only the one that played last
 - **In-app updates**: at most once a day after starting, TinyPlayer asks GitHub for a new version. With the same version number it also compares the build's commit, and offers the update if they differ; a build newer than the latest release isn't offered one, and a local build only compares version numbers. The update downloads and installs inside the app, with no browser. By default it downloads in the background and then asks "Restart now / Later"; "Later" installs it on exit. With automatic download off, a new version asks "Update now / Remind me later / Skip this version", and the download can be canceled. Nothing pops up while a video plays. A download installs only if it matches the published `SHA256SUMS`, and a failed replacement restores the old version. Turn checks off or check by hand in Settings → Interface; private mode doesn't check by itself. Only the installed version updates; the portable zip and an app run straight from the DMG only say there's a new version. It uses the system's own `curl` (macOS and Windows 10/11 both have it)
 - **Language**: Chinese (the default) or English. Some playback messages, such as `VOLUME 60%`, read the same in both. The update dialog shows the changelog in the chosen language
 
