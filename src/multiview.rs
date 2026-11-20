@@ -64,7 +64,7 @@ impl Pane {
     }
 
     /// GL objects are made on the UI thread, where the context is current.
-    fn ensure_gl(&mut self, ctx: &egui::Context, frame: &mut eframe::Frame, gpa: &ProcAddr) {
+    fn ensure_gl(&mut self, ctx: &egui::Context, frame: &mut eframe::Frame, gpa: &ProcAddr, spare: &mut Vec<VideoTarget>) {
         if self.render.is_some() || self.error.is_some() {
             return;
         }
@@ -77,7 +77,7 @@ impl Pane {
                 return;
             }
         }
-        match VideoTarget::new(&gl, frame) {
+        match spare.pop().map_or_else(|| VideoTarget::new(&gl, frame), Ok) {
             Ok(v) => self.video = Some(v),
             Err(e) => self.error = Some(e),
         }
@@ -95,13 +95,14 @@ impl Pane {
         }
     }
 
-    fn destroy(mut self, gl: Option<&glow::Context>) {
+    /// Stops the pane and hands back its video target for the next pane.
+    fn destroy(mut self, gl: Option<&glow::Context>) -> Option<VideoTarget> {
         self.tracker.finish();
         self.player.stop();
-        if let (Some(v), Some(gl)) = (self.video.take(), gl) {
-            v.destroy(gl);
-        }
         self.render = None;
+        let mut video = self.video.take()?;
+        video.release(gl?);
+        Some(video)
     }
 }
 
@@ -150,6 +151,8 @@ pub struct MultiView {
     drag: Option<Drag>,
     /// Panes waiting for the GL context to be released.
     dead: Vec<Pane>,
+    /// Video targets of closed panes, for new ones to reuse.
+    spare: Vec<VideoTarget>,
     /// The area slots were laid out in last frame.
     grid: Rect,
     /// One video blown up to fill the whole area; the others keep playing.
@@ -182,6 +185,7 @@ impl Default for MultiView {
             menu_fresh: false,
             drag: None,
             dead: Vec::new(),
+            spare: Vec::new(),
             grid: Rect::NOTHING,
             maximized: None,
             hide_bars: false,
@@ -536,9 +540,11 @@ impl MultiView {
     }
 
     /// Releases panes that were closed, while the GL context is current.
-    fn reap(&mut self, gl: Option<&glow::Context>) {
+    /// Runs every frame, multi-view or not: turning it off closes its panes
+    /// too, and they must stop then, not when it's next turned on.
+    pub fn reap(&mut self, gl: Option<&glow::Context>) {
         for pane in self.dead.drain(..) {
-            pane.destroy(gl);
+            self.spare.extend(pane.destroy(gl));
         }
     }
 
@@ -546,6 +552,11 @@ impl MultiView {
     pub fn shut_down(&mut self, gl: Option<&glow::Context>) {
         self.dead.extend(self.panes.drain().map(|(_, p)| p));
         self.reap(gl);
+        if let Some(gl) = gl {
+            for video in self.spare.drain(..) {
+                video.destroy(gl);
+            }
+        }
     }
 
     fn close_slot(&mut self, slot: u32) {
@@ -602,7 +613,7 @@ impl MultiView {
 
         if let Some(gpa) = gpa {
             for pane in self.panes.values_mut() {
-                pane.ensure_gl(&ctx, frame, gpa);
+                pane.ensure_gl(&ctx, frame, gpa, &mut self.spare);
             }
         }
         let ppp = ctx.pixels_per_point();

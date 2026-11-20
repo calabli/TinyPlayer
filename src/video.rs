@@ -256,6 +256,15 @@ impl VideoTarget {
         Ok(self.view.id)
     }
 
+    /// Shrinks the target to nearly nothing so it can wait for reuse. Its
+    /// textures belong to egui until exit, so a target that's done with is
+    /// kept and handed to the next video rather than thrown away.
+    pub fn release(&mut self, gl: &glow::Context) {
+        self.frame.resize(gl, [1, 1]);
+        self.view.resize(gl, [1, 1]);
+        self.drawn = None;
+    }
+
     pub fn destroy(&self, gl: &glow::Context) {
         self.frame.destroy(gl);
         self.view.destroy(gl);

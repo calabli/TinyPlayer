@@ -1705,6 +1705,9 @@ impl eframe::App for App {
                 self.open_library();
             }
         }
+        // Panes closed by turning multi-view off (by key or by the bar above)
+        // stop and free here, in the same frame.
+        self.multi.reap(frame.gl().map(|g| g.as_ref()));
         if self.pip && !s.idle {
             let aspect = if s.width > 0 && s.height > 0 { s.width as f32 / s.height as f32 } else { 0.0 };
             self.pip_resize_grips(ui, full, aspect);

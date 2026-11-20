@@ -203,9 +203,13 @@ pub enum Format {
     Str,
 }
 
+type Wakeup = Box<dyn Fn() + Send + Sync>;
+
 pub struct Mpv {
     api: Api,
     handle: *mut RawHandle,
+    /// The callback mpv holds a pointer to. Freed after the handle, in drop.
+    wakeup: std::sync::Mutex<Option<Box<Wakeup>>>,
 }
 
 // The mpv client API is thread-safe.
@@ -219,7 +223,7 @@ impl Mpv {
         if handle.is_null() {
             return Err("mpv_create failed".into());
         }
-        let mpv = Self { api, handle };
+        let mpv = Self { api, handle, wakeup: Default::default() };
         for (k, v) in options {
             mpv.set_option(k, v)?;
         }
@@ -300,11 +304,16 @@ impl Mpv {
     }
 
     /// Calls `f` from an mpv thread whenever new events are queued.
-    pub fn set_wakeup(&self, f: Box<dyn Fn() + Send + Sync>) {
-        let data = Box::into_raw(Box::new(f));
-        unsafe { (self.api.set_wakeup_callback)(self.handle, Some(trampoline), data.cast()) };
-        // Leaked on purpose: mpv may call it until the handle is destroyed,
-        // and there is exactly one per player for the app's lifetime.
+    pub fn set_wakeup(&self, f: Wakeup) {
+        let data = Box::new(f);
+        unsafe {
+            (self.api.set_wakeup_callback)(self.handle, Some(trampoline), (&raw const *data) as *mut c_void);
+        }
+        // mpv calls the callback under the lock that setting it takes, so the
+        // one this replaces is no longer running and can go.
+        if let Ok(mut slot) = self.wakeup.lock() {
+            *slot = Some(data);
+        }
     }
 
     /// Drains all pending events without blocking.
@@ -359,6 +368,8 @@ impl Mpv {
 
 impl Drop for Mpv {
     fn drop(&mut self) {
+        // The wakeup callback is a field, so it's freed after this returns,
+        // when mpv can no longer call it.
         unsafe { (self.api.terminate_destroy)(self.handle) };
     }
 }
