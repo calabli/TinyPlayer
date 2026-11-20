@@ -65,7 +65,7 @@ pub fn show(
 
     // Backdrop: click outside closes.
     p.rect_filled(full, 0.0, theme::scrim(170));
-    let height = 56.0 + ROW_H * 6.0 + 64.0;
+    let height = 56.0 + ROW_H * 7.0 + 64.0;
     let panel = Rect::from_center_size(full.center(), vec2(W.min(full.width() - 32.0), height.min(full.height() - 32.0)));
     let backdrop = ui.interact(full, ui.scope_id().with("settings_backdrop"), Sense::click());
     // Swallow clicks on the panel so they don't reach the backdrop.
@@ -258,6 +258,14 @@ pub fn show(
         label(r, tr("Several windows"), tr("Opening a video starts another window, each playing on its own (Ctrl/⌘+N for an empty one)"), true);
         if toggle(ui, &p, r, "multi_window", settings.multi_window, true) {
             settings.multi_window = !settings.multi_window;
+            out.settings_changed = true;
+        }
+        y += ROW_H;
+
+        let r = row(y);
+        label(r, tr("Remember window layout"), tr("Reopens the window at its last size and place. Off: a small window in the middle"), true);
+        if toggle(ui, &p, r, "remember_window", settings.remember_window, true) {
+            settings.remember_window = !settings.remember_window;
             out.settings_changed = true;
         }
         y += ROW_H;

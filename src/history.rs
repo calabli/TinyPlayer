@@ -97,6 +97,8 @@ pub struct Settings {
     /// Opening a video while TinyPlayer runs starts another window of its own,
     /// instead of handing the file to the running one.
     pub multi_window: bool,
+    /// Reopen the window where and as large as it was when TinyPlayer closed.
+    pub remember_window: bool,
 }
 
 impl Default for Settings {
@@ -134,6 +136,7 @@ impl Default for Settings {
             frameless: false,
             device_volume: true,
             multi_window: false,
+            remember_window: true,
         }
     }
 }
@@ -235,6 +238,7 @@ fn settings_pairs(s: &Settings) -> Vec<(&'static str, String)> {
         ("frameless", b(s.frameless)),
         ("device_volume", b(s.device_volume)),
         ("multi_window", b(s.multi_window)),
+        ("remember_window", b(s.remember_window)),
     ]
 }
 
@@ -337,6 +341,7 @@ impl Store {
             frameless: flag("frameless", d.frameless),
             device_volume: flag("device_volume", d.device_volume),
             multi_window: flag("multi_window", d.multi_window),
+            remember_window: flag("remember_window", d.remember_window),
         };
         *self.saved.borrow_mut() = settings_pairs(&settings).into_iter().collect();
         settings
@@ -553,6 +558,7 @@ mod tests {
             frameless: true,
             device_volume: false,
             multi_window: true,
+            remember_window: false,
         };
         s.save_settings(&custom);
         assert_eq!(s.load_settings(), custom);

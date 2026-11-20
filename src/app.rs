@@ -2143,6 +2143,7 @@ impl eframe::App for App {
         // Only the first window's place is kept; the others open beside it.
         if let (Some(place), Some(store)) = (self.window_place, &self.tracker.store)
             && !crate::single_instance::is_extra()
+            && self.tracker.settings.remember_window
         {
             store.set_value("window", &place.encode());
         }

@@ -30,6 +30,8 @@ Several videos are playing. Close the others first; multi-view turns off with on
 Focus sound	只听选中
 Several windows	多开窗口
 Opening a video starts another window, each playing on its own (Ctrl/⌘+N for an empty one)	打开视频时另开一个窗口，各自独立播放（Ctrl/⌘+N 新开空窗口）
+Remember window layout	记住窗口布局
+Reopens the window at its last size and place. Off: a small window in the middle	下次打开时恢复上次的窗口大小和位置；关闭后每次都在屏幕中间以小窗口打开
 Several windows are off. Turn them on in Settings → Interface	多开窗口未开启，请在 设置 → 界面 中打开
 New window	新窗口
 Timer	定时

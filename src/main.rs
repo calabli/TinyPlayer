@@ -70,6 +70,10 @@ impl WindowPlace {
     }
 }
 
+/// The window's inner size when there's no saved one: 16:9, small enough to
+/// leave room around it on a laptop screen.
+const DEFAULT_SIZE: [f32; 2] = [854.0, 480.0];
+
 fn main() -> eframe::Result {
     // Files passed on the command line (e.g. from "Open with" / file association).
     let files: Vec<String> = std::env::args().skip(1).filter(|a| !a.starts_with('-')).collect();
@@ -87,13 +91,19 @@ fn main() -> eframe::Result {
         single_instance::Role::Extra => None,
     };
 
-    let place = store.as_ref().and_then(|s| s.get_value("window")).and_then(|v| WindowPlace::decode(&v));
+    // Off, the window opens at the default size in the middle every time.
+    let remember = store.as_ref().and_then(|s| s.get_value("remember_window")).is_none_or(|v| v == "1");
+    let place = store
+        .as_ref()
+        .filter(|_| remember)
+        .and_then(|s| s.get_value("window"))
+        .and_then(|v| WindowPlace::decode(&v));
     drop(store);
     // A further window opens a little below and right of the saved place, so
     // it doesn't hide the first one exactly. Maximized would hide it entirely.
     let place = if single_instance::is_extra() {
         let step = 36.0 * (1 + std::process::id() % 4) as f32;
-        let p = place.unwrap_or(WindowPlace { x: 80.0, y: 80.0, w: 1100.0, h: 640.0, maximized: false });
+        let p = place.unwrap_or(WindowPlace { x: 80.0, y: 80.0, w: DEFAULT_SIZE[0], h: DEFAULT_SIZE[1], maximized: false });
         Some(WindowPlace { x: p.x + step, y: p.y + step, maximized: false, ..p })
     } else {
         place
@@ -106,7 +116,7 @@ fn main() -> eframe::Result {
     let options = eframe::NativeOptions {
         viewport: viewport_place(egui::ViewportBuilder::default()
             .with_title("TinyPlayer")
-            .with_inner_size(place.map_or([1100.0, 640.0], |p| [p.w, p.h]))
+            .with_inner_size(place.map_or(DEFAULT_SIZE, |p| [p.w, p.h]))
             .with_min_inner_size([480.0, 300.0])
             .with_drag_and_drop(true)
             .with_icon(egui::IconData {
