@@ -199,6 +199,37 @@ pub fn follow_spaces(on: bool) {
 #[cfg(not(target_os = "macos"))]
 pub fn follow_spaces(_on: bool) {}
 
+/// Minimizes the window. On macOS a window without a title bar can't be
+/// minimized until it's marked as able to, which winit leaves off then.
+#[cfg(target_os = "macos")]
+pub fn minimize(_ctx: &eframe::egui::Context) {
+    use objc2::runtime::{AnyClass, AnyObject};
+    use objc2::{MainThreadMarker, msg_send};
+
+    const MINIATURIZABLE: usize = 1 << 2;
+
+    if MainThreadMarker::new().is_none() {
+        return;
+    }
+    let Some(class) = AnyClass::get(c"NSApplication") else { return };
+    // SAFETY: on the main thread, and every selector exists on these classes.
+    unsafe {
+        let app: *mut AnyObject = msg_send![class, sharedApplication];
+        let windows: *mut AnyObject = msg_send![app, windows];
+        let window: *mut AnyObject = msg_send![windows, firstObject];
+        if !window.is_null() {
+            let mask: usize = msg_send![window, styleMask];
+            let _: () = msg_send![window, setStyleMask: mask | MINIATURIZABLE];
+            let _: () = msg_send![window, miniaturize: std::ptr::null_mut::<AnyObject>()];
+        }
+    }
+}
+
+#[cfg(not(target_os = "macos"))]
+pub fn minimize(ctx: &eframe::egui::Context) {
+    ctx.send_viewport_cmd(eframe::egui::ViewportCommand::Minimized(true));
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;

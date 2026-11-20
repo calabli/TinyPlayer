@@ -445,6 +445,7 @@ Frameless playback	无边框播放
 Frameless: on	无边框播放  开
 Frameless: off	无边框播放  关
 Close window	关闭窗口
+Minimize window	最小化窗口
 Skip this version	跳过此版本
 Asks GitHub at most once a day. Sends no usage data	每天最多访问一次 GitHub，不发送使用数据
 Download updates	自动下载更新

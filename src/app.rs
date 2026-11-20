@@ -41,6 +41,8 @@ const OSD_SECS: f64 = 1.5;
 /// The "continue from…" prompt disappears after this long.
 const RESUME_PROMPT_SECS: f64 = 10.0;
 const SIDEBAR_W: f32 = 280.0;
+const SIDEBAR_HANDLE_W: f32 = 22.0;
+pub(crate) const WINDOW_CONTROLS_W: f32 = 76.0;
 /// Height of the bottom control bar (seek line + button row).
 const BAR_H: f32 = 64.0;
 /// Below this width the control bar has no room for the optional buttons.
@@ -99,6 +101,7 @@ pub struct App {
     recent_dirty: bool,
     playlist: Playlist,
     sidebar_open: bool,
+    sidebar_reveal_until: f64,
     /// Index of the playlist row being dragged.
     drag_from: Option<usize>,
     was_eof: bool,
@@ -238,6 +241,7 @@ impl App {
             recent_dirty: true,
             playlist,
             sidebar_open: false,
+            sidebar_reveal_until: 0.0,
             drag_from: None,
             was_eof: false,
             sleep: Default::default(),
@@ -514,7 +518,9 @@ impl App {
     /// during playback. It comes back for the library, which needs it, and
     /// for full screen, which manages the window by itself.
     fn sync_window_frame(&mut self, ctx: &egui::Context) {
-        let playing = self.player.as_ref().is_some_and(|p| !p.state.idle);
+        let playing = self.player.as_ref().is_some_and(|p| {
+            !p.state.idle || (self.multi.on && self.multi.video_count(p) > 0)
+        });
         let fullscreen = ctx.input(|i| i.viewport().fullscreen.unwrap_or(false));
         let wanted = self.pip || (self.tracker.settings.frameless && playing && !fullscreen);
         if wanted != self.frameless {
@@ -886,9 +892,11 @@ impl App {
 
     /// Opens the sidebar on the playlist or the marks, or closes it if it's
     /// already showing that.
-    fn show_side(&mut self, marks: bool) {
+    fn show_side(&mut self, ctx: &egui::Context, marks: bool) {
         if !self.sidebar_open || self.side_marks == marks {
-            self.toggle_sidebar();
+            self.toggle_sidebar(ctx);
+        } else {
+            self.sidebar_reveal_until = ctx.input(|i| i.time) + HIDE_AFTER;
         }
         self.side_marks = marks;
     }
@@ -1152,8 +1160,12 @@ impl App {
         }
         // In multi-view, keys (full screen too) go to the focused slot.
         if self.multi.on {
+            let toggle_frameless = !cmd && keys.contains(&Key::H) && self.multi.video_count(player) > 0;
             if let Some(text) = self.multi.handle_keys(ctx, &keys, player) {
                 self.show_osd(ctx, text);
+            }
+            if toggle_frameless {
+                self.set_frameless(ctx, !self.tracker.settings.frameless);
             }
             return;
         }
@@ -1313,10 +1325,10 @@ impl App {
             self.play_prev(ctx);
         }
         if want_side {
-            self.show_side(false);
+            self.show_side(ctx, false);
         }
         if want_marks {
-            self.show_side(true);
+            self.show_side(ctx, true);
         }
         if let Some(forward) = want_chapter {
             self.jump_chapter(ctx, forward);
@@ -1455,9 +1467,11 @@ impl App {
         }
     }
 
-    fn toggle_sidebar(&mut self) {
+    fn toggle_sidebar(&mut self, ctx: &egui::Context) {
         self.sidebar_open = !self.sidebar_open;
         self.scroll_to_current = self.sidebar_open;
+        self.sidebar_reveal_until = ctx.input(|i| i.time) + HIDE_AFTER;
+        ctx.request_repaint();
         if !self.sidebar_open {
             self.side_rect = Rect::NOTHING;
         }
@@ -1510,9 +1524,15 @@ impl eframe::App for App {
     fn ui(&mut self, ui: &mut egui::Ui, frame: &mut eframe::Frame) {
         let ctx = ui.ctx().clone();
         self.sync_theme(&ctx);
-        self.sync_window_frame(&ctx);
         self.ensure_gl(&ctx, frame);
+        // Expire it here, not only where it's drawn: frameless playback hides
+        // it, and a stale one would still take Enter (resume) from full screen.
+        let now = ctx.input(|i| i.time);
+        if self.resume_prompt.is_some_and(|(_, at)| now - at > RESUME_PROMPT_SECS) {
+            self.resume_prompt = None;
+        }
         self.handle_input(&ctx);
+        self.sync_window_frame(&ctx);
         self.library.hide_history = self.tracker.incognito;
         self.sync_vr(&ctx);
         self.sync_device_volume(&ctx);
@@ -1539,8 +1559,24 @@ impl eframe::App for App {
         painter.rect_filled(full, 0.0, if playing { Color32::BLACK } else { theme::bg() });
         // The playlist sidebar floats over the video (the video never resizes);
         // only the chrome (bars, OSD, prompts) moves aside to stay visible.
-        let side_t = ctx.animate_bool_with_time(ui.scope_id().with("sidebar"), self.sidebar_open, 0.18);
-        let side_w = (SIDEBAR_W * side_t).min(full.width() * 0.5).round();
+        let frameless = self.frameless && !self.pip;
+        let (now, pointer) = ctx.input(|i| (i.time, i.pointer.hover_pos()));
+        let max_side_w = SIDEBAR_W.min(full.width() * 0.5);
+        let edge_handle = edge_handle_rect(full);
+        let beside_sidebar = pointer.is_some_and(|p| {
+            edge_handle.contains(p)
+                || (self.side_rect.is_positive()
+                    && (self.side_rect.contains(p)
+                        || edge_handle.translate(vec2(self.side_rect.left() - full.right(), 0.0)).contains(p)))
+        });
+        let side_left = self.sidebar_reveal_until - now;
+        let show_side = self.sidebar_open
+            && (!frameless || beside_sidebar || self.drag_from.is_some() || side_left > 0.0);
+        if frameless && show_side && side_left > 0.0 {
+            ctx.request_repaint_after_secs(side_left as f32);
+        }
+        let side_t = ctx.animate_bool_with_time(ui.scope_id().with("sidebar"), show_side, 0.18);
+        let side_w = (SIDEBAR_W * side_t).min(max_side_w).round();
         let stage = Rect::from_min_max(full.min, pos2(full.right() - side_w, full.bottom()));
 
         if let Some(err) = &self.error {
@@ -1597,7 +1633,7 @@ impl eframe::App for App {
         // which shows "add video" while the main player has nothing open.
         let multi = self.multi.on && !self.pip;
         let video_rect = if multi {
-            self.multi.main_rect(stage).unwrap_or(Rect::NOTHING)
+            self.multi.main_rect(stage, frameless).unwrap_or(Rect::NOTHING)
         } else {
             full
         };
@@ -1642,7 +1678,7 @@ impl eframe::App for App {
                 None
             };
             let acts = match &self.player {
-                Some(main) => self.multi.show(ui, frame, gpa.as_ref(), stage, main, main_texture, &items, chrome),
+                Some(main) => self.multi.show(ui, frame, gpa.as_ref(), stage, main, main_texture, &items, chrome, frameless),
                 None => multiview::Actions::default(),
             };
             if let Some(slot) = acts.open_file_for
@@ -1682,6 +1718,7 @@ impl eframe::App for App {
         self.handle_video_click(&ctx, &surface, stage, s.idle);
 
         let hovering_files = ctx.input(|i| !i.raw.hovered_files.is_empty());
+        let mut window_controls_alpha = 0.0;
 
         if s.idle {
             self.quick.close();
@@ -1717,42 +1754,47 @@ impl eframe::App for App {
                 EmptyAction::None => {}
             }
         } else {
-            let now = ctx.input(|i| i.time);
-            let pointer_in_bar = ctx
-                .input(|i| i.pointer.hover_pos())
-                .is_some_and(|p| p.y > stage.bottom() - BAR_H - 30.0 || p.y < stage.top() + 50.0);
-            let visible = s.paused
-                || now - self.last_activity < HIDE_AFTER
-                || pointer_in_bar
-                || self.seek_preview.is_some()
+            let resume_hover = self.resume_prompt.is_some_and(|(_, at)| now - at <= RESUME_PROMPT_SECS);
+            let (at_top, at_bottom) = playback_edges(stage, pointer, frameless && resume_hover);
+            let bottom_engaged = self.seek_preview.is_some()
                 || self.speed_menu
-                || self.quick.open;
-            let alpha = ctx.animate_bool_with_time(ui.scope_id().with("chrome"), visible, 0.15);
+                || self.quick.open
+                || (frameless && ctx.is_being_dragged(ui.scope_id().with("vol")));
+            let idle_in = HIDE_AFTER - (now - self.last_activity);
+            let (top, bottom) = if frameless {
+                (at_top, at_bottom || bottom_engaged)
+            } else {
+                let visible = s.paused || idle_in > 0.0 || at_top || at_bottom || bottom_engaged;
+                (visible, visible)
+            };
+            let top_alpha = ctx.animate_bool_with_time(ui.scope_id().with("top_chrome"), top, 0.15);
+            let bottom_alpha = ctx.animate_bool_with_time(ui.scope_id().with("bottom_chrome"), bottom, 0.15);
             // Lift subtitles above the control bar while it's showing.
             // sub-margin-y is in mpv's 720-line script units; 22 is mpv's default.
-            let margin = if visible { 22 + (BAR_H / stage.height().max(1.0) * 720.0).round() as i32 } else { 22 };
+            let margin = if bottom { 22 + (BAR_H / stage.height().max(1.0) * 720.0).round() as i32 } else { 22 };
             if margin != self.sub_margin {
                 if let Some(p) = &self.player {
                     p.mpv.set_property_string("sub-margin-y", &margin.to_string());
                 }
                 self.sub_margin = margin;
             }
-            if !visible && surface.hovered() {
+            if !top && !bottom && (!frameless || (idle_in <= 0.0 && !beside_sidebar)) && surface.hovered() {
                 ctx.set_cursor_icon(CursorIcon::None);
             }
-            if visible && !s.paused {
-                ctx.request_repaint_after_secs((HIDE_AFTER - (now - self.last_activity)).max(0.05) as f32);
+            if idle_in > 0.0 && (frameless || !s.paused) {
+                ctx.request_repaint_after_secs(idle_in as f32);
             }
 
-            if s.paused && !s.eof && !self.pip {
+            if s.paused && !s.eof && !self.pip && !frameless {
                 icons::draw(&painter, Icon::Play, full.center(), 40.0, Color32::from_white_alpha(220));
             }
             if self.pip {
-                if alpha > 0.0 {
-                    self.draw_pip_controls(ui, full, alpha);
+                if bottom_alpha > 0.0 {
+                    self.draw_pip_controls(ui, full, bottom_alpha);
                 }
-            } else if alpha > 0.0 {
-                let right_gap = if self.frameless { 44.0 } else { 16.0 };
+            } else if top_alpha > 0.0 {
+                let alpha = top_alpha;
+                let right_gap = if frameless { WINDOW_CONTROLS_W } else { 16.0 };
                 let private = self.tracker.incognito;
                 let plays = if private { 0 } else { self.tracker.current_play_count() };
                 // The multi-view switch sits at the right end; the tags move left.
@@ -1764,8 +1806,8 @@ impl eframe::App for App {
                 }
                 let right_gap = stage.right() - sw_left + 18.0;
                 draw_top_bar(&painter, stage, &s, plays, private, alpha, right_gap);
-                if self.frameless && close_button(ui, stage, alpha) {
-                    ctx.send_viewport_cmd(ViewportCommand::Close);
+                if frameless {
+                    window_controls_alpha = alpha;
                 }
                 if let Some(fav) = self.current_fav
                     && fav_button(ui, stage, &s.title, fav, alpha) {
@@ -1779,9 +1821,13 @@ impl eframe::App for App {
                     }
                     self.open_library();
                 }
-                self.draw_controls(ui, stage, alpha);
             }
-            self.draw_resume_prompt(ui, stage, now);
+            if !self.pip && bottom_alpha > 0.0 {
+                self.draw_controls(ui, stage, bottom_alpha);
+            }
+            if !frameless || bottom {
+                self.draw_resume_prompt(ui, stage, now);
+            }
 
             if self.quick.open
                 && let Some(player) = &self.player {
@@ -1825,11 +1871,15 @@ impl eframe::App for App {
                 }
 
             // Edge handle: "‹" while paused opens the playlist, "›" closes it.
-            let show_handle = !self.pip && (self.sidebar_open || s.paused);
+            let show_handle = !self.pip && if frameless {
+                show_side || pointer.is_some_and(|p| edge_handle.contains(p))
+            } else {
+                self.sidebar_open || s.paused
+            };
             let ha = ctx.animate_bool_with_time(ui.scope_id().with("edge_handle"), show_handle, 0.15);
             if ha > 0.0 && self.drag_from.is_none()
                 && draw_edge_handle(ui, stage, self.sidebar_open, ha) {
-                    self.toggle_sidebar();
+                    self.toggle_sidebar(&ctx);
                 }
         }
 
@@ -1849,6 +1899,13 @@ impl eframe::App for App {
         if side_w > 0.5 {
             let side = Rect::from_min_max(pos2(stage.right(), full.top()), full.max);
             self.draw_sidebar(ui, side, side_t);
+        } else {
+            self.side_rect = Rect::NOTHING;
+        }
+        // On the video, left of the playlist: over the playlist they'd sit on
+        // its loop and shuffle buttons.
+        if window_controls_alpha > 0.0 {
+            draw_frameless_window_controls(ui, stage, window_controls_alpha);
         }
 
         if hovering_files {
@@ -2384,7 +2441,7 @@ impl App {
             self.quick.toggle();
         }
         if toggle_list {
-            self.toggle_sidebar();
+            self.toggle_sidebar(&ctx);
         }
         if want_stop
             && let Some(p) = &self.player {
@@ -2517,19 +2574,38 @@ fn fav_button(ui: &mut egui::Ui, stage: Rect, title: &str, fav: bool, alpha: f32
     resp.on_hover_text(if fav { tr("Unfavorite (Ctrl+D)") } else { tr("Favorite (Ctrl+D)") }).clicked()
 }
 
-/// "‹ Library" at the top-left of the player. Returns true when clicked.
-/// Stands in for the title bar's close button while it's hidden.
-fn close_button(ui: &mut egui::Ui, stage: Rect, alpha: f32) -> bool {
-    let r = Rect::from_center_size(pos2(stage.right() - 22.0, stage.top() + 22.0), vec2(28.0, 28.0));
-    let resp = ui.interact(r, ui.scope_id().with("close_window"), Sense::click()).on_hover_text(tr("Close window"));
-    let c = if resp.hovered() { ACCENT } else { TEXT };
-    icons::draw(ui.painter(), Icon::Close, r.center(), 14.0, c.gamma_multiply(alpha));
-    if resp.hovered() {
-        ui.ctx().set_cursor_icon(CursorIcon::PointingHand);
-    }
-    resp.clicked()
+fn playback_edges(stage: Rect, pointer: Option<egui::Pos2>, resume_prompt: bool) -> (bool, bool) {
+    let Some(p) = pointer.filter(|p| stage.contains(*p)) else { return (false, false) };
+    let bottom_height = BAR_H + if resume_prompt { 58.0 } else { 30.0 };
+    (p.y < stage.top() + 50.0, p.y > stage.bottom() - bottom_height)
 }
 
+pub(crate) fn draw_frameless_window_controls(ui: &mut egui::Ui, stage: Rect, alpha: f32) {
+    let y = stage.top() + 20.0;
+    let button = |ui: &mut egui::Ui, offset: f32, id: &str, tip: &str| {
+        let r = Rect::from_center_size(pos2(stage.right() - offset, y), vec2(28.0, 28.0));
+        let resp = ui.interact(r, ui.scope_id().with(id), Sense::click()).on_hover_text(tip);
+        if resp.hovered() {
+            ui.ctx().set_cursor_icon(CursorIcon::PointingHand);
+        }
+        let color = if resp.hovered() { ACCENT } else { TEXT };
+        (resp, color.gamma_multiply(alpha))
+    };
+    let (minimize, color) = button(ui, 54.0, "minimize_window", tr("Minimize window"));
+    let c = minimize.rect.center();
+    ui.painter().line_segment([c - vec2(6.0, 0.0), c + vec2(6.0, 0.0)], Stroke::new(1.5, color));
+    if minimize.clicked() {
+        float_window::minimize(ui.ctx());
+    }
+
+    let (close, color) = button(ui, 22.0, "close_window", tr("Close window"));
+    icons::draw(ui.painter(), Icon::Close, close.rect.center(), 14.0, color);
+    if close.clicked() {
+        ui.ctx().send_viewport_cmd(ViewportCommand::Close);
+    }
+}
+
+/// "‹ Library" at the top-left of the player. Returns true when clicked.
 fn back_button(ui: &mut egui::Ui, stage: Rect, alpha: f32) -> bool {
     let r = Rect::from_min_size(pos2(stage.left() + 8.0, stage.top() + 8.0), vec2(74.0, 28.0));
     let resp = ui.interact(r, ui.scope_id().with("back_to_library"), Sense::click());
@@ -2741,10 +2817,17 @@ fn fmt_speed(s: f64) -> String {
 
 const ROW_H: f32 = 36.0;
 
+fn edge_handle_rect(stage: Rect) -> Rect {
+    Rect::from_min_size(
+        pos2(stage.right() - SIDEBAR_HANDLE_W, stage.center().y - 30.0),
+        vec2(SIDEBAR_HANDLE_W, 60.0),
+    )
+}
+
 /// A small tab on the right edge of the video, vertically centered.
 /// Shows "‹" (open playlist) or "›" (close it). Returns true when clicked.
 fn draw_edge_handle(ui: &mut egui::Ui, stage: Rect, open: bool, alpha: f32) -> bool {
-    let rect = Rect::from_min_size(pos2(stage.right() - 22.0, stage.center().y - 30.0), vec2(22.0, 60.0));
+    let rect = edge_handle_rect(stage);
     let resp = ui.interact(rect, ui.scope_id().with("edge_handle_btn"), Sense::click());
     let p = ui.painter();
     let hovered = resp.hovered();
@@ -3051,6 +3134,19 @@ impl App {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn frameless_controls_reveal_only_at_their_edges() {
+        let stage = Rect::from_min_size(pos2(10.0, 20.0), vec2(800.0, 450.0));
+        assert_eq!(playback_edges(stage, None, false), (false, false));
+        assert_eq!(playback_edges(stage, Some(stage.center()), false), (false, false));
+        assert_eq!(playback_edges(stage, Some(stage.center_top()), false), (true, false));
+        assert_eq!(playback_edges(stage, Some(stage.center_bottom()), false), (false, true));
+        assert_eq!(playback_edges(stage, Some(stage.right_bottom() + vec2(10.0, 0.0)), false), (false, false));
+        let prompt = stage.center_bottom() - vec2(0.0, BAR_H + 50.0);
+        assert_eq!(playback_edges(stage, Some(prompt), false), (false, false));
+        assert_eq!(playback_edges(stage, Some(prompt), true), (false, true));
+    }
 
     #[test]
     fn pip_size_keeps_the_video_shape() {

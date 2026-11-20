@@ -164,6 +164,7 @@ pub struct MultiView {
     sound_set_for: Option<(Content, Vec<Content>)>,
     /// The whole area multi-view drew in last frame.
     stage: Rect,
+    frameless_toolbar: bool,
     /// Where files being dragged in are, to mark the slot they'll replace.
     pub drop_at: Option<Pos2>,
 }
@@ -188,6 +189,7 @@ impl Default for MultiView {
             focus_sound: false,
             sound_set_for: None,
             stage: Rect::NOTHING,
+            frameless_toolbar: false,
             drop_at: None,
         }
     }
@@ -306,14 +308,18 @@ impl MultiView {
         self.drag = None;
     }
 
-    /// Where the slots go: the stage below the multi-view bar.
-    pub fn grid_rect(stage: Rect) -> Rect {
-        Rect::from_min_max(pos2(stage.left(), stage.top() + TOP_H), stage.max).shrink(2.0)
+    /// The toolbar overlays the slots when the window has no title bar.
+    fn grid_rect(stage: Rect, frameless: bool) -> Rect {
+        if frameless {
+            stage
+        } else {
+            Rect::from_min_max(pos2(stage.left(), stage.top() + TOP_H), stage.max).shrink(2.0)
+        }
     }
 
     /// Where the main video goes (a leaf, a floating window or the whole stage).
-    pub fn main_rect(&self, stage: Rect) -> Option<Rect> {
-        let grid = Self::grid_rect(stage);
+    pub fn main_rect(&self, stage: Rect, frameless: bool) -> Option<Rect> {
+        let grid = Self::grid_rect(stage, frameless);
         if let Some((_, c)) = self.max_slot() {
             return (c == Content::Main).then_some(grid);
         }
@@ -580,11 +586,12 @@ impl MultiView {
         main_texture: Option<TextureId>,
         playlist: &[(String, String)],
         chrome: bool,
+        frameless: bool,
     ) -> Actions {
         let mut out = Actions::default();
         let ctx = ui.ctx().clone();
         self.reap(frame.gl().map(|g| g.as_ref()));
-        let grid = Self::grid_rect(stage);
+        let grid = Self::grid_rect(stage, frameless);
         self.grid = grid;
         self.stage = stage;
         // A pane that's gone no longer fills anything.
@@ -600,6 +607,11 @@ impl MultiView {
         }
         let ppp = ctx.pixels_per_point();
         let pointer = ctx.input(|i| i.pointer.hover_pos());
+        self.frameless_toolbar = frameless && pointer.is_some_and(|q| {
+            let reveal_height = if self.frameless_toolbar { TOP_H } else { 8.0 };
+            stage.contains(q) && q.y < stage.top() + reveal_height
+        });
+        let show_toolbar = !frameless || self.frameless_toolbar;
 
         // ---- One video filling the area ----
         if self.maximized.is_some() && self.max_slot().is_none() {
@@ -609,10 +621,12 @@ impl MultiView {
             self.focus = content;
             let empty = self.is_empty(content, main);
             self.draw_video(&p, frame, content, grid, main_texture, ppp, empty);
-            self.slot_chrome(ui, &p, id, content, grid, false, main, chrome, pointer, &mut out);
-            self.top_bar(ui, &p, stage, main, &mut out);
+            self.slot_chrome(ui, &p, id, content, grid, false, main, chrome, pointer, frameless);
+            if show_toolbar {
+                self.top_bar(ui, &p, stage, main, &mut out, frameless);
+            }
             self.sync_sound(main);
-            self.hide_cursor(&ctx, grid, main, chrome, pointer);
+            self.hide_cursor(&ctx, grid, main, chrome, pointer, frameless);
             self.drop_hint(&p, main);
             return out;
         }
@@ -629,7 +643,9 @@ impl MultiView {
         // ---- Floats (videos) ----
         for f in &self.layout.floats.clone() {
             let r = Layout::float_rect(f, grid);
-            p.rect_filled(r.expand(1.0), 4.0, Color32::from_white_alpha(70));
+            if !frameless {
+                p.rect_filled(r.expand(1.0), 4.0, Color32::from_white_alpha(70));
+            }
             let empty = self.is_empty(f.content, main);
             self.draw_video(&p, frame, f.content, r, main_texture, ppp, empty);
             chrome_jobs.push((f.id, f.content, r, true));
@@ -637,7 +653,7 @@ impl MultiView {
 
         // Interaction: leaves first, then dividers, then floats on top.
         for (id, content, r, floating) in chrome_jobs.iter().filter(|j| !j.3) {
-            self.slot_chrome(ui, &p, *id, *content, *r, *floating, main, chrome, pointer, &mut out);
+            self.slot_chrome(ui, &p, *id, *content, *r, *floating, main, chrome, pointer, frameless);
         }
         for d in &dividers {
             let resp = ui.interact(d.rect, ui.scope_id().with(("mv_div", d.split)), Sense::drag());
@@ -651,14 +667,16 @@ impl MultiView {
             }
         }
         for (id, content, r, floating) in chrome_jobs.iter().filter(|j| j.3) {
-            self.slot_chrome(ui, &p, *id, *content, *r, *floating, main, chrome, pointer, &mut out);
+            self.slot_chrome(ui, &p, *id, *content, *r, *floating, main, chrome, pointer, frameless);
         }
 
         self.handle_drag(&ctx, &p, grid, pointer);
-        self.top_bar(ui, &p, stage, main, &mut out);
+        if show_toolbar {
+            self.top_bar(ui, &p, stage, main, &mut out, frameless);
+        }
         self.add_menu(ui, playlist, &mut out);
         self.sync_sound(main);
-        self.hide_cursor(&ctx, grid, main, chrome, pointer);
+        self.hide_cursor(&ctx, grid, main, chrome, pointer, frameless);
         self.drop_hint(&p, main);
         out
     }
@@ -686,12 +704,16 @@ impl MultiView {
     }
 
     /// Hides the pointer over a playing video once the mouse rests.
-    fn hide_cursor(&self, ctx: &egui::Context, area: Rect, main: &Player, chrome: bool, pointer: Option<Pos2>) {
-        if chrome || self.drag.is_some() || self.menu.is_some() {
+    fn hide_cursor(&self, ctx: &egui::Context, area: Rect, main: &Player, chrome: bool, pointer: Option<Pos2>, frameless: bool) {
+        if chrome || self.drag.is_some() || self.menu.is_some() || self.frameless_toolbar {
             return;
         }
         let Some(q) = pointer.filter(|q| area.contains(*q)) else { return };
-        let playing = self.slot_at(q).and_then(|(_, c)| self.player(c, main)).is_some_and(|pl| !pl.state.paused && !pl.state.eof);
+        let Some((id, content)) = self.slot_at(q) else { return };
+        if frameless && self.slot_rect(id).is_some_and(|r| q.y <= r.top() + HEADER_H + 6.0 || q.y >= r.bottom() - MINI_H - 24.0) {
+            return;
+        }
+        let playing = self.player(content, main).is_some_and(|pl| frameless || (!pl.state.paused && !pl.state.eof));
         if playing {
             ctx.set_cursor_icon(CursorIcon::None);
         }
@@ -745,7 +767,7 @@ impl MultiView {
         main: &Player,
         chrome: bool,
         pointer: Option<Pos2>,
-        _out: &mut Actions,
+        frameless: bool,
     ) {
         let ctx = ui.ctx().clone();
         let body = ui.interact(r, ui.scope_id().with(("mv_slot", id)), Sense::click());
@@ -788,13 +810,15 @@ impl MultiView {
         }
         let Some(s) = self.player(content, main).map(|pl| pl.state.clone()) else { return };
         let focused = self.focus == content;
-        if focused {
+        let at_top = hovered && pointer.is_some_and(|q| q.y <= r.top() + HEADER_H + 6.0);
+        let at_bottom = hovered && pointer.is_some_and(|q| q.y >= r.bottom() - MINI_H - 24.0);
+        if focused && (!frameless || at_top || at_bottom) {
             p.rect_stroke(r, 3.0, Stroke::new(2.0, ACCENT), StrokeKind::Inside);
         }
 
         // ---- Header: title (drag to swap / move) and tools ----
         // Like the bar, it hides while the mouse rests.
-        let show_header = (hovered && chrome) || floating;
+        let show_header = if frameless { at_top } else { (hovered && chrome) || floating };
         if show_header {
             let head = Rect::from_min_size(r.min, vec2(r.width(), HEADER_H));
             p.rect_filled(head, 0.0, theme::scrim(150));
@@ -845,7 +869,7 @@ impl MultiView {
                 x += 26.0;
             }
         }
-        if floating {
+        if floating && (!frameless || at_bottom) {
             // Resize from the bottom-right corner.
             let grip = Rect::from_min_size(r.max - vec2(14.0, 14.0), vec2(14.0, 14.0));
             let g = ui.interact(grip, ui.scope_id().with(("mv_grip", id)), Sense::drag());
@@ -863,9 +887,17 @@ impl MultiView {
         }
 
         // ---- Mini control bar ----
-        let at_bottom = pointer.is_some_and(|q| r.contains(q) && q.y >= r.bottom() - MINI_H - 24.0);
         // Each bar hides on its own once the mouse rests or leaves the video.
-        let show_bar = if self.hide_bars { at_bottom } else { (hovered && chrome) || at_bottom || s.paused };
+        let show_bar = if frameless {
+            at_bottom || ["mv_seek", "mv_vol"].into_iter().any(|name| {
+                let id = ui.scope_id().with((name, id));
+                ctx.is_being_dragged(id) || ctx.drag_stopped_id() == Some(id)
+            })
+        } else if self.hide_bars {
+            at_bottom
+        } else {
+            (hovered && chrome) || at_bottom || s.paused
+        };
         if !show_bar || r.height() < MINI_H + HEADER_H {
             return;
         }
@@ -1047,7 +1079,7 @@ impl MultiView {
         }
     }
 
-    fn top_bar(&mut self, ui: &mut egui::Ui, p: &egui::Painter, stage: Rect, main: &Player, out: &mut Actions) {
+    fn top_bar(&mut self, ui: &mut egui::Ui, p: &egui::Painter, stage: Rect, main: &Player, out: &mut Actions, frameless: bool) {
         let ctx = ui.ctx().clone();
         let band = Rect::from_min_size(stage.min, vec2(stage.width(), TOP_H));
         let _blocker = ui.interact(band, ui.scope_id().with("mv_bar"), Sense::click());
@@ -1089,7 +1121,7 @@ impl MultiView {
         }
 
         // Right side: multi-view switch, divider, link switch, count
-        let mut rx = band.right() - 14.0;
+        let mut rx = band.right() - if frameless { crate::app::WINDOW_CONTROLS_W } else { 14.0 };
         let (sw_left, off) = switch(ui, p, pos2(rx, cy), "mv_toggle", true, tr("Multi-view"), 1.0);
         if off {
             out.exit = true;
@@ -1118,6 +1150,9 @@ impl MultiView {
         let count = tf("{} / {} videos", &[&self.video_count(main), &MAX_SLOTS]);
         if rx - 120.0 > x {
             p.text(pos2(rx, cy), Align2::RIGHT_CENTER, count, FontId::monospace(11.0), theme::text_3());
+        }
+        if frameless {
+            crate::app::draw_frameless_window_controls(ui, stage, 1.0);
         }
     }
 
