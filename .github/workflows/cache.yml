@@ -1,0 +1,46 @@
+name: Warm build cache
+
+# GitHub only lets a tag build read caches saved on its own tag or on the
+# default branch, so a release never sees the previous release's cache. This
+# fills one on main for build.yml to start from: the same dependencies, built
+# for tests and for release, under the same keys.
+on:
+  push:
+    branches: [main]
+    paths:
+      - "src/**"
+      - "build.rs"
+      - "Cargo.toml"
+      - "Cargo.lock"
+      - ".github/workflows/*.yml"
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+concurrency:
+  group: warm-cache
+  cancel-in-progress: true
+
+jobs:
+  warm:
+    name: ${{ matrix.key }}
+    strategy:
+      matrix:
+        include:
+          - key: macos
+            os: macos-15
+          - key: windows
+            os: windows-latest
+    runs-on: ${{ matrix.os }}
+    steps:
+      - uses: actions/checkout@v7
+      - uses: dtolnay/rust-toolchain@stable
+      - uses: Swatinem/rust-cache@v2
+        with:
+          shared-key: ${{ matrix.key }}
+      # libmpv is loaded at runtime, so neither build needs it.
+      - name: Build for tests
+        run: cargo test --locked --no-run
+      - name: Build for release
+        run: cargo build --locked --release

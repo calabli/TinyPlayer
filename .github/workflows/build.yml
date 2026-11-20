@@ -20,6 +20,11 @@ jobs:
         with:
           components: clippy
       - uses: Swatinem/rust-cache@v2
+        with:
+          shared-key: macos
+          # Reads what cache.yml saved on main. A tag's own cache is visible only to
+          # that tag, so saving one would just cost time.
+          save-if: ${{ github.ref == 'refs/heads/main' }}
       - name: Install libmpv and bundling tools
         run: brew install mpv dylibbundler
       - name: Unit tests
@@ -83,6 +88,9 @@ jobs:
         with:
           components: clippy
       - uses: Swatinem/rust-cache@v2
+        with:
+          shared-key: windows
+          save-if: ${{ github.ref == 'refs/heads/main' }}
       # Both come from one release, so the sources collected below match the DLL.
       - name: Download libmpv and ffmpeg
         env:
