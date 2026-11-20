@@ -4,6 +4,12 @@ English | [简体中文](CHANGELOG.md)
 
 The in-app update dialog shows the entries of the new version, so each one is written for users.
 
+## 0.1.25
+
+- Borderless playback shows only the video, even when paused: move the pointer to the top for the title and window buttons (now with minimize), to the bottom for playback controls, or to the middle of the right edge for the playlist. They hide again when you move away
+- Multi-view supports borderless playback too; press H to toggle it
+- A borderless window can now be minimized on macOS
+
 ## 0.1.24
 
 - New "Several windows" switch (Settings → Interface, off by default): with it on, opening a video starts another, independent player window, and Ctrl/⌘+N opens an empty one. Each window plays on its own and they share the library, the history and the settings
