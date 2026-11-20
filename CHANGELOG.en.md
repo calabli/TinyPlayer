@@ -4,6 +4,12 @@ English | [简体中文](CHANGELOG.md)
 
 The in-app update dialog shows the entries of the new version, so each one is written for users.
 
+## 0.1.26
+
+- The window opens smaller by default (854×480), in the middle of the screen
+- New Remember window layout switch (Settings → Interface): off, every start opens the small default window
+- Closing a multi-view pane now frees its video memory, and closed panes no longer keep decoding in the background
+
 ## 0.1.25
 
 - Borderless playback shows only the video, even when paused: move the pointer to the top for the title and window buttons (now with minimize), to the bottom for playback controls, or to the middle of the right edge for the playlist. They hide again when you move away

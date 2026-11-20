@@ -84,7 +84,7 @@ Optimizations so far: redraw only on a new frame or on input; the single-instanc
 
 ## Desktop integration
 
-- **Remembers the window**: its position, size and whether it's maximized are saved on exit and restored at the next start (full screen isn't saved)
+- **Remembers the window**: its position, size and whether it's maximized are saved on exit and restored at the next start (full screen isn't saved). Turn off Remember window layout in Settings → Interface to open a small 854×480 window in the middle every time
 - **Single instance**: while TinyPlayer runs, a video opened again (double-click, dropped on the exe, command line) plays in the existing window, which comes to the front, instead of in a new one. This works over a local loopback port derived from the data folder, so instances with a different `TINYPLAYER_DATA_DIR` (tests, the portable version) don't interfere
 - **File associations** (Windows installer): every supported format can choose TinyPlayer in "Open with" and in the system's default apps settings, and the context menu has "Play with TinyPlayer" (on Windows 11, under "Show more options"). Windows doesn't let an app make itself the default player; to make it the default, tick "Always" in "Open with". Uninstalling removes all of this. The portable zip registers none of it
 - **Open with** (macOS): double-click in Finder or choose TinyPlayer in "Open With"; if TinyPlayer is already running, the existing window plays it
