@@ -212,63 +212,12 @@ For development and testing, point the environment variable `TINYPLAYER_DATA_DIR
 
 Known limit: if the app is killed, up to the last 10 seconds of progress may be lost.
 
-## Code layout
+## Documentation
 
-```
-src/
-  main.rs     window setup, command line
-  app.rs      player: video layer, control bar, playlist sidebar, OSD, start page
-  player.rs   playback state and commands (from mpv property changes)
-  history.rs  SQLite storage: progress, play counts, bookmarks, settings
-  library.rs  library storage: folders, videos, tags
-  library_ui.rs library home page
-  library_manage.rs library Manage page: folder sets, moves, duplicate check
-  scanner.rs  background scanning and thumbnail threads
-  hover_thumbs.rs progress bar preview (background frames and cache)
-  marks.rs    jumping between chapters and bookmarks
-  view.rs     zoom and pan, crop math, refresh rate snapping
-  crop_detect.rs background black bar detection
-  audio_fx.rs filters for volume normalization, the equalizer and channels
-  audio_output.rs follows the system's output device, volume per device
-  ab_loop.rs  A-B loop points
-  media_keys.rs system media keys and now-playing info
-  keep_awake.rs keeps the system awake during playback
-  probe.rs    windowless libmpv: length/resolution, thumbnails
-  session.rs  the current file's session: when to save, when to count, whether to resume
-  playlist.rs play queue: folder scan, natural order, loop and shuffle
-  multiview.rs multi-view: extra players, per-slot controls, dragging and linking
-  split_layout.rs multi-view layout: split tree, floating windows, presets (pure math)
-  settings_panel.rs  full settings window
-  quick_panel.rs     quick settings panel during playback
-  single_instance.rs single instance: hands later files to the running window
-  sleep_timer.rs     sleep timer: pauses after a while or when the current video ends
-  mac_open.rs files opened from the macOS Finder
-  mpv.rs      FFI for libmpv loaded at runtime + OpenGL render context
-  video.rs    mpv render target (FBO → egui texture)
-  icons.rs    vector icons (no icon font or images)
-  theme.rs    colors, system CJK fonts, light theme
-  update.rs   in-app updates: check, download, verify, install
-  i18n.rs     interface language: English text in the code is the key, `tr` / `tf` translate it
-locales/
-  zh-CN.tsv   Chinese translations: English key, a tab, Chinese
-```
+Detailed documentation is in Chinese:
 
-The code itself has no Chinese: a test fails if a source file contains any, and another if a translated key has no Chinese entry. Keys that read the same in English but differ in Chinese carry a context after `|` (for example `Off|short`), which never shows.
-
-Rendering: mpv draws into an FBO texture through its render API, egui shows that as an ordinary image, and the control bar and sidebar sit on top.
-The window redraws only when mpv has a new frame or there's input, so a paused video uses no CPU.
-
-## Roadmap
-
-- [x] Playback core, hardware decoding, control bar (full-width progress bar, speed menu), OSD, shortcuts, drag and drop
-- [x] Playlist sidebar: same-folder files, natural order, loop/shuffle, drag to reorder
-- [x] History: remembers progress, resume options, clearing on exit (keeping play counts), play counts, recently played
-- [x] Library: folder scanning, thumbnails, tags, search, sorting, continue watching
-- [x] Folders view (breadcrumb), favorites, most played
-- [x] Settings: playback, picture (hardware decoding, aspect ratio), subtitles (auto-load, size, position, language), history, shortcuts
-- [x] Windows portable package
-- [x] macOS package: .app, bundled libraries, ad hoc signing and dmg verified on an Apple silicon Mac
-- [ ] macOS notarization: the script and CI are ready, a Developer ID certificate is needed. Once the repository's Actions secrets `MACOS_CERT_P12` (the certificate's .p12 in base64), `MACOS_CERT_PASSWORD`, `APPLE_ID`, `APPLE_TEAM_ID` and `APPLE_APP_PASSWORD` (an app-specific password) are set, CI signs and notarizes by itself; without them it still signs ad hoc
+- [docs/product.md](docs/product.md): product overview, every feature and its rules, settings reference, privacy, known limits, plans
+- [docs/architecture.md](docs/architecture.md): architecture, module map, rendering pipeline, storage, updates, build and release, troubleshooting, conventions
 
 ## License
 

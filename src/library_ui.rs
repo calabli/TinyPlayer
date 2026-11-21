@@ -1754,6 +1754,7 @@ impl ThumbLoader {
     }
 }
 
+/// Truncates `text` with "…" so it fits in `max_w`.
 pub(crate) fn elide(p: &egui::Painter, text: &str, font: FontId, max_w: f32) -> String {
     let fits = |t: &str| p.layout_no_wrap(t.to_string(), font.clone(), theme::text()).size().x <= max_w;
     if fits(text) {

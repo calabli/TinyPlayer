@@ -19,7 +19,7 @@ use crate::icons::{self, Icon};
 use crate::i18n::{tf, tr};
 use crate::keep_awake::{KeepAwake, hold_for};
 use crate::library_lock;
-use crate::library_ui::{Action as LibAction, LibraryView};
+use crate::library_ui::{Action as LibAction, LibraryView, elide};
 use crate::marks::{self, Marks};
 use crate::media_keys::{Cmd as MediaCmd, MediaKeys};
 use crate::scanner::{Msg as ScanMsg, Scanner};
@@ -2783,22 +2783,6 @@ fn draw_empty_state(ui: &mut egui::Ui, full: Rect, recent: &[Entry], has_library
         }
     }
     action
-}
-
-/// Truncates `text` with "…" so it fits in `max_w`.
-fn elide(p: &egui::Painter, text: &str, font: FontId, max_w: f32) -> String {
-    let fits = |t: &str| p.layout_no_wrap(t.to_string(), font.clone(), TEXT).size().x <= max_w;
-    if fits(text) {
-        return text.to_string();
-    }
-    let chars: Vec<char> = text.chars().collect();
-    let (mut lo, mut hi) = (0, chars.len());
-    while lo < hi {
-        let mid = (lo + hi).div_ceil(2);
-        let t: String = chars[..mid].iter().collect::<String>() + "…";
-        if fits(&t) { lo = mid } else { hi = mid - 1 }
-    }
-    chars[..lo].iter().collect::<String>() + "…"
 }
 
 fn draw_error(p: &egui::Painter, full: Rect, err: &str) {

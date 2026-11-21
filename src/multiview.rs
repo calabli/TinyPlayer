@@ -21,6 +21,7 @@ use crate::mpv::{Event, RenderContext};
 use crate::player::Player;
 use crate::session::{Resume, Tracker};
 use crate::split_layout::{Content, Dir, Divider, Layout, MAX_SLOTS, Preset};
+use crate::library_ui::elide;
 use crate::theme::{self, ACCENT, TEXT, TEXT_2, TEXT_3};
 use crate::video::VideoTarget;
 
@@ -1306,21 +1307,6 @@ fn menu_item(ui: &mut egui::Ui, label: &str) -> bool {
     let text = elide(ui.painter(), label, FontId::proportional(12.5), r.width() - 20.0);
     ui.painter().text(pos2(r.left() + 10.0, r.center().y), Align2::LEFT_CENTER, text, FontId::proportional(12.5), if resp.hovered() { Color32::WHITE } else { TEXT });
     resp.clicked()
-}
-
-fn elide(p: &egui::Painter, text: &str, font: FontId, max_w: f32) -> String {
-    let fits = |t: &str| p.layout_no_wrap(t.to_string(), font.clone(), TEXT).size().x <= max_w;
-    if fits(text) {
-        return text.to_string();
-    }
-    let chars: Vec<char> = text.chars().collect();
-    let (mut lo, mut hi) = (0, chars.len());
-    while lo < hi {
-        let mid = (lo + hi).div_ceil(2);
-        let t: String = chars[..mid].iter().collect::<String>() + "…";
-        if fits(&t) { lo = mid } else { hi = mid - 1 }
-    }
-    chars[..lo].iter().collect::<String>() + "…"
 }
 
 /// The tooltip of the fill button.
