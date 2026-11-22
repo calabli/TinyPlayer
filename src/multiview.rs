@@ -26,7 +26,7 @@ use crate::theme::{self, ACCENT, TEXT, TEXT_2, TEXT_3};
 use crate::video::VideoTarget;
 
 /// Height of the multi-view bar at the top of the window.
-pub const TOP_H: f32 = 40.0;
+const TOP_H: f32 = 40.0;
 const MINI_H: f32 = 30.0;
 const HEADER_H: f32 = 26.0;
 /// New panes start quieter: several soundtracks add up.
@@ -35,11 +35,11 @@ const PANE_VOLUME: f64 = 50.0;
 type ProcAddr = Arc<dyn Fn(&std::ffi::CStr) -> *const std::ffi::c_void + Send + Sync>;
 
 /// An extra player with its own render target.
-pub struct Pane {
+struct Pane {
     // Field order matters: the render context must drop before the player.
     render: Option<RenderContext>,
     video: Option<VideoTarget>,
-    pub player: Player,
+    player: Player,
     tracker: Tracker,
     error: Option<String>,
     /// Opened once the render context exists: mpv's embedded video output
@@ -83,14 +83,14 @@ impl Pane {
             Err(e) => self.error = Some(e),
         }
         if let Some(path) = self.pending.take() {
-            self.player.open(&path, false);
+            self.player.open(&path);
         }
     }
 
     /// Opens a file now if the pane can draw, else as soon as it can.
     fn open(&mut self, path: &str) {
         if self.render.is_some() {
-            self.player.open(path, false);
+            self.player.open(path);
         } else {
             self.pending = Some(path.to_string());
         }
@@ -143,9 +143,9 @@ pub struct MultiView {
     pub layout: Layout,
     panes: HashMap<u32, Pane>,
     next_pane: u32,
-    pub focus: Content,
+    focus: Content,
     /// Play/pause, seeking and speed go to every slot.
-    pub link: bool,
+    link: bool,
     /// Add-video menu: (slot, anchor).
     menu: Option<(u32, Pos2)>,
     menu_fresh: bool,
@@ -157,17 +157,15 @@ pub struct MultiView {
     /// The area slots were laid out in last frame.
     grid: Rect,
     /// One video blown up to fill the whole area; the others keep playing.
-    pub maximized: Option<Content>,
+    maximized: Option<Content>,
     /// Per-slot control bars only show when the pointer is at a slot's bottom.
-    pub hide_bars: bool,
+    hide_bars: bool,
     /// Videos enlarged to fill their slot, black bars cropped away.
     filled: Vec<Content>,
     /// Only the focused video has sound; the others are muted.
-    pub focus_sound: bool,
+    focus_sound: bool,
     /// The focus and videos the mutes were last set for.
     sound_set_for: Option<(Content, Vec<Content>)>,
-    /// The whole area multi-view drew in last frame.
-    stage: Rect,
     frameless_toolbar: bool,
     /// Where files being dragged in are, to mark the slot they'll replace.
     pub drop_at: Option<Pos2>,
@@ -193,7 +191,6 @@ impl Default for MultiView {
             filled: Vec::new(),
             focus_sound: false,
             sound_set_for: None,
-            stage: Rect::NOTHING,
             frameless_toolbar: false,
             drop_at: None,
         }
@@ -332,7 +329,7 @@ impl MultiView {
         leaves
             .iter()
             .find(|(_, c, _)| *c == Content::Main)
-            .map(|(_, _, r)| inner(*r))
+            .map(|(_, _, r)| *r)
             .or_else(|| {
                 self.layout.floats.iter().find(|f| f.content == Content::Main).map(|f| Layout::float_rect(f, grid))
             })
@@ -436,6 +433,31 @@ impl MultiView {
         }
         self.filled.retain(|c| *c != content);
         self.menu = None;
+        if self.focus == content {
+            self.focus = self
+                .layout
+                .contents()
+                .into_iter()
+                .find(|c| *c != content && !self.is_empty(*c, main))
+                .unwrap_or(Content::Main);
+        }
+    }
+
+    /// Whether any visible slot is actively playing, and whether any active
+    /// playback has video (for keep-awake).
+    pub fn playback_state(&self, main: &Player) -> (bool, bool) {
+        let mut playing = false;
+        let mut has_video = false;
+        for p in self.players(main) {
+            let s = &p.state;
+            if !s.idle && !s.paused && !s.eof {
+                playing = true;
+                if s.width > 0 {
+                    has_video = true;
+                }
+            }
+        }
+        (playing, has_video)
     }
 
     /// Every player currently on screen.
@@ -492,10 +514,22 @@ impl MultiView {
                     continue;
                 }
                 Key::Escape => {
+                    if self.menu.take().is_some() {
+                        continue;
+                    }
                     if self.is_filled(focus) {
                         self.toggle_fill(focus, main);
                     } else if self.maximized.take().is_none() && ctx.input(|i| i.viewport().fullscreen.unwrap_or(false)) {
                         ctx.send_viewport_cmd(ViewportCommand::Fullscreen(false));
+                    }
+                    continue;
+                }
+                Key::Tab => {
+                    // Move focus to the next slot with a video (even if current focus is empty).
+                    let shown: Vec<Content> = self.layout.contents().into_iter().filter(|c| !self.is_empty(*c, main)).collect();
+                    if !shown.is_empty() {
+                        let next = shown.iter().position(|c| *c == focus).map_or(0, |i| (i + 1) % shown.len());
+                        self.focus = shown[next];
                     }
                     continue;
                 }
@@ -505,7 +539,7 @@ impl MultiView {
             match key {
                 Key::Space | Key::K => {
                     self.toggle_pause(focus, main);
-                    osd = Some(if p.state.paused { "PLAY".into() } else { "PAUSE".into() });
+                    osd = Some(if p.state.paused || p.state.eof { "PLAY".into() } else { "PAUSE".into() });
                 }
                 Key::ArrowLeft | Key::ArrowRight => {
                     let d = if *key == Key::ArrowLeft { -5.0 } else { 5.0 };
@@ -526,13 +560,6 @@ impl MultiView {
                     let forward = *key == Key::Period;
                     p.frame_step(forward);
                     osd = Some(if forward { tr("Next frame").into() } else { tr("Previous frame").into() });
-                }
-                Key::Tab => {
-                    // Move focus to the next slot with a video.
-                    let shown: Vec<Content> = self.layout.contents().into_iter().filter(|c| !self.is_empty(*c, main)).collect();
-                    if let Some(i) = shown.iter().position(|c| *c == focus) {
-                        self.focus = shown[(i + 1) % shown.len()];
-                    }
                 }
                 _ => {}
             }
@@ -561,10 +588,7 @@ impl MultiView {
     }
 
     fn close_slot(&mut self, slot: u32) {
-        if let Some(Content::Pane(id)) = self.layout.remove(slot)
-            && let Some(p) = self.panes.remove(&id) {
-                self.dead.push(p);
-            }
+        self.layout.remove(slot);
         if self.layout.find(self.focus).is_none() || self.focus == Content::Empty {
             self.focus = Content::Main;
         }
@@ -605,7 +629,6 @@ impl MultiView {
         self.reap(frame.gl().map(|g| g.as_ref()));
         let grid = Self::grid_rect(stage, frameless);
         self.grid = grid;
-        self.stage = stage;
         // A pane that's gone no longer fills anything.
         let contents = self.layout.contents();
         self.filled.retain(|c| contents.contains(c));
@@ -644,32 +667,21 @@ impl MultiView {
         }
 
         // ---- Leaves ----
+        // ---- Leaves (videos, chrome, dividers) ----
         let (leaves, dividers) = self.layout.rects(grid);
-        let mut chrome_jobs: Vec<(u32, Content, Rect, bool)> = Vec::new();
-        for (id, content, r) in &leaves {
-            let r = inner(*r);
+        let floats = self.layout.floats.clone();
+        let float_rects: Vec<Rect> = floats.iter().map(|f| Layout::float_rect(f, grid)).collect();
+        let leaf_pointer = pointer.filter(|q| !float_rects.iter().any(|r| r.contains(*q)));
+        for (_, content, r) in &leaves {
             let empty = self.is_empty(*content, main);
-            self.draw_video(&p, frame, *content, r, main_texture, ppp, empty);
-            chrome_jobs.push((*id, *content, r, false));
+            self.draw_video(&p, frame, *content, *r, main_texture, ppp, empty);
         }
-        // ---- Floats (videos) ----
-        for f in &self.layout.floats.clone() {
-            let r = Layout::float_rect(f, grid);
-            if !frameless {
-                p.rect_filled(r.expand(1.0), 4.0, Color32::from_white_alpha(70));
-            }
-            let empty = self.is_empty(f.content, main);
-            self.draw_video(&p, frame, f.content, r, main_texture, ppp, empty);
-            chrome_jobs.push((f.id, f.content, r, true));
-        }
-
-        // Interaction: leaves first, then dividers, then floats on top.
-        for (id, content, r, floating) in chrome_jobs.iter().filter(|j| !j.3) {
-            self.slot_chrome(ui, &p, *id, *content, *r, *floating, main, chrome, pointer, frameless);
+        for (id, content, r) in &leaves {
+            self.slot_chrome(ui, &p, *id, *content, *r, false, main, chrome, leaf_pointer, frameless);
         }
         for d in &dividers {
             let resp = ui.interact(d.rect, ui.scope_id().with(("mv_div", d.split)), Sense::drag());
-            let hot = resp.hovered() || resp.dragged();
+            let hot = (resp.hovered() && leaf_pointer.is_some()) || resp.dragged();
             if hot {
                 ctx.set_cursor_icon(if d.dir == Dir::H { CursorIcon::ResizeHorizontal } else { CursorIcon::ResizeVertical });
                 p.rect_filled(d.rect, 0.0, theme::accent_alpha(150));
@@ -678,8 +690,14 @@ impl MultiView {
                 self.drag = Some(Drag::Divider(*d));
             }
         }
-        for (id, content, r, floating) in chrome_jobs.iter().filter(|j| j.3) {
-            self.slot_chrome(ui, &p, *id, *content, *r, *floating, main, chrome, pointer, frameless);
+        // ---- Floats on top of everything ----
+        for (f, r) in floats.iter().zip(float_rects.iter().copied()) {
+            if !frameless {
+                p.rect_filled(r.expand(1.0), 4.0, theme::line());
+            }
+            let empty = self.is_empty(f.content, main);
+            self.draw_video(&p, frame, f.content, r, main_texture, ppp, empty);
+            self.slot_chrome(ui, &p, f.id, f.content, r, true, main, chrome, pointer, frameless);
         }
 
         self.handle_drag(&ctx, &p, grid, pointer);
@@ -712,7 +730,7 @@ impl MultiView {
             return Some(Layout::float_rect(f, self.grid));
         }
         let (leaves, _) = self.layout.rects(self.grid);
-        leaves.into_iter().find(|(s, _, _)| *s == id).map(|(_, _, r)| inner(r))
+        leaves.into_iter().find(|(s, _, _)| *s == id).map(|(_, _, r)| r)
     }
 
     /// Hides the pointer over a playing video once the mouse rests.
@@ -743,17 +761,18 @@ impl MultiView {
             }
             Content::Pane(id) => {
                 let Some(pane) = self.panes.get_mut(&id) else { return };
+                if let Some(e) = &pane.error {
+                    p.text(r.center(), Align2::CENTER_CENTER, e, FontId::proportional(12.0), TEXT_2);
+                    return;
+                }
                 if pane.player.state.idle {
                     return;
                 }
-                if let (Some(video), Some(render), Some(gl)) = (&mut pane.video, &pane.render, frame.gl()) {
+                if let (Some(video), Some(render), Some(gl)) = (&mut pane.video, &pane.render, frame.gl().cloned()) {
                     let px = [(r.width() * ppp).round() as i32, (r.height() * ppp).round() as i32];
-                    if let Ok(t) = video.update(gl, render, px, None) {
+                    if let Ok(t) = video.update(&gl, frame, render, px, None) {
                         p.image(t, r, uv, Color32::WHITE);
                     }
-                }
-                if let Some(e) = &pane.error {
-                    p.text(r.center(), Align2::CENTER_CENTER, e, FontId::proportional(12.0), TEXT_2);
                 }
             }
             Content::Empty => {
@@ -834,7 +853,7 @@ impl MultiView {
         if show_header {
             let head = Rect::from_min_size(r.min, vec2(r.width(), HEADER_H));
             p.rect_filled(head, 0.0, theme::scrim(150));
-            let tools = self.tool_list(id, content, floating);
+            let tools = self.tool_list(content, floating);
             let tools_w = tools.len() as f32 * 26.0 + 4.0;
             let title_w = (r.width() - tools_w - 16.0).max(20.0);
             let title = elide(p, &s.title, FontId::proportional(12.0), title_w);
@@ -999,7 +1018,7 @@ impl MultiView {
         }
     }
 
-    fn tool_list(&self, _id: u32, content: Content, floating: bool) -> Vec<(Tool, &'static str)> {
+    fn tool_list(&self, content: Content, floating: bool) -> Vec<(Tool, &'static str)> {
         let mut v = Vec::new();
         let fill = if self.is_filled(content) { Tool::Unfill } else { Tool::Fill };
         if self.maximized.is_some() {
@@ -1008,10 +1027,8 @@ impl MultiView {
             v.push((Tool::Close, tr("Close video")));
             return v;
         }
-        if content != Content::Empty {
-            v.push((fill, fill_tip(fill == Tool::Unfill)));
-            v.push((Tool::Max, tr("Enlarge in the window")));
-        }
+        v.push((fill, fill_tip(fill == Tool::Unfill)));
+        v.push((Tool::Max, tr("Enlarge in the window")));
         if floating {
             v.push((Tool::Dock, tr("Put back in the layout")));
         } else {
@@ -1019,9 +1036,7 @@ impl MultiView {
                 v.push((Tool::SplitH, tr("Split left / right")));
                 v.push((Tool::SplitV, tr("Split top / bottom")));
             }
-            if content != Content::Empty {
-                v.push((Tool::Float, tr("Float as a small window")));
-            }
+            v.push((Tool::Float, tr("Float as a small window")));
         }
         // Stops the video; the slot goes back to "add video".
         v.push((Tool::Close, tr("Close video")));
@@ -1056,7 +1071,7 @@ impl MultiView {
                     ctx.set_cursor_icon(CursorIcon::Grabbing);
                     let (leaves, _) = self.layout.rects(grid);
                     if let Some((_, _, r)) = leaves.iter().find(|(id, _, r)| *id != from && r.contains(q)) {
-                        p.rect_stroke(inner(*r).shrink(3.0), 3.0, Stroke::new(2.0, ACCENT), StrokeKind::Inside);
+                        p.rect_stroke(r.shrink(3.0), 3.0, Stroke::new(2.0, ACCENT), StrokeKind::Inside);
                     }
                     if released
                         && let Some((to, _, _)) = leaves.iter().find(|(id, _, r)| *id != from && r.contains(q)) {
@@ -1069,8 +1084,8 @@ impl MultiView {
                 if let Some(f) = self.layout.floats.iter().find(|f| f.id == id) {
                     let size = f.rect.size();
                     let min = q - grab;
-                    let fx = (min.x - grid.left()) / grid.width();
-                    let fy = (min.y - grid.top()) / grid.height();
+                    let fx = (min.x - grid.left()) / grid.width().max(1.0);
+                    let fy = (min.y - grid.top()) / grid.height().max(1.0);
                     self.layout.set_float_rect(id, Rect::from_min_size(pos2(fx, fy), size));
                 }
                 ctx.set_cursor_icon(CursorIcon::Grabbing);
@@ -1079,8 +1094,8 @@ impl MultiView {
                 let id = *id;
                 if let Some(f) = self.layout.floats.iter().find(|f| f.id == id) {
                     let min = f.rect.min;
-                    let fx = (q.x - grid.left()) / grid.width();
-                    let fy = (q.y - grid.top()) / grid.height();
+                    let fx = (q.x - grid.left()) / grid.width().max(1.0);
+                    let fy = (q.y - grid.top()) / grid.height().max(1.0);
                     self.layout.set_float_rect(id, Rect::from_min_max(min, pos2(fx, fy)));
                 }
                 ctx.set_cursor_icon(CursorIcon::ResizeNwSe);
@@ -1122,7 +1137,7 @@ impl MultiView {
             let r = Rect::from_min_size(pos2(x, cy - 12.0), vec2(w, 24.0));
             let resp = ui.interact(r, ui.scope_id().with(("mv_preset", preset as u8)), Sense::click());
             if resp.hovered() {
-                p.rect_filled(r, 12.0, Color32::from_white_alpha(14));
+                p.rect_filled(r, 12.0, theme::tint(18));
                 ctx.set_cursor_icon(CursorIcon::PointingHand);
             }
             p.text(r.center(), Align2::CENTER_CENTER, label, FontId::proportional(12.0), if resp.hovered() { theme::text() } else { theme::text_2() });
@@ -1133,27 +1148,28 @@ impl MultiView {
         }
 
         // Right side: multi-view switch, divider, link switch, count
+        let fg = theme::text();
         let mut rx = band.right() - if frameless { crate::app::WINDOW_CONTROLS_W } else { 14.0 };
-        let (sw_left, off) = switch(ui, p, pos2(rx, cy), "mv_toggle", true, tr("Multi-view"), 1.0);
+        let (sw_left, off) = switch(ui, pos2(rx, cy), "mv_toggle", true, tr("Multi-view"), 1.0, fg);
         if off {
             out.exit = true;
         }
         rx = sw_left - 14.0;
-        p.line_segment([pos2(rx, cy - 8.0), pos2(rx, cy + 8.0)], Stroke::new(1.0, Color32::from_rgb(0x30, 0x36, 0x3D)));
+        p.line_segment([pos2(rx, cy - 8.0), pos2(rx, cy + 8.0)], Stroke::new(1.0, theme::line()));
         rx -= 14.0;
-        let (link_left, flip) = switch(ui, p, pos2(rx, cy), "mv_link", self.link, tr("Linked"), 1.0);
+        let (link_left, flip) = switch(ui, pos2(rx, cy), "mv_link", self.link, tr("Linked"), 1.0, fg);
         if flip {
             self.link = !self.link;
             out.osd = Some(if self.link { tr("Linked: play, pause and seeking apply to every video").into() } else { tr("Linked: off").into() });
         }
         rx = link_left - 16.0;
-        let (bars_left, flip) = switch(ui, p, pos2(rx, cy), "mv_bars", !self.hide_bars, tr("Bars"), 1.0);
+        let (bars_left, flip) = switch(ui, pos2(rx, cy), "mv_bars", !self.hide_bars, tr("Bars"), 1.0, fg);
         if flip {
             self.hide_bars = !self.hide_bars;
             out.osd = Some(if self.hide_bars { tr("Bars hidden: move the pointer to a video's bottom to show them").into() } else { tr("Bars shown").into() });
         }
         rx = bars_left - 16.0;
-        let (sound_left, flip) = switch(ui, p, pos2(rx, cy), "mv_sound", self.focus_sound, tr("Focus sound"), 1.0);
+        let (sound_left, flip) = switch(ui, pos2(rx, cy), "mv_sound", self.focus_sound, tr("Focus sound"), 1.0, fg);
         if flip {
             self.set_focus_sound(!self.focus_sound, main);
             out.osd = Some(if self.focus_sound { tr("Focus sound: only the selected video has sound").into() } else { tr("Focus sound: off, every video has sound").into() });
@@ -1164,7 +1180,7 @@ impl MultiView {
             p.text(pos2(rx, cy), Align2::RIGHT_CENTER, count, FontId::monospace(11.0), theme::text_3());
         }
         if frameless {
-            crate::app::draw_frameless_window_controls(ui, stage, 1.0);
+            crate::app::draw_frameless_window_controls(ui, stage, 1.0, fg);
         }
     }
 
@@ -1178,7 +1194,7 @@ impl MultiView {
             .show(&ctx, |ui| {
                 egui::Frame::NONE
                     .fill(theme::panel())
-                    .stroke(Stroke::new(0.5, Color32::from_white_alpha(40)))
+                    .stroke(Stroke::new(0.5, theme::line()))
                     .corner_radius(6.0)
                     .inner_margin(egui::Margin::symmetric(4, 4))
                     .show(ui, |ui| {
@@ -1190,7 +1206,7 @@ impl MultiView {
                         }
                         if !playlist.is_empty() {
                             ui.add_space(2.0);
-                            ui.label(egui::RichText::new(tr("From the playlist")).size(11.0).color(TEXT_3));
+                            ui.label(egui::RichText::new(tr("From the playlist")).size(11.0).color(theme::text_3()));
                             for (title, path) in playlist.iter().take(MENU_ITEMS) {
                                 if menu_item(ui, title) {
                                     out.load = Some((slot, path.clone()));
@@ -1227,11 +1243,6 @@ enum Tool {
     Restore,
     Fill,
     Unfill,
-}
-
-/// A slot's inside: leaves sit in their cell with no extra margin.
-fn inner(r: Rect) -> Rect {
-    r
 }
 
 fn tool_button(ui: &mut egui::Ui, p: &egui::Painter, r: Rect, id: impl std::hash::Hash + std::fmt::Debug, tool: Tool, tip: &str) -> bool {
@@ -1281,17 +1292,17 @@ fn tool_button(ui: &mut egui::Ui, p: &egui::Painter, r: Rect, id: impl std::hash
 }
 
 /// A labeled switch ending at `right_center`. Returns (left edge, clicked).
-pub fn switch(ui: &mut egui::Ui, p: &egui::Painter, right_center: Pos2, id: &str, on: bool, label: &str, alpha: f32) -> (f32, bool) {
+pub fn switch(ui: &mut egui::Ui, right_center: Pos2, id: &str, on: bool, label: &str, alpha: f32, text_color: Color32) -> (f32, bool) {
+    let p = ui.painter();
     let track = Rect::from_min_size(pos2(right_center.x - 34.0, right_center.y - 9.0), vec2(34.0, 18.0));
-    let lw = p.layout_no_wrap(label.to_string(), FontId::proportional(12.0), TEXT).size().x;
+    let lw = p.layout_no_wrap(label.to_string(), FontId::proportional(12.0), text_color).size().x;
     let all = Rect::from_min_max(pos2(track.left() - lw - 8.0, track.top() - 4.0), pos2(track.right(), track.bottom() + 4.0));
     let resp = ui.interact(all, ui.scope_id().with(id), Sense::click());
     let a = |c: Color32| c.gamma_multiply(alpha);
     p.rect_filled(track, 9.0, a(if on { ACCENT } else { Color32::from_gray(0x55) }));
     let kx = if on { track.right() - 9.0 } else { track.left() + 9.0 };
     p.circle_filled(pos2(kx, track.center().y), 7.0, a(Color32::WHITE));
-    let text = if alpha >= 1.0 { theme::text() } else { TEXT };
-    p.text(pos2(track.left() - 8.0, track.center().y), Align2::RIGHT_CENTER, label, FontId::proportional(12.0), a(if resp.hovered() { ACCENT } else { text }));
+    p.text(pos2(track.left() - 8.0, track.center().y), Align2::RIGHT_CENTER, label, FontId::proportional(12.0), a(if resp.hovered() { ACCENT } else { text_color }));
     if resp.hovered() {
         ui.ctx().set_cursor_icon(CursorIcon::PointingHand);
     }
@@ -1305,7 +1316,7 @@ fn menu_item(ui: &mut egui::Ui, label: &str) -> bool {
         ui.ctx().set_cursor_icon(CursorIcon::PointingHand);
     }
     let text = elide(ui.painter(), label, FontId::proportional(12.5), r.width() - 20.0);
-    ui.painter().text(pos2(r.left() + 10.0, r.center().y), Align2::LEFT_CENTER, text, FontId::proportional(12.5), if resp.hovered() { Color32::WHITE } else { TEXT });
+    ui.painter().text(pos2(r.left() + 10.0, r.center().y), Align2::LEFT_CENTER, text, FontId::proportional(12.5), if resp.hovered() { Color32::WHITE } else { theme::text() });
     resp.clicked()
 }
 

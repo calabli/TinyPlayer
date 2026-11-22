@@ -10,7 +10,7 @@ use eframe::egui::{Rect, pos2, vec2};
 /// Most videos on screen at once (each is its own decoder).
 pub const MAX_SLOTS: usize = 4;
 /// Gap between neighbouring slots, in points.
-pub const GAP: f32 = 3.0;
+const GAP: f32 = 3.0;
 const MIN_RATIO: f32 = 0.15;
 
 #[derive(Clone, Copy, PartialEq, Eq, Debug)]
@@ -94,7 +94,7 @@ pub struct Divider {
 
 #[derive(Clone, Debug)]
 pub struct Layout {
-    pub root: Node,
+    root: Node,
     pub floats: Vec<Float>,
     next: u32,
 }
@@ -255,6 +255,10 @@ impl Layout {
     pub fn float(&mut self, id: u32) -> Option<u32> {
         let content = self.content(id)?;
         if content == Content::Empty || self.floats.iter().any(|f| f.id == id) {
+            return None;
+        }
+        // Floating the last leaf leaves an empty leaf behind, adding a slot.
+        if matches!(self.root, Node::Leaf { .. }) && !self.can_add() {
             return None;
         }
         self.remove(id);
@@ -456,5 +460,21 @@ mod tests {
         assert_eq!(l.content(back), Some(Content::Main));
         assert_eq!(l.leaves().len(), 2);
         assert!(l.floats.is_empty());
+    }
+
+    #[test]
+    fn floating_the_last_leaf_never_exceeds_max_slots() {
+        let mut l = Layout::single(Content::Main);
+        l.apply_preset(Preset::Grid, &[Content::Main, Content::Pane(1), Content::Pane(2), Content::Pane(3)]);
+        for c in [Content::Pane(1), Content::Pane(2), Content::Pane(3)] {
+            let id = l.find(c).unwrap();
+            assert!(l.float(id).is_some());
+        }
+        assert_eq!(l.leaves().len(), 1);
+        assert_eq!(l.floats.len(), 3);
+        assert_eq!(l.slot_count(), MAX_SLOTS);
+        let last_leaf = l.find(Content::Main).unwrap();
+        assert!(l.float(last_leaf).is_none());
+        assert_eq!(l.slot_count(), MAX_SLOTS);
     }
 }

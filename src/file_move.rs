@@ -50,7 +50,7 @@ pub enum Msg {
 }
 
 /// `name` in `dir`, or the first free `name (2)`, `name (3)`…
-pub fn free_path(dir: &Path, name: &str) -> PathBuf {
+fn free_path(dir: &Path, name: &str) -> PathBuf {
     let first = dir.join(name);
     if !first.exists() {
         return first;
@@ -71,7 +71,14 @@ pub fn same_disk(a: &Path, b: &Path) -> bool {
     }
     #[cfg(not(unix))]
     {
-        a.components().next() == b.components().next()
+        let root = |p: &Path| {
+            let norm = crate::library::display_path(p);
+            Path::new(&norm)
+                .components()
+                .next()
+                .map(|c| c.as_os_str().to_string_lossy().to_ascii_lowercase())
+        };
+        matches!((root(a), root(b)), (Some(x), Some(y)) if x == y)
     }
 }
 

@@ -4,11 +4,11 @@ use crate::mpv::{Event, Format, Mpv, PropValue};
 use crate::i18n::{tf, tr};
 
 /// Startup volume (percent). mpv defaults to 100, which is loud on most setups.
-pub const DEFAULT_VOLUME: f64 = 60.0;
+const DEFAULT_VOLUME: f64 = 60.0;
 pub const MAX_VOLUME: f64 = 150.0;
 
 pub const SPEEDS: [f64; 11] = [0.25, 0.5, 0.75, 1.0, 1.25, 1.5, 1.75, 2.0, 2.5, 3.0, 4.0];
-pub const FINE_SPEED_STEP: f64 = 0.05;
+const FINE_SPEED_STEP: f64 = 0.05;
 
 /// The next preset above (`dir` > 0) or below `cur`, even if `cur` was set
 /// between presets by the fine control.
@@ -214,6 +214,7 @@ impl Player {
             ("mute", PropValue::Flag(b)) => s.muted = b,
             ("speed", PropValue::Double(d)) => s.speed = d,
             ("media-title", PropValue::Str(t)) => s.title = t,
+            ("media-title", PropValue::None) => s.title.clear(),
             ("path", PropValue::Str(t)) => s.path = t,
             ("path", PropValue::None) => s.path.clear(),
             ("video-format", PropValue::Str(t)) => s.codec = t.to_uppercase(),
@@ -223,7 +224,9 @@ impl Player {
             }
             ("hwdec-current", PropValue::None) => s.hwdec.clear(),
             ("width", PropValue::Int(i)) => s.width = i,
+            ("width", PropValue::None) => s.width = 0,
             ("height", PropValue::Int(i)) => s.height = i,
+            ("height", PropValue::None) => s.height = 0,
             ("eof-reached", PropValue::Flag(b)) => s.eof = b,
             _ => {}
         }
@@ -231,12 +234,9 @@ impl Player {
 
     // ---- Commands ----
 
-    pub fn open(&self, path: &str, append: bool) {
-        let mode = if append { "append-play" } else { "replace" };
-        let _ = self.mpv.command(&["loadfile", path, mode]);
-        if !append {
-            self.mpv.set_flag("pause", false);
-        }
+    pub fn open(&self, path: &str) {
+        let _ = self.mpv.command(&["loadfile", path, "replace"]);
+        self.mpv.set_flag("pause", false);
     }
 
     pub fn toggle_pause(&self) {
@@ -264,6 +264,11 @@ impl Player {
         if self.state.muted {
             self.mpv.set_flag("mute", false);
         }
+    }
+
+    /// Sets volume without unmuting (used when switching audio devices).
+    pub fn restore_volume(&self, v: f64) {
+        self.mpv.set_double("volume", v.clamp(0.0, MAX_VOLUME));
     }
 
     pub fn toggle_mute(&self) {
@@ -395,12 +400,15 @@ impl Player {
     /// wrong rate makes frames miss their slot steadily, so this is needed
     /// after the window moves to another monitor too.
     pub fn sync_refresh(&self) {
-        if !self.interpolation.get() {
+        if !self.interpolation.get() || self.state.idle || self.state.paused || self.state.eof {
             return;
         }
         let measured = self.mpv.get_string("estimated-display-fps").and_then(|v| v.parse::<f64>().ok());
         let current = self.mpv.get_string("display-fps-override").and_then(|v| v.parse::<f64>().ok());
-        if let (Some(measured), Some(current)) = (measured, current) {
+        if let (Some(measured), Some(current)) = (measured, current)
+            && measured.is_finite()
+            && measured >= 40.0
+        {
             let rate = crate::view::nearest_refresh(measured);
             if rate != current {
                 self.mpv.set_double("display-fps-override", rate);

@@ -324,8 +324,8 @@ mod os {
 mod os {
     use super::OutputDevice;
 
-    pub fn reader() -> Option<fn() -> Option<OutputDevice>> {
-        None
+    pub fn reader() -> Option<impl FnMut() -> Option<OutputDevice>> {
+        Option::<fn() -> Option<OutputDevice>>::None
     }
 }
 

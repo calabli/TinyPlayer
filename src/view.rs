@@ -61,7 +61,7 @@ pub fn fit_size(video: (f64, f64), window: (f64, f64)) -> (f64, f64) {
 /// The largest centered area of a `w`×`h` frame with shape `ratio`, in mpv's
 /// `video-crop` form. None if the frame already has that shape.
 pub fn crop_to_ratio(w: i64, h: i64, ratio: f64) -> Option<String> {
-    if w <= 0 || h <= 0 {
+    if w <= 0 || h <= 0 || !ratio.is_finite() || ratio <= 0.0 {
         return None;
     }
     let even = |v: f64| (v as i64) & !1;
@@ -70,7 +70,7 @@ pub fn crop_to_ratio(w: i64, h: i64, ratio: f64) -> Option<String> {
     } else {
         (w, even(w as f64 / ratio))
     };
-    if cw == w && ch == h {
+    if cw <= 0 || ch <= 0 || cw > w || ch > h || (cw == w && ch == h) {
         return None;
     }
     Some(format!("{cw}x{ch}+{}+{}", (w - cw) / 2, (h - ch) / 2))
@@ -81,7 +81,7 @@ pub fn crop_to_ratio(w: i64, h: i64, ratio: f64) -> Option<String> {
 pub fn crop_from_detected(frame: (i64, i64), area: (i64, i64, i64, i64)) -> Option<String> {
     let (fw, fh) = frame;
     let (w, h, x, y) = area;
-    if w <= 0 || h <= 0 || w > fw || h > fh || x < 0 || y < 0 {
+    if w <= 0 || h <= 0 || x < 0 || y < 0 || x.saturating_add(w) > fw || y.saturating_add(h) > fh {
         return None;
     }
     let thin = |a: i64, full: i64| ((full - a) as f64) < full as f64 * MIN_BAR_FRACTION;
@@ -143,6 +143,8 @@ mod tests {
         assert_eq!(crop_to_ratio(1920, 1080, 2.35).as_deref(), Some("1920x816+0+132"));
         assert_eq!(crop_to_ratio(1920, 1080, 16.0 / 9.0), None);
         assert_eq!(crop_to_ratio(0, 0, 1.5), None);
+        assert_eq!(crop_to_ratio(1920, 1080, 0.0), None);
+        assert_eq!(crop_to_ratio(1920, 1080, f64::NAN), None);
     }
 
     #[test]
@@ -151,6 +153,7 @@ mod tests {
         assert_eq!(crop_from_detected((1280, 720), (1280, 716, 0, 2)), None);
         assert_eq!(crop_from_detected((1280, 720), (-1280, 0, 0, 0)), None);
         assert_eq!(crop_from_detected((1280, 720), (2000, 720, 0, 0)), None);
+        assert_eq!(crop_from_detected((1280, 720), (1000, 600, 400, 0)), None);
     }
 
     #[test]

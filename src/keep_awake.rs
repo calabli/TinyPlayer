@@ -82,12 +82,18 @@ impl KeepAwake {
         unsafe {
             let kind = os::CFStringCreateWithCString(std::ptr::null(), kind.as_ptr(), os::UTF8);
             let name = os::CFStringCreateWithCString(std::ptr::null(), c"TinyPlayer playback".as_ptr(), os::UTF8);
-            let mut id = 0;
-            if os::IOPMAssertionCreateWithName(kind, os::LEVEL_ON, name, &raw mut id) == 0 {
-                self.assertion = Some(id);
+            if !kind.is_null() && !name.is_null() {
+                let mut id = 0;
+                if os::IOPMAssertionCreateWithName(kind, os::LEVEL_ON, name, &raw mut id) == 0 {
+                    self.assertion = Some(id);
+                }
             }
-            os::CFRelease(kind);
-            os::CFRelease(name);
+            if !kind.is_null() {
+                os::CFRelease(kind);
+            }
+            if !name.is_null() {
+                os::CFRelease(name);
+            }
         }
     }
 }

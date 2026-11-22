@@ -67,11 +67,15 @@ mod imp {
                 let list: Option<Retained<NSAppleEventDescriptor>> =
                     unsafe { msg_send![event, paramDescriptorForKeyword: DIRECT_OBJECT] };
                 let Some(list) = list else { return };
-                // Apple Event lists count from 1.
-                let paths = (1..=list.numberOfItems()).filter_map(|i| {
-                    let url = list.descriptorAtIndex(i)?.fileURLValue()?;
-                    Some(url.path()?.to_string())
-                });
+                // Apple Event lists count from 1; a single-item descriptor has count 0.
+                let count = list.numberOfItems();
+                let paths: Vec<String> = if count > 0 {
+                    (1..=count)
+                        .filter_map(|i| Some(list.descriptorAtIndex(i)?.fileURLValue()?.path()?.to_string()))
+                        .collect()
+                } else {
+                    list.fileURLValue().and_then(|u| u.path()).map(|p| p.to_string()).into_iter().collect()
+                };
                 if let Ok(mut pending) = super::PENDING.lock() {
                     pending.extend(paths);
                 }

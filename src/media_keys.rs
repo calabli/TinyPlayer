@@ -87,15 +87,17 @@ impl MediaKeys {
             return;
         }
         if meta_changed {
+            let duration = (s.duration.is_finite() && s.duration > 0.0).then(|| Duration::from_secs_f64(s.duration));
             let _ = self.controls.set_metadata(MediaMetadata {
                 title: Some(title),
-                duration: (s.duration > 0.0).then(|| Duration::from_secs_f64(s.duration)),
+                duration,
                 ..Default::default()
             });
             self.title = title.to_string();
             self.duration = s.duration;
         }
-        let progress = Some(MediaPosition(Duration::from_secs_f64(s.position.max(0.0))));
+        let pos = if s.position.is_finite() { s.position.max(0.0) } else { 0.0 };
+        let progress = Some(MediaPosition(Duration::from_secs_f64(pos)));
         let _ = self.controls.set_playback(if s.idle {
             MediaPlayback::Stopped
         } else if s.paused {

@@ -5,6 +5,7 @@
 
 use std::ffi::{CStr, CString, c_char, c_double, c_int, c_void};
 use std::ptr;
+use std::sync::{Arc, Mutex};
 
 use libloading::Library;
 
@@ -99,7 +100,23 @@ struct Api {
     _lib: Library,
 }
 
+// The resolved C function pointers and shared library handle are thread-safe.
+unsafe impl Send for Api {}
+unsafe impl Sync for Api {}
+
+static API: Mutex<Option<Arc<Api>>> = Mutex::new(None);
+
 impl Api {
+    fn shared() -> Result<Arc<Self>, String> {
+        let mut slot = API.lock().unwrap_or_else(|e| e.into_inner());
+        if let Some(api) = slot.as_ref() {
+            return Ok(Arc::clone(api));
+        }
+        let api = Arc::new(Self::load()?);
+        *slot = Some(Arc::clone(&api));
+        Ok(api)
+    }
+
     fn load() -> Result<Self, String> {
         let lib = open_library()?;
         macro_rules! sym {
@@ -135,7 +152,7 @@ impl Api {
 
 fn library_names() -> &'static [&'static str] {
     if cfg!(target_os = "windows") {
-        &["libmpv-2.dll", "mpv-2.dll", "mpv-1.dll"]
+        &["libmpv-2.dll", "mpv-2.dll"]
     } else if cfg!(target_os = "macos") {
         &["libmpv.2.dylib", "libmpv.dylib"]
     } else {
@@ -206,10 +223,11 @@ pub enum Format {
 type Wakeup = Box<dyn Fn() + Send + Sync>;
 
 pub struct Mpv {
-    api: Api,
+    api: Arc<Api>,
     handle: *mut RawHandle,
-    /// The callback mpv holds a pointer to. Freed after the handle, in drop.
-    wakeup: std::sync::Mutex<Option<Box<Wakeup>>>,
+    /// Raw `Box::into_raw` pointer mpv calls from its threads; reclaimed in drop
+    /// only after `mpv_terminate_destroy` returns.
+    wakeup: Mutex<Option<*mut Wakeup>>,
 }
 
 // The mpv client API is thread-safe.
@@ -218,12 +236,12 @@ unsafe impl Send for Mpv {}
 impl Mpv {
     /// Creates and initializes an mpv instance configured for embedding.
     pub fn new(options: &[(&str, &str)]) -> Result<Self, String> {
-        let api = Api::load()?;
+        let api = Api::shared()?;
         let handle = unsafe { (api.create)() };
         if handle.is_null() {
             return Err("mpv_create failed".into());
         }
-        let mpv = Self { api, handle, wakeup: Default::default() };
+        let mpv = Self { api, handle, wakeup: Mutex::new(None) };
         for (k, v) in options {
             mpv.set_option(k, v)?;
         }
@@ -239,7 +257,7 @@ impl Mpv {
         Err(format!("{what}: {}", msg.to_string_lossy()))
     }
 
-    pub fn set_option(&self, name: &str, value: &str) -> Result<(), String> {
+    fn set_option(&self, name: &str, value: &str) -> Result<(), String> {
         let (n, v) = (cstr(name), cstr(value));
         let code = unsafe { (self.api.set_option_string)(self.handle, n.as_ptr(), v.as_ptr()) };
         self.check(code, &format!("option {name}={value}"))
@@ -305,14 +323,15 @@ impl Mpv {
 
     /// Calls `f` from an mpv thread whenever new events are queued.
     pub fn set_wakeup(&self, f: Wakeup) {
-        let data = Box::new(f);
+        let raw = Box::into_raw(Box::new(f));
         unsafe {
-            (self.api.set_wakeup_callback)(self.handle, Some(trampoline), (&raw const *data) as *mut c_void);
+            (self.api.set_wakeup_callback)(self.handle, Some(trampoline), raw.cast());
         }
         // mpv calls the callback under the lock that setting it takes, so the
         // one this replaces is no longer running and can go.
-        if let Ok(mut slot) = self.wakeup.lock() {
-            *slot = Some(data);
+        let mut slot = self.wakeup.lock().unwrap_or_else(|e| e.into_inner());
+        if let Some(old) = slot.replace(raw) {
+            unsafe { drop(Box::from_raw(old)) };
         }
     }
 
@@ -368,9 +387,11 @@ impl Mpv {
 
 impl Drop for Mpv {
     fn drop(&mut self) {
-        // The wakeup callback is a field, so it's freed after this returns,
-        // when mpv can no longer call it.
         unsafe { (self.api.terminate_destroy)(self.handle) };
+        let mut slot = self.wakeup.lock().unwrap_or_else(|e| e.into_inner());
+        if let Some(raw) = slot.take() {
+            unsafe { drop(Box::from_raw(raw)) };
+        }
     }
 }
 
@@ -397,8 +418,13 @@ unsafe fn read_value(format: c_int, data: *mut c_void) -> PropValue {
 }
 
 unsafe extern "C" fn trampoline(data: *mut c_void) {
-    let f = unsafe { &*(data as *const Box<dyn Fn() + Send + Sync>) };
-    f();
+    if data.is_null() {
+        return;
+    }
+    let _ = std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| {
+        let f = unsafe { &*(data as *const Wakeup) };
+        f();
+    }));
 }
 
 fn cstr(s: &str) -> CString {
@@ -412,24 +438,22 @@ type ProcAddr = dyn Fn(&CStr) -> *const c_void + Send + Sync;
 /// Renders video frames into an OpenGL framebuffer supplied by the app.
 pub struct RenderContext {
     ctx: *mut RawRenderCtx,
-    render_update: unsafe extern "C" fn(*mut RawRenderCtx) -> u64,
-    render_render: unsafe extern "C" fn(*mut RawRenderCtx, *mut RawRenderParam) -> c_int,
-    render_free: unsafe extern "C" fn(*mut RawRenderCtx),
-    _proc: Box<std::sync::Arc<ProcAddr>>,
-    _update_cb: Box<Box<dyn Fn() + Send + Sync>>,
+    api: Arc<Api>,
+    proc_ptr: *mut Arc<ProcAddr>,
+    update_ptr: *mut Wakeup,
 }
 
 impl RenderContext {
     /// Must be called on the thread that owns the GL context.
     pub fn new(
         mpv: &Mpv,
-        get_proc_address: std::sync::Arc<ProcAddr>,
-        on_update: Box<dyn Fn() + Send + Sync>,
+        get_proc_address: Arc<ProcAddr>,
+        on_update: Wakeup,
     ) -> Result<Self, String> {
-        let proc_box = Box::new(get_proc_address);
+        let proc_ptr = Box::into_raw(Box::new(get_proc_address));
         let mut init = RawGlInitParams {
             get_proc_address: gl_proc_trampoline,
-            get_proc_address_ctx: (&raw const *proc_box) as *mut c_void,
+            get_proc_address_ctx: proc_ptr.cast(),
         };
         let api_type = c"opengl";
         let mut params = [
@@ -442,29 +466,26 @@ impl RenderContext {
         ];
         let mut ctx = ptr::null_mut();
         let code = unsafe { (mpv.api.render_create)(&mut ctx, mpv.handle, params.as_mut_ptr()) };
-        mpv.check(code, "mpv_render_context_create")?;
+        if let Err(e) = mpv.check(code, "mpv_render_context_create") {
+            unsafe { drop(Box::from_raw(proc_ptr)) };
+            return Err(e);
+        }
 
-        let update_cb = Box::new(on_update);
+        let update_ptr = Box::into_raw(Box::new(on_update));
         unsafe {
-            (mpv.api.render_set_update_callback)(
-                ctx,
-                Some(trampoline),
-                (&raw const *update_cb) as *mut c_void,
-            );
+            (mpv.api.render_set_update_callback)(ctx, Some(trampoline), update_ptr.cast());
         }
         Ok(Self {
             ctx,
-            render_update: mpv.api.render_update,
-            render_render: mpv.api.render_render,
-            render_free: mpv.api.render_free,
-            _proc: proc_box,
-            _update_cb: update_cb,
+            api: Arc::clone(&mpv.api),
+            proc_ptr,
+            update_ptr,
         })
     }
 
     /// Returns true if a new video frame is ready to be rendered.
     pub fn frame_ready(&self) -> bool {
-        unsafe { (self.render_update)(self.ctx) & RENDER_UPDATE_FRAME != 0 }
+        unsafe { (self.api.render_update)(self.ctx) & RENDER_UPDATE_FRAME != 0 }
     }
 
     /// Renders the current frame into `fbo` (0 = default framebuffer).
@@ -476,18 +497,29 @@ impl RenderContext {
             RawRenderParam { kind: RENDER_PARAM_FLIP_Y, data: (&raw mut flip).cast() },
             RawRenderParam { kind: RENDER_PARAM_INVALID, data: ptr::null_mut() },
         ];
-        unsafe { (self.render_render)(self.ctx, params.as_mut_ptr()) };
+        unsafe { (self.api.render_render)(self.ctx, params.as_mut_ptr()) };
     }
 }
 
 impl Drop for RenderContext {
     fn drop(&mut self) {
-        // Must happen before the mpv handle is destroyed.
-        unsafe { (self.render_free)(self.ctx) };
+        // Must happen before the mpv handle is destroyed, and before freeing
+        // the callbacks mpv holds pointers to.
+        unsafe {
+            (self.api.render_free)(self.ctx);
+            drop(Box::from_raw(self.update_ptr));
+            drop(Box::from_raw(self.proc_ptr));
+        }
     }
 }
 
 unsafe extern "C" fn gl_proc_trampoline(ctx: *mut c_void, name: *const c_char) -> *mut c_void {
-    let f = unsafe { &*(ctx as *const std::sync::Arc<ProcAddr>) };
-    f(unsafe { CStr::from_ptr(name) }) as *mut c_void
+    if ctx.is_null() || name.is_null() {
+        return ptr::null_mut();
+    }
+    std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| {
+        let f = unsafe { &*(ctx as *const Arc<ProcAddr>) };
+        f(unsafe { CStr::from_ptr(name) }) as *mut c_void
+    }))
+    .unwrap_or(ptr::null_mut())
 }

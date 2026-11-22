@@ -14,9 +14,9 @@ fn hex(bytes: &[u8]) -> String {
 }
 
 fn stretch(password: &str, salt: &str) -> String {
-    let mut digest = Sha256::digest(format!("{salt}:{password}").as_bytes()).to_vec();
+    let mut digest: [u8; 32] = Sha256::digest(format!("{salt}:{password}").as_bytes()).into();
     for _ in 0..ROUNDS {
-        digest = Sha256::digest(&digest).to_vec();
+        digest = Sha256::digest(digest).into();
     }
     hex(&digest)
 }

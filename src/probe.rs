@@ -7,7 +7,7 @@ use std::time::{Duration, Instant};
 use crate::mpv::{Event, Format, Mpv, PropValue};
 
 /// Thumbnails are scaled to this width (height keeps the aspect ratio).
-pub const THUMB_WIDTH: u32 = 480;
+const THUMB_WIDTH: u32 = 480;
 const PER_FILE_TIMEOUT: Duration = Duration::from_secs(20);
 
 #[derive(Debug, Default, Clone)]
@@ -20,7 +20,7 @@ pub struct Info {
 }
 
 pub struct Prober {
-    mpv: Mpv,
+    mpv: Option<Mpv>,
     /// Scratch directory mpv writes frames into; emptied per file.
     out_dir: PathBuf,
 }
@@ -29,6 +29,11 @@ impl Prober {
     pub fn new(work_dir: &Path) -> Result<Self, String> {
         let out_dir = work_dir.join("probe-tmp");
         std::fs::create_dir_all(&out_dir).map_err(|e| e.to_string())?;
+        let mpv = Self::make_mpv(&out_dir)?;
+        Ok(Self { mpv: Some(mpv), out_dir })
+    }
+
+    fn make_mpv(out_dir: &Path) -> Result<Mpv, String> {
         let out = out_dir.to_string_lossy().into_owned();
         let scale = format!("scale=w={THUMB_WIDTH}:h=-2");
         let mpv = Mpv::new(&[
@@ -55,28 +60,43 @@ impl Prober {
         for (name, fmt) in [("duration", Format::Double), ("width", Format::Int), ("height", Format::Int)] {
             mpv.observe(name, fmt);
         }
-        Ok(Self { mpv, out_dir })
+        Ok(mpv)
     }
 
     /// Probes `path` and moves its thumbnail to `thumb_dest` (if any frame
     /// was produced). Returns None if the file couldn't be opened in time.
-    pub fn probe(&self, path: &Path, thumb_dest: &Path) -> Option<Info> {
+    pub fn probe(&mut self, path: &Path, thumb_dest: &Path) -> Option<Info> {
+        if self.mpv.is_none() {
+            self.mpv = Self::make_mpv(&self.out_dir).ok();
+        }
+        let mpv = self.mpv.as_ref()?;
         clear_dir(&self.out_dir);
         let p = path.to_string_lossy();
-        self.mpv.command(&["loadfile", &p, "replace"]).ok()?;
+        mpv.command(&["loadfile", &p, "replace"]).ok()?;
 
         let mut info = Info::default();
         let mut loaded = false;
+        let mut reset_mpv = false;
         let deadline = Instant::now() + PER_FILE_TIMEOUT;
         loop {
             let left = deadline.saturating_duration_since(Instant::now());
             if left.is_zero() {
-                let _ = self.mpv.command(&["stop"]);
+                // Drain the stop's EndFile so it can't end the next probe early.
+                let _ = mpv.command(&["stop"]);
+                if !wait_end(mpv, Duration::from_secs(1)) {
+                    reset_mpv = true;
+                }
+                loaded = false;
                 break;
             }
-            match self.mpv.wait_event(left.as_secs_f64()) {
+            match mpv.wait_event(left.as_secs_f64()) {
                 Some(Event::FileLoaded) => loaded = true,
                 Some(Event::EndFile) => break,
+                Some(Event::Shutdown) => {
+                    reset_mpv = true;
+                    loaded = false;
+                    break;
+                }
                 Some(Event::PropertyChange { name, value }) => match (name.as_str(), value) {
                     ("duration", PropValue::Double(d)) => info.duration = d,
                     ("width", PropValue::Int(w)) => info.width = w,
@@ -85,6 +105,9 @@ impl Prober {
                 },
                 _ => {}
             }
+        }
+        if reset_mpv {
+            self.mpv = None;
         }
         if !loaded {
             return None;
@@ -99,6 +122,21 @@ impl Prober {
             }
         }
         Some(info)
+    }
+}
+
+fn wait_end(mpv: &Mpv, timeout: Duration) -> bool {
+    let deadline = Instant::now() + timeout;
+    loop {
+        let left = deadline.saturating_duration_since(Instant::now());
+        if left.is_zero() {
+            return false;
+        }
+        match mpv.wait_event(left.as_secs_f64()) {
+            Some(Event::EndFile) => return true,
+            Some(Event::Shutdown) | None => return false,
+            _ => {}
+        }
     }
 }
 
@@ -129,7 +167,7 @@ mod tests {
     fn probes_a_real_file() {
         let Some(file) = std::env::var_os("TP_PROBE_FILE") else { return };
         let dir = std::env::temp_dir().join("tinyplayer-probe-test");
-        let prober = Prober::new(&dir).expect("libmpv");
+        let mut prober = Prober::new(&dir).expect("libmpv");
         let dest = dir.join("thumb.jpg");
         let _ = std::fs::remove_file(&dest);
         let t = Instant::now();

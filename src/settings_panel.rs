@@ -118,19 +118,43 @@ pub fn show(
     }
 
     // ---- Rows ----
-    let left = nav.right() + 24.0;
-    let right = panel.right() - 24.0;
-    let mut y = panel.top() + 44.0;
-    let row = |y: f32| Rect::from_min_max(pos2(left, y), pos2(right, y + ROW_H));
-    let label = |r: Rect, title: &str, desc: &str, enabled: bool| {
-        let a = if enabled { 1.0 } else { 0.35 };
-        let ty = if desc.is_empty() { r.center().y } else { r.top() + 21.0 };
-        p.text(pos2(r.left(), ty), Align2::LEFT_CENTER, title, FontId::proportional(13.0), theme::text().gamma_multiply(a));
-        if !desc.is_empty() {
-            p.text(pos2(r.left(), r.top() + 40.0), Align2::LEFT_CENTER, desc, FontId::proportional(11.0), theme::text_3().lerp_to_gamma(theme::text_2(), 0.4).gamma_multiply(a));
+    if st.page == Page::Audio {
+        let left = nav.right() + 24.0;
+        let right = panel.right() - 24.0;
+        let y = panel.top() + 44.0;
+        let r = Rect::from_min_max(pos2(left, y), pos2(right, y + ROW_H));
+        draw_row_label(&p, r, tr("Volume per device"), tr("Headphones, speakers and other outputs each keep their own volume"), true);
+        if toggle(ui, &p, r, "device_volume", settings.device_volume, true) {
+            settings.device_volume = !settings.device_volume;
+            out.settings_changed = true;
         }
-        p.line_segment([r.left_bottom(), r.right_bottom()], Stroke::new(0.5, theme::line()));
+        let area = Rect::from_min_max(pos2(left, y + ROW_H + 8.0), pos2(right, panel.bottom() - 16.0));
+        device_list(ui, area, devices, settings.device_volume, &mut out);
+        return out;
+    }
+
+    let body = Rect::from_min_max(pos2(nav.right(), panel.top() + 44.0), pos2(panel.right(), panel.bottom() - 8.0));
+    let content_h = match st.page {
+        Page::Playback => ROW_H * 3.0 + 16.0,
+        Page::Audio => 0.0,
+        Page::Video | Page::Library => ROW_H * 2.0 + 16.0,
+        Page::Subtitles => ROW_H * 4.0 + 16.0,
+        Page::Interface => ROW_H * 7.0 + 16.0,
+        Page::Shortcuts => 15.0 * 30.0 + 24.0,
+        Page::History => ROW_H * 6.0 + 52.0,
     };
+    ui.scope_builder(egui::UiBuilder::new().max_rect(body), |ui| {
+        egui::ScrollArea::vertical()
+            .id_salt(("settings_scroll", st.page as u8))
+            .auto_shrink(false)
+            .show(ui, |ui| {
+                let (canvas, _) = ui.allocate_exact_size(vec2(body.width(), content_h), Sense::hover());
+                let p = ui.painter().clone();
+                let left = canvas.left() + 24.0;
+                let right = canvas.right() - 24.0;
+                let mut y = canvas.top();
+                let row = |y: f32| Rect::from_min_max(pos2(left, y), pos2(right, y + ROW_H));
+                let label = |r: Rect, title: &str, desc: &str, enabled: bool| draw_row_label(&p, r, title, desc, enabled);
 
     if st.page == Page::Playback {
         let r = row(y);
@@ -157,20 +181,7 @@ pub fn show(
             settings.shuffle = !settings.shuffle;
             out.settings_changed = true;
         }
-        return out;
-    }
-
-    if st.page == Page::Audio {
-        let r = row(y);
-        label(r, tr("Volume per device"), tr("Headphones, speakers and other outputs each keep their own volume"), true);
-        if toggle(ui, &p, r, "device_volume", settings.device_volume, true) {
-            settings.device_volume = !settings.device_volume;
-            out.settings_changed = true;
-        }
-        y += ROW_H;
-        let area = Rect::from_min_max(pos2(left, y + 8.0), pos2(right, panel.bottom() - 16.0));
-        device_list(ui, area, devices, settings.device_volume, &mut out);
-        return out;
+        return;
     }
 
     if st.page == Page::Video {
@@ -184,13 +195,13 @@ pub fn show(
 
         let r = row(y);
         label(r, tr("Aspect ratio"), "", true);
-        let opts = ["auto", "16:9", "4:3", "2.35:1", "stretch"];
+        let opts = ["auto", "16:9", "4:3", "2.35:1", "21:9", "stretch"];
         let sel = opts.iter().position(|o| *o == settings.aspect).unwrap_or(0);
-        if let Some(i) = segment(ui, &p, r, "aspect", &[tr("Original"), "16:9", "4:3", "2.35:1", tr("Stretch")], sel, true) {
+        if let Some(i) = segment(ui, &p, r, "aspect", &[tr("Original"), "16:9", "4:3", "2.35:1", "21:9", tr("Stretch")], sel, true) {
             settings.aspect = opts[i].to_string();
             out.settings_changed = true;
         }
-        return out;
+        return;
     }
 
     if st.page == Page::Subtitles {
@@ -230,7 +241,7 @@ pub fn show(
             settings.sub_lang = langs[i].to_string();
             out.settings_changed = true;
         }
-        return out;
+        return;
     }
 
     if st.page == Page::Interface {
@@ -291,7 +302,7 @@ pub fn show(
         if text_link(ui, &p, r.right_center(), "check_update", tr("Check now"), ACCENT).clicked {
             out.check_update = true;
         }
-        return out;
+        return;
     }
 
     if st.page == Page::Library {
@@ -306,7 +317,7 @@ pub fn show(
         if text_link(ui, &p, pos2(right, r.center().y), "clear_library", tr("Clear"), Color32::from_rgb(0xF8, 0x51, 0x49)).clicked {
             out.clear_library = true;
         }
-        return out;
+        return;
     }
 
     if st.page == Page::Shortcuts {
@@ -356,7 +367,7 @@ pub fn show(
             p.galley(kr.min + vec2(5.0, 3.0), g, theme::text());
             p.text(pos2(x + 122.0, yy), Align2::LEFT_CENTER, *what, FontId::proportional(12.0), theme::text_2());
         }
-        return out;
+        return;
     }
 
     let dep = settings.remember;
@@ -439,7 +450,19 @@ pub fn show(
     if r1.clicked {
         out.clear_history = true;
     }
+            });
+    });
     out
+}
+
+fn draw_row_label(p: &egui::Painter, r: Rect, title: &str, desc: &str, enabled: bool) {
+    let a = if enabled { 1.0 } else { 0.35 };
+    let ty = if desc.is_empty() { r.center().y } else { r.top() + 21.0 };
+    p.text(pos2(r.left(), ty), Align2::LEFT_CENTER, title, FontId::proportional(13.0), theme::text().gamma_multiply(a));
+    if !desc.is_empty() {
+        p.text(pos2(r.left(), r.top() + 40.0), Align2::LEFT_CENTER, desc, FontId::proportional(11.0), theme::text_3().lerp_to_gamma(theme::text_2(), 0.4).gamma_multiply(a));
+    }
+    p.line_segment([r.left_bottom(), r.right_bottom()], Stroke::new(0.5, theme::line()));
 }
 
 /// The remembered devices, each with its volume.

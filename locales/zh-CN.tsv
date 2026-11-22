@@ -150,9 +150,6 @@ Show in Explorer	在资源管理器中显示
 Remove from library (keeps the file)	从媒体库移除（不删除文件）
  · watched {}/{}	 · 看完 {}/{}
 Open	打开
-Build your library	建立你的媒体库
-Add folders of videos for automatic thumbnails, tags and search	添加视频所在的文件夹，自动生成缩略图，支持标签与搜索
-Or just drop a video into this window	也可以直接把视频拖进窗口播放
 Bookmark	书签
 Chinese	中文
 Traditional Chinese	繁体中文

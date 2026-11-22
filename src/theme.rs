@@ -11,7 +11,7 @@ pub const ACCENT: Color32 = Color32::from_rgb(0x3D, 0x8E, 0xF0);
 pub const TEXT: Color32 = Color32::from_rgb(0xE6, 0xED, 0xF3);
 pub const TEXT_2: Color32 = Color32::from_rgb(0x8B, 0x94, 0x9E);
 pub const TEXT_3: Color32 = Color32::from_rgb(0x48, 0x4F, 0x58);
-pub const LINE: Color32 = Color32::from_rgb(0x21, 0x26, 0x2D);
+const LINE: Color32 = Color32::from_rgb(0x21, 0x26, 0x2D);
 
 const LIGHT_BG: Color32 = Color32::from_rgb(0xF5, 0xF6, 0xF8);
 const LIGHT_PANEL: Color32 = Color32::from_rgb(0xFF, 0xFF, 0xFF);
@@ -61,11 +61,11 @@ pub fn tint(alpha: u8) -> Color32 {
     }
 }
 
-/// `choice` is the saved setting: "dark", "light" or "system".
 pub fn is_light() -> bool {
     LIGHT.load(Ordering::Relaxed)
 }
 
+/// `choice` is the saved setting: "dark", "light" or "system".
 pub fn wants_light(choice: &str, system: Option<egui::Theme>) -> bool {
     match choice {
         "light" => true,

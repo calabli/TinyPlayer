@@ -355,6 +355,10 @@ impl Playlist {
     /// New random order with the current item first, so the rest of the
     /// list plays exactly once before anything repeats.
     fn reshuffle(&mut self) {
+        if !self.shuffle {
+            self.order.clear();
+            return;
+        }
         let n = self.items.len();
         let mut rest: Vec<usize> = (0..n).filter(|&i| Some(i) != self.current).collect();
         for i in (1..rest.len()).rev() {

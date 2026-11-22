@@ -96,6 +96,7 @@ pub struct App {
     /// (saved position, time shown) while asking whether to resume.
     resume_prompt: Option<(f64, f64)>,
     settings_open: bool,
+    settings_stats: Option<(i64, i64)>,
     panel: PanelState,
     recent: Vec<Entry>,
     recent_dirty: bool,
@@ -158,10 +159,10 @@ pub struct App {
     last_refresh_check: f64,
     always_on_top: bool,
     pip: bool,
-    /// Where the window goes back to when leaving picture-in-picture.
     output_monitor: OutputMonitor,
     device_volumes: DeviceVolumes,
     output_device: Option<OutputDevice>,
+    /// Where the window goes back to when leaving picture-in-picture.
     pip_restore: Option<crate::WindowPlace>,
     /// Longest side of the floating window, kept when it's reopened.
     pip_side: f32,
@@ -236,6 +237,7 @@ impl App {
             tracker,
             resume_prompt: None,
             settings_open: false,
+            settings_stats: None,
             panel: PanelState::default(),
             recent: Vec::new(),
             recent_dirty: true,
@@ -577,6 +579,7 @@ impl App {
         } else {
             ctx.send_viewport_cmd(ViewportCommand::MinInnerSize(NORMAL_MIN_SIZE.into()));
             if let Some(p) = self.pip_restore.take() {
+                self.window_place = Some(p);
                 ctx.send_viewport_cmd(ViewportCommand::InnerSize(vec2(p.w, p.h)));
                 ctx.send_viewport_cmd(ViewportCommand::OuterPosition(pos2(p.x, p.y)));
                 ctx.send_viewport_cmd(ViewportCommand::Maximized(p.maximized));
@@ -642,7 +645,7 @@ impl App {
                 Some(device) => {
                     let target = self.device_volumes.switch_to(device, volume, now);
                     if let (Some(v), Some(player)) = (target, &self.player) {
-                        player.set_volume(v);
+                        player.restore_volume(v);
                     }
                     if !first {
                         osd = Some(format!("{}  VOLUME  {}%", device.name, target.unwrap_or(volume).round()));
@@ -1147,7 +1150,7 @@ impl App {
         } else {
             self.pending_open.extend(dropped);
         }
-        if ctx.egui_wants_keyboard_input() {
+        if ctx.egui_wants_keyboard_input() || self.update_dialog || self.lock_dialog.is_some() {
             return;
         }
         if cmd && keys.contains(&Key::N) {
@@ -1222,7 +1225,7 @@ impl App {
                     self.resume_prompt = None;
                     osd = Some("SEEK  00:00".into());
                 }
-                Key::Space | Key::K => {
+                Key::Space | Key::K if !cmd && !s.idle => {
                     player.toggle_pause();
                     osd = Some(if s.paused || s.eof { "PLAY".into() } else { "PAUSE".into() });
                 }
@@ -1239,24 +1242,24 @@ impl App {
                         fmt_time(target)
                     ));
                 }
-                Key::ArrowUp | Key::ArrowDown => {
+                Key::ArrowUp | Key::ArrowDown if !cmd && !s.idle => {
                     let v = s.volume + if key == Key::ArrowUp { 5.0 } else { -5.0 };
                     player.set_volume(v);
                     osd = Some(format!("VOLUME  {}%", v.clamp(0.0, 150.0).round()));
                 }
-                Key::M => {
+                Key::M if !cmd && !s.idle => {
                     player.toggle_mute();
                     osd = Some(if s.muted { "UNMUTE".into() } else { "MUTE".into() });
                 }
-                Key::F | Key::Enter => {
+                Key::F | Key::Enter if !cmd && !self.pip && !s.idle => {
                     ctx.send_viewport_cmd(ViewportCommand::Fullscreen(!fullscreen));
+                }
+                Key::Escape if fullscreen && !self.quick.open => {
+                    ctx.send_viewport_cmd(ViewportCommand::Fullscreen(false));
                 }
                 Key::Escape if self.pip => want_pip = true,
                 Key::Escape if self.frameless && !self.quick.open => want_frameless = Some(false),
-                Key::Escape if fullscreen => {
-                    ctx.send_viewport_cmd(ViewportCommand::Fullscreen(false));
-                }
-                Key::OpenBracket | Key::CloseBracket | Key::OpenCurlyBracket | Key::CloseCurlyBracket => {
+                Key::OpenBracket | Key::CloseBracket | Key::OpenCurlyBracket | Key::CloseCurlyBracket if !cmd && !s.idle => {
                     let dir = if matches!(key, Key::OpenBracket | Key::OpenCurlyBracket) { -1 } else { 1 };
                     let sp = if shift { player.nudge_speed(dir) } else { player.step_speed(dir) };
                     osd = Some(format!("SPEED  {}", fmt_speed(sp)));
@@ -1278,18 +1281,18 @@ impl App {
                 Key::H if !cmd && !s.idle && !self.pip => {
                     want_frameless = Some(!self.tracker.settings.frameless);
                 }
-                Key::Backspace => {
+                Key::Backspace if !cmd && !s.idle => {
                     player.set_speed(1.0);
                     osd = Some("SPEED  1.0×".into());
                 }
-                Key::C => {
+                Key::C if !cmd && !s.idle => {
                     player.cycle_subtitles();
                     osd = Some("SUBTITLE  NEXT".into());
                 }
-                Key::PageDown | Key::N => want_next = true,
-                Key::PageUp | Key::P => want_prev = true,
-                Key::L if !self.pip => want_side = true,
-                Key::S if cmd => {
+                Key::PageDown | Key::N if !cmd && !s.idle => want_next = true,
+                Key::PageUp | Key::P if !cmd && !s.idle => want_prev = true,
+                Key::L if !cmd && !self.pip && !s.idle => want_side = true,
+                Key::S if cmd && !s.idle => {
                     player.screenshot();
                     osd = Some("SCREENSHOT  → DESKTOP".into());
                 }
@@ -1461,7 +1464,7 @@ impl App {
 
     fn play_index(&mut self, i: usize) {
         if let (Some(player), Some(item)) = (&self.player, self.playlist.items.get(i)) {
-            player.open(&item.path, false);
+            player.open(&item.path);
             self.playlist.select(i);
             self.scroll_to_current = true;
         }
@@ -1531,6 +1534,7 @@ impl eframe::App for App {
         if self.resume_prompt.is_some_and(|(_, at)| now - at > RESUME_PROMPT_SECS) {
             self.resume_prompt = None;
         }
+        let was_pip = self.pip;
         self.handle_input(&ctx);
         self.sync_window_frame(&ctx);
         self.library.hide_history = self.tracker.incognito;
@@ -1539,10 +1543,11 @@ impl eframe::App for App {
         self.flush_open(&ctx);
 
         let full = ctx.content_rect();
-        // Remember where the window is (skip fullscreen/minimized states).
+        // Remember where the window is (skip fullscreen/minimized states, and
+        // skip the frame PiP exits while the viewport still reports the small rect).
         ctx.input(|i| {
             let vp = i.viewport();
-            if !self.pip && vp.fullscreen != Some(true) && vp.minimized != Some(true)
+            if !self.pip && !was_pip && vp.fullscreen != Some(true) && vp.minimized != Some(true)
                 && let (Some(outer), Some(inner)) = (vp.outer_rect, vp.inner_rect) {
                     let maximized = vp.maximized == Some(true);
                     let prev = self.window_place;
@@ -1587,7 +1592,8 @@ impl eframe::App for App {
         let s = player.state.clone();
         // A file takes a moment to load, and the player reads as idle until then.
         let opening = ctx.input(|i| i.time) < self.opening_until;
-        background::set_playing(!s.idle || opening || !self.pending_open.is_empty());
+        let multi_active = self.multi.on && self.multi.video_count(player) > 0;
+        background::set_playing(!s.idle || multi_active || opening || !self.pending_open.is_empty());
 
         // The window title stays "TinyPlayer"; the file name is shown in the
         // in-app top bar instead. Still track the media title to detect a
@@ -1631,7 +1637,7 @@ impl eframe::App for App {
         }
         // Multi-view lays several videos out; the main one goes in its slot,
         // which shows "add video" while the main player has nothing open.
-        let multi = self.multi.on && !self.pip;
+        let multi = self.multi.on;
         let video_rect = if multi {
             self.multi.main_rect(stage, frameless).unwrap_or(Rect::NOTHING)
         } else {
@@ -1639,7 +1645,7 @@ impl eframe::App for App {
         };
         let mut main_texture = None;
         if !s.idle && video_rect.width() >= 1.0 && video_rect.height() >= 1.0
-            && let (Some(video), Some(render), Some(gl)) = (&mut self.video, &self.render, frame.gl()) {
+            && let (Some(video), Some(render), Some(gl)) = (&mut self.video, &self.render, frame.gl().cloned()) {
                 let ppp = ctx.pixels_per_point();
                 let px = [(video_rect.width() * ppp).round() as i32, (video_rect.height() * ppp).round() as i32];
                 let aspect = px[0].max(1) as f64 / px[1].max(1) as f64;
@@ -1647,7 +1653,7 @@ impl eframe::App for App {
                     view: self.vr_look.projection(f, aspect),
                     size: self.vr_look.render_size(f, [s.width as i32, s.height as i32], px[1]),
                 });
-                match video.update(gl, render, px, pano) {
+                match video.update(&gl, frame, render, px, pano) {
                     Ok(texture) if multi => main_texture = Some(texture),
                     Ok(texture) => {
                         painter.image(
@@ -1802,18 +1808,18 @@ impl eframe::App for App {
                 let plays = if private { 0 } else { self.tracker.current_play_count() };
                 // The multi-view switch sits at the right end; the tags move left.
                 let sw_right = pos2(stage.right() - right_gap, stage.top() + 22.0);
-                let (sw_left, flip) = multiview::switch(ui, &painter, sw_right, "multi_toggle", false, tr("Multi-view"), alpha);
+                let (sw_left, flip) = multiview::switch(ui, sw_right, "multi_toggle", false, tr("Multi-view"), alpha, TEXT);
                 if flip {
                     self.multi.enable();
                     self.show_osd(&ctx, tr("Multi-view on: click an empty slot to add a video"));
                 }
                 let right_gap = stage.right() - sw_left + 18.0;
-                draw_top_bar(&painter, stage, &s, plays, private, alpha, right_gap);
+                let title_right = draw_top_bar(&painter, stage, &s, plays, private, alpha, right_gap, self.current_fav.is_some());
                 if frameless {
                     window_controls_alpha = alpha;
                 }
                 if let Some(fav) = self.current_fav
-                    && fav_button(ui, stage, &s.title, fav, alpha) {
+                    && fav_button(ui, stage, title_right, fav, alpha) {
                         let ctx = ui.ctx().clone();
                         self.toggle_favorite(&ctx);
                     }
@@ -1908,10 +1914,10 @@ impl eframe::App for App {
         // On the video, left of the playlist: over the playlist they'd sit on
         // its loop and shuffle buttons.
         if window_controls_alpha > 0.0 {
-            draw_frameless_window_controls(ui, stage, window_controls_alpha);
+            draw_frameless_window_controls(ui, stage, window_controls_alpha, TEXT);
         }
 
-        if hovering_files {
+        if hovering_files && !multi {
             let r = full.shrink(12.0);
             painter.rect_filled(full, 0.0, theme::scrim(150));
             icons::corner_brackets(&painter, r, 24.0, Stroke::new(1.5, ACCENT));
@@ -1919,7 +1925,7 @@ impl eframe::App for App {
         }
 
         if self.settings_open {
-            let stats = self.tracker.stats();
+            let stats = *self.settings_stats.get_or_insert_with(|| self.tracker.stats());
             let before = self.tracker.settings.clone();
             let update_status = self.updater.status_text();
             let devices = self.device_volumes.rows();
@@ -1968,6 +1974,7 @@ impl eframe::App for App {
                 if let Some(st) = &self.tracker.store {
                     st.clear_history();
                 }
+                self.settings_stats = None;
                 self.recent_dirty = true;
                 self.show_osd(&ctx, "HISTORY  CLEARED");
             }
@@ -1975,11 +1982,15 @@ impl eframe::App for App {
                 if let Some(st) = &self.tracker.store {
                     st.clear_play_stats();
                 }
+                self.settings_stats = None;
                 self.show_osd(&ctx, "PLAY STATS  CLEARED");
             }
             if act.close {
                 self.settings_open = false;
+                self.settings_stats = None;
             }
+        } else {
+            self.settings_stats = None;
         }
 
         self.lock_dialogs(&ctx, ui.scope_id().with("lock_dialog"));
@@ -1994,6 +2005,7 @@ impl eframe::App for App {
     /// Runs on every wakeup, even while the window is minimized, so progress
     /// and play counts stay accurate during background playback.
     fn logic(&mut self, ctx: &egui::Context, _frame: &mut eframe::Frame) {
+        self.library.poll_background(ctx);
         self.multi.pump();
         let Some(player) = &mut self.player else { return };
         let now = ctx.input(|i| i.time);
@@ -2087,7 +2099,12 @@ impl eframe::App for App {
         }
         self.tracker.tick(&player.state);
         let st = &player.state;
-        self.keep_awake.set(hold_for(!st.idle && !st.paused && !st.eof, st.width > 0));
+        let (awake_playing, awake_video) = if self.multi.on {
+            self.multi.playback_state(player)
+        } else {
+            (!st.idle && !st.paused && !st.eof, st.width > 0)
+        };
+        self.keep_awake.set(hold_for(awake_playing, awake_video));
         if let Some(keys) = &mut self.media_keys {
             keys.publish(st, self.tracker.incognito);
         }
@@ -2256,7 +2273,7 @@ impl App {
                         None => time,
                     };
                     let g = painter.layout_no_wrap(label, FontId::monospace(11.0), TEXT);
-                    let x = at(f).clamp(track.left() + g.size().x / 2.0 + 6.0, track.right() - g.size().x / 2.0 - 6.0);
+                    let x = clamp_inside(at(f), track.left() + g.size().x / 2.0 + 6.0, track.right() - g.size().x / 2.0 - 6.0);
                     let r = Rect::from_center_size(pos2(x, line_y - 20.0), g.size() + vec2(12.0, 6.0));
                     painter.rect_filled(r, 4.0, theme::scrim(225));
                     painter.galley(r.min + vec2(6.0, 3.0), g, TEXT);
@@ -2264,7 +2281,7 @@ impl App {
                     if let Some(tex) = self.hover_thumbs.lookup(&s.path, f * s.duration, s.duration) {
                         let size = tex.size_vec2() * (HOVER_THUMB_W / tex.size_vec2().x);
                         let half = size.x / 2.0 + 6.0;
-                        let tx = at(f).clamp(track.left() + half, track.right() - half);
+                        let tx = clamp_inside(at(f), track.left() + half, track.right() - half);
                         let thumb = Rect::from_center_size(pos2(tx, r.top() - 6.0 - size.y / 2.0), size);
                         painter.image(tex.id(), thumb, Rect::from_min_max(pos2(0.0, 0.0), pos2(1.0, 1.0)), Color32::WHITE);
                         painter.rect_stroke(thumb, 3.0, Stroke::new(1.0, Color32::from_white_alpha(70)), StrokeKind::Outside);
@@ -2489,10 +2506,6 @@ impl App {
     fn draw_resume_prompt(&mut self, ui: &mut egui::Ui, full: Rect, now: f64) {
         let Some((pos, shown_at)) = self.resume_prompt else { return };
         let age = now - shown_at;
-        if age > RESUME_PROMPT_SECS {
-            self.resume_prompt = None;
-            return;
-        }
         ui.ctx().request_repaint_after_secs(0.25);
         let p = ui.painter().clone();
         let a = ((RESUME_PROMPT_SECS - age) / 0.3).min(1.0) as f32;
@@ -2540,7 +2553,11 @@ impl App {
     }
 }
 
-/// White dot with an accent ring, as on the seek and volume sliders.
+/// Clamps `x` into `[lo, hi]`, or centers it when the item is wider than the track.
+fn clamp_inside(x: f32, lo: f32, hi: f32) -> f32 {
+    if lo <= hi { x.clamp(lo, hi) } else { (lo + hi) * 0.5 }
+}
+
 /// Picture-in-picture window size: fits the video, longest side `side`.
 fn pip_size(width: i64, height: i64, side: f32) -> egui::Vec2 {
     let aspect = if width > 0 && height > 0 { width as f32 / height as f32 } else { 16.0 / 9.0 };
@@ -2558,17 +2575,15 @@ fn pip_fit(size: egui::Vec2, monitor: egui::Vec2) -> egui::Vec2 {
     (size * (room.x / size.x).min(room.y / size.y).min(1.0)).round()
 }
 
+/// White dot with an accent ring, as on the seek and volume sliders.
 fn knob(p: &egui::Painter, c: egui::Pos2, r: f32, alpha: f32) {
     p.circle_filled(c, r, Color32::WHITE.gamma_multiply(alpha));
     p.circle_stroke(c, r, Stroke::new(2.0, ACCENT.gamma_multiply(alpha)));
 }
 
 /// Star right after the title (only for files in the library).
-fn fav_button(ui: &mut egui::Ui, stage: Rect, title: &str, fav: bool, alpha: f32) -> bool {
-    let w = ui.painter().layout_no_wrap(title.to_string(), FontId::proportional(13.0), TEXT).size().x;
-    let max_x = stage.right() - 260.0;
-    let x = (stage.left() + 92.0 + w + 18.0).min(max_x);
-    let r = Rect::from_center_size(pos2(x, stage.top() + 22.0), vec2(26.0, 26.0));
+fn fav_button(ui: &mut egui::Ui, stage: Rect, title_right: f32, fav: bool, alpha: f32) -> bool {
+    let r = Rect::from_center_size(pos2(title_right + 16.0, stage.top() + 22.0), vec2(26.0, 26.0));
     let resp = ui.interact(r, ui.scope_id().with("player_fav"), Sense::click());
     let c = if fav || resp.hovered() { ACCENT } else { TEXT_2 };
     icons::draw(ui.painter(), if fav { Icon::StarFilled } else { Icon::Star }, r.center(), 15.0, c.gamma_multiply(alpha));
@@ -2584,7 +2599,7 @@ fn playback_edges(stage: Rect, pointer: Option<egui::Pos2>, resume_prompt: bool)
     (p.y < stage.top() + 50.0, p.y > stage.bottom() - bottom_height)
 }
 
-pub(crate) fn draw_frameless_window_controls(ui: &mut egui::Ui, stage: Rect, alpha: f32) {
+pub(crate) fn draw_frameless_window_controls(ui: &mut egui::Ui, stage: Rect, alpha: f32, base_color: Color32) {
     let y = stage.top() + 20.0;
     let button = |ui: &mut egui::Ui, offset: f32, id: &str, tip: &str| {
         let r = Rect::from_center_size(pos2(stage.right() - offset, y), vec2(28.0, 28.0));
@@ -2592,7 +2607,7 @@ pub(crate) fn draw_frameless_window_controls(ui: &mut egui::Ui, stage: Rect, alp
         if resp.hovered() {
             ui.ctx().set_cursor_icon(CursorIcon::PointingHand);
         }
-        let color = if resp.hovered() { ACCENT } else { TEXT };
+        let color = if resp.hovered() { ACCENT } else { base_color };
         (resp, color.gamma_multiply(alpha))
     };
     let (minimize, color) = button(ui, 54.0, "minimize_window", tr("Minimize window"));
@@ -2628,12 +2643,12 @@ fn back_button(ui: &mut egui::Ui, stage: Rect, alpha: f32) -> bool {
     resp.clicked()
 }
 
-fn draw_top_bar(p: &egui::Painter, full: Rect, s: &crate::player::State, plays: i64, private: bool, alpha: f32, right_gap: f32) {
+#[allow(clippy::too_many_arguments)]
+fn draw_top_bar(p: &egui::Painter, full: Rect, s: &crate::player::State, plays: i64, private: bool, alpha: f32, right_gap: f32, has_fav: bool) -> f32 {
     let a = |c: Color32| c.gamma_multiply(alpha);
     let band = Rect::from_min_max(full.min, pos2(full.right(), full.top() + 44.0));
     p.rect_filled(band, 0.0, theme::scrim((110.0 * alpha) as u8));
     let y = full.top() + 22.0;
-    p.text(pos2(full.left() + 92.0, y), Align2::LEFT_CENTER, &s.title, FontId::proportional(13.0), a(TEXT));
 
     let mut tags: Vec<(String, Color32)> = Vec::new();
     if private {
@@ -2662,6 +2677,13 @@ fn draw_top_bar(p: &egui::Painter, full: Rect, s: &crate::player::State, plays: 
             p.line_segment([pos2(x + 4.5, y - 5.0), pos2(x + 4.5, y + 5.0)], Stroke::new(1.0, a(Color32::from_rgb(0x30, 0x36, 0x3D))));
         }
     }
+
+    let title_left = full.left() + 92.0;
+    let reserve = if has_fav { 38.0 } else { 12.0 };
+    let max_title_w = (x - reserve - title_left).max(20.0);
+    let title = elide(p, &s.title, FontId::proportional(13.0), max_title_w);
+    let r = p.text(pos2(title_left, y), Align2::LEFT_CENTER, title, FontId::proportional(13.0), a(TEXT));
+    r.right()
 }
 
 fn draw_osd(p: &egui::Painter, full: Rect, text: &str, alpha: f32) {
@@ -3153,5 +3175,14 @@ mod tests {
     fn pip_size_has_a_default_and_a_floor() {
         assert_eq!(pip_size(0, 0, PIP_MAX_SIDE), vec2(400.0, 225.0));
         assert_eq!(pip_size(4000, 100, PIP_MAX_SIDE), vec2(400.0, 120.0));
+    }
+
+    #[test]
+    fn clamp_inside_centers_when_item_is_wider_than_track() {
+        assert_eq!(clamp_inside(50.0, 20.0, 80.0), 50.0);
+        assert_eq!(clamp_inside(5.0, 20.0, 80.0), 20.0);
+        assert_eq!(clamp_inside(120.0, 20.0, 80.0), 80.0);
+        // When lo > hi (e.g. a long chapter title over a narrow bar), it must not panic.
+        assert_eq!(clamp_inside(10.0, 90.0, 10.0), 50.0);
     }
 }

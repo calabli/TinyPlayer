@@ -53,7 +53,13 @@ impl Layer {
     fn new(gl: &glow::Context, frame: &mut eframe::Frame) -> Result<Self, String> {
         unsafe {
             let texture = gl.create_texture()?;
-            let fbo = gl.create_framebuffer()?;
+            let fbo = match gl.create_framebuffer() {
+                Ok(f) => f,
+                Err(e) => {
+                    gl.delete_texture(texture);
+                    return Err(e);
+                }
+            };
             gl.bind_texture(glow::TEXTURE_2D, Some(texture));
             for (p, v) in [
                 (glow::TEXTURE_MIN_FILTER, glow::LINEAR),
@@ -112,6 +118,11 @@ struct Projector {
     program: glow::Program,
     // Core OpenGL can't draw without one, even with no vertex data.
     vertices: glow::VertexArray,
+    u_frame: Option<glow::UniformLocation>,
+    u_rotation: Option<glow::UniformLocation>,
+    u_tan_half: Option<glow::UniformLocation>,
+    u_eye: Option<glow::UniformLocation>,
+    u_span: Option<glow::UniformLocation>,
 }
 
 impl Projector {
@@ -119,13 +130,27 @@ impl Projector {
         unsafe {
             let program = gl.create_program()?;
             let mut shaders = Vec::new();
+            let cleanup = |shaders: &[glow::Shader]| {
+                for &s in shaders {
+                    gl.detach_shader(program, s);
+                    gl.delete_shader(s);
+                }
+                gl.delete_program(program);
+            };
             for (kind, source) in [(glow::VERTEX_SHADER, VERTEX), (glow::FRAGMENT_SHADER, FRAGMENT)] {
-                let shader = gl.create_shader(kind)?;
+                let shader = match gl.create_shader(kind) {
+                    Ok(s) => s,
+                    Err(e) => {
+                        cleanup(&shaders);
+                        return Err(e);
+                    }
+                };
                 gl.shader_source(shader, source);
                 gl.compile_shader(shader);
                 if !gl.get_shader_compile_status(shader) {
                     let log = gl.get_shader_info_log(shader);
                     gl.delete_shader(shader);
+                    cleanup(&shaders);
                     return Err(log);
                 }
                 gl.attach_shader(program, shader);
@@ -142,8 +167,23 @@ impl Projector {
                 gl.delete_program(program);
                 return Err(log);
             }
-            let vertices = gl.create_vertex_array()?;
-            Ok(Self { program, vertices })
+            let vertices = match gl.create_vertex_array() {
+                Ok(v) => v,
+                Err(e) => {
+                    gl.delete_program(program);
+                    return Err(e);
+                }
+            };
+            let at = |name: &str| gl.get_uniform_location(program, name);
+            Ok(Self {
+                program,
+                vertices,
+                u_frame: at("frame"),
+                u_rotation: at("rotation"),
+                u_tan_half: at("tan_half"),
+                u_eye: at("eye"),
+                u_span: at("span"),
+            })
         }
     }
 
@@ -162,12 +202,11 @@ impl Projector {
             gl.active_texture(glow::TEXTURE0);
             gl.bind_texture(glow::TEXTURE_2D, Some(source));
 
-            let at = |name: &str| gl.get_uniform_location(self.program, name);
-            gl.uniform_1_i32(at("frame").as_ref(), 0);
-            gl.uniform_matrix_3_f32_slice(at("rotation").as_ref(), false, &view.rotation);
-            gl.uniform_2_f32_slice(at("tan_half").as_ref(), &view.tan_half);
-            gl.uniform_4_f32_slice(at("eye").as_ref(), &view.eye);
-            gl.uniform_1_f32(at("span").as_ref(), view.span);
+            gl.uniform_1_i32(self.u_frame.as_ref(), 0);
+            gl.uniform_matrix_3_f32_slice(self.u_rotation.as_ref(), false, &view.rotation);
+            gl.uniform_2_f32_slice(self.u_tan_half.as_ref(), &view.tan_half);
+            gl.uniform_4_f32_slice(self.u_eye.as_ref(), &view.eye);
+            gl.uniform_1_f32(self.u_span.as_ref(), view.span);
 
             gl.draw_arrays(glow::TRIANGLES, 0, 3);
 
@@ -195,17 +234,20 @@ pub struct Panorama {
 
 pub struct VideoTarget {
     frame: Layer,
-    view: Layer,
+    /// Built only when panoramic projection is used (ordinary and multi-view
+    /// playback never need a second FBO or texture).
+    view: Option<Layer>,
     /// Built when first needed, so a driver that can't compile it only loses
     /// panoramic video.
     projector: Option<Projector>,
+    max_tex: Option<i32>,
     drawn: Option<Projection>,
 }
 
 impl VideoTarget {
     pub fn new(gl: &glow::Context, frame: &mut eframe::Frame) -> Result<Self, String> {
-        let (video, view) = (Layer::new(gl, frame)?, Layer::new(gl, frame)?);
-        Ok(Self { frame: video, view, projector: None, drawn: None })
+        let video = Layer::new(gl, frame)?;
+        Ok(Self { frame: video, view: None, projector: None, max_tex: None, drawn: None })
     }
 
     /// Renders a new frame if mpv has one, or if the target was resized, and
@@ -216,6 +258,7 @@ impl VideoTarget {
     pub fn update(
         &mut self,
         gl: &glow::Context,
+        frame: &mut eframe::Frame,
         render: &RenderContext,
         window: [i32; 2],
         panorama: Option<Panorama>,
@@ -223,7 +266,7 @@ impl VideoTarget {
         let window = window.map(|v| v.max(1));
         let size = match &panorama {
             Some(p) => {
-                let limit = unsafe { gl.get_parameter_i32(glow::MAX_TEXTURE_SIZE) }.max(1);
+                let limit = *self.max_tex.get_or_insert_with(|| unsafe { gl.get_parameter_i32(glow::MAX_TEXTURE_SIZE) }.max(1));
                 p.size.map(|v| v.clamp(1, limit))
             }
             None => window,
@@ -243,17 +286,21 @@ impl VideoTarget {
             self.drawn = None;
             return Ok(self.frame.id);
         };
-        let view_resized = self.view.resize(gl, window);
+        if self.view.is_none() {
+            self.view = Some(Layer::new(gl, frame)?);
+        }
+        let view = self.view.as_mut().unwrap();
+        let view_resized = view.resize(gl, window);
         if fresh || view_resized || self.drawn != Some(panorama.view) {
             if self.projector.is_none() {
                 self.projector = Some(Projector::new(gl)?);
             }
             if let Some(projector) = &self.projector {
-                projector.draw(gl, self.frame.texture, &self.view, &panorama.view);
+                projector.draw(gl, self.frame.texture, view, &panorama.view);
             }
             self.drawn = Some(panorama.view);
         }
-        Ok(self.view.id)
+        Ok(view.id)
     }
 
     /// Shrinks the target to nearly nothing so it can wait for reuse. Its
@@ -261,13 +308,17 @@ impl VideoTarget {
     /// kept and handed to the next video rather than thrown away.
     pub fn release(&mut self, gl: &glow::Context) {
         self.frame.resize(gl, [1, 1]);
-        self.view.resize(gl, [1, 1]);
+        if let Some(view) = &mut self.view {
+            view.resize(gl, [1, 1]);
+        }
         self.drawn = None;
     }
 
     pub fn destroy(&self, gl: &glow::Context) {
         self.frame.destroy(gl);
-        self.view.destroy(gl);
+        if let Some(view) = &self.view {
+            view.destroy(gl);
+        }
         if let Some(projector) = &self.projector {
             projector.destroy(gl);
         }

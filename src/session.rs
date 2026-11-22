@@ -139,7 +139,7 @@ impl Tracker {
         cur.title.clone_from(&state.title);
         cur.position = state.position;
         cur.duration = state.duration;
-        let playing = !state.idle && !state.paused && !state.eof;
+        let playing = !state.paused && !state.eof;
         if playing {
             // Wall-clock time: 2× speed for 10 s still counts as 10 s watched.
             cur.watched += dt;
@@ -173,7 +173,8 @@ impl Tracker {
     /// Writes the current position (or forgets it, per the settings).
     fn save(&mut self) {
         let writes = self.writes_enabled();
-        let settings = self.settings.clone();
+        let (remember, min_duration, clear_finished) =
+            (self.settings.remember, self.settings.min_duration, self.settings.clear_finished);
         let Some(cur) = &mut self.current else { return };
         cur.since_save = 0.0;
         let (Some(store), true) = (&self.store, writes) else { return };
@@ -181,13 +182,13 @@ impl Tracker {
             store.update_watched(id, cur.watched);
         }
         let Some(key) = &cur.key else { return };
-        if !settings.remember || cur.watched < MIN_WATCH_BEFORE_SAVE {
+        if !remember || cur.watched < MIN_WATCH_BEFORE_SAVE {
             return;
         }
         let (pos, dur) = (cur.position, cur.duration);
-        let too_short = dur > 0.0 && dur < settings.min_duration as f64;
+        let too_short = dur > 0.0 && dur < min_duration as f64;
         let finished = cur.was_eof || (dur > 0.0 && pos / dur >= history::FINISHED_FRACTION);
-        if too_short || (finished && settings.clear_finished) || pos < MIN_RESUME_POS {
+        if too_short || (finished && clear_finished) || pos < MIN_RESUME_POS {
             store.forget(key);
         } else {
             store.save_position(key, &cur.path, &cur.title, pos, dur);

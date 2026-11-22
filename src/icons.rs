@@ -64,15 +64,17 @@ pub fn draw(p: &Painter, icon: Icon, c: Pos2, s: f32, color: Color32) {
             p.line_segment([pos2(x, c.y - h * 0.6), pos2(x, c.y + h * 0.6)], stroke);
         }
         Icon::Volume | Icon::Muted => {
-            let body = vec![
-                pos2(c.x - h * 0.75, c.y - h * 0.28),
+            // Split into two convex pieces (stem + cone) so the concave corners
+            // stay crisp instead of being bridged by convex_polygon.
+            let stem = eframe::egui::Rect::from_min_max(pos2(c.x - h * 0.75, c.y - h * 0.28), pos2(c.x - h * 0.4, c.y + h * 0.28));
+            p.rect_filled(stem, 0.0, color);
+            let cone = vec![
                 pos2(c.x - h * 0.4, c.y - h * 0.28),
                 pos2(c.x + h * 0.05, c.y - h * 0.68),
                 pos2(c.x + h * 0.05, c.y + h * 0.68),
                 pos2(c.x - h * 0.4, c.y + h * 0.28),
-                pos2(c.x - h * 0.75, c.y + h * 0.28),
             ];
-            p.add(Shape::convex_polygon(body, color, Stroke::NONE));
+            p.add(Shape::convex_polygon(cone, color, Stroke::NONE));
             if icon == Icon::Muted {
                 let (a, b) = (c.x + h * 0.32, c.x + h * 0.8);
                 p.line_segment([pos2(a, c.y - h * 0.24), pos2(b, c.y + h * 0.24)], stroke);

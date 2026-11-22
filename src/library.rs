@@ -70,7 +70,7 @@ pub struct Library {
     db: Connection,
 }
 
-pub const SCHEMA: &str = "
+const SCHEMA: &str = "
     CREATE TABLE IF NOT EXISTS folders (
         id       INTEGER PRIMARY KEY,
         path     TEXT NOT NULL UNIQUE,
@@ -174,7 +174,6 @@ impl Library {
 
     // ---- Folders ----
 
-    /// Adds a watched folder. Returns its id (existing id if already added).
     /// Groups writes until [`Self::commit`], which is far faster than
     /// committing each of thousands on its own.
     pub fn begin(&self) {
@@ -188,7 +187,7 @@ impl Library {
     /// Forgets the whole library, in one step. Play history stays.
     pub fn clear(&self) {
         self.begin();
-        for table in ["video_tags", "tags", "collection_items", "folder_set_items", "folder_sets", "dup_ignored", "videos", "folders"] {
+        for table in ["video_tags", "tags", "collection_items", "collections", "folder_set_items", "folder_sets", "dup_ignored", "videos", "folders"] {
             let _ = self.db.execute(&format!("DELETE FROM {table}"), []);
         }
         self.commit();
@@ -199,6 +198,7 @@ impl Library {
         let _ = self.db.execute("DELETE FROM videos WHERE folder_id NOT IN (SELECT id FROM folders)", []);
     }
 
+    /// Adds a watched folder. Returns its id (existing id if already added).
     pub fn add_folder(&self, path: &str) -> Option<i64> {
         let canon = std::fs::canonicalize(path).ok()?;
         let p = display_path(&canon);
@@ -276,11 +276,17 @@ impl Library {
         let size = std::fs::metadata(to).map_or(0, |m| m.len());
         let key = crate::history::file_key(&path).unwrap_or_else(|| format!("{path}|{size}"));
         let title = to.file_stem().map(|s| s.to_string_lossy().into_owned()).unwrap_or_else(|| path.clone());
-        let _ = self.db.execute_batch("BEGIN");
-        let _ = self.db.execute(
+        if self.db.execute_batch("BEGIN IMMEDIATE").is_err() {
+            return;
+        }
+        let updated = self.db.execute(
             "UPDATE videos SET path = ?2, key = ?3, title = ?4, folder_id = ?5 WHERE id = ?1",
             params![id, path, key, title, folder_id],
         );
+        if !matches!(updated, Ok(n) if n > 0) {
+            let _ = self.db.execute_batch("ROLLBACK");
+            return;
+        }
         for table in ["history", "play_events", "bookmarks"] {
             let verb = if table == "history" { "UPDATE OR REPLACE" } else { "UPDATE" };
             let sql = format!("{verb} {table} SET key = ?1, path = ?2 WHERE key = ?3");
@@ -315,23 +321,25 @@ impl Library {
         let p = display_path(path);
         // Reads the disk, so only for files that need it.
         let key = || crate::history::file_key(&p).unwrap_or_else(|| format!("{p}|{size}"));
-        let existing: Option<(i64, i64, i64)> = self
+        let existing: Option<(i64, i64, i64, i64, i64)> = self
             .db
-            .query_row("SELECT id, size, mtime FROM videos WHERE path = ?1", [&p], |r| {
-                Ok((r.get(0)?, r.get(1)?, r.get(2)?))
+            .query_row("SELECT id, size, mtime, missing, folder_id FROM videos WHERE path = ?1", [&p], |r| {
+                Ok((r.get(0)?, r.get(1)?, r.get(2)?, r.get(3)?, r.get(4)?))
             })
             .optional()
             .ok()
             .flatten();
         match existing {
-            Some((id, s, m)) if s == size as i64 && m == mtime => {
-                let _ = self.db.execute("UPDATE videos SET missing = 0, folder_id = ?2 WHERE id = ?1", params![id, folder_id]);
+            Some((id, s, m, missing, old_folder)) if s == size as i64 && m == mtime => {
+                if missing != 0 || old_folder != folder_id {
+                    let _ = self.db.execute("UPDATE videos SET missing = 0, folder_id = ?2 WHERE id = ?1", params![id, folder_id]);
+                }
                 false
             }
             Some((id, ..)) => {
                 let _ = self.db.execute(
-                    "UPDATE videos SET size = ?2, mtime = ?3, key = ?4, probed = 0, missing = 0 WHERE id = ?1",
-                    params![id, size as i64, mtime, key()],
+                    "UPDATE videos SET folder_id = ?2, size = ?3, mtime = ?4, key = ?5, probed = 0, missing = 0 WHERE id = ?1",
+                    params![id, folder_id, size as i64, mtime, key()],
                 );
                 true
             }
@@ -352,15 +360,19 @@ impl Library {
         let Ok(mut stmt) = self.db.prepare("SELECT id, path FROM videos WHERE folder_id = ?1 AND missing = 0") else {
             return;
         };
-        let rows: Vec<(i64, String)> = stmt
-            .query_map([folder_id], |r| Ok((r.get(0)?, r.get(1)?)))
-            .map(|it| it.flatten().collect())
+        let missing_ids: Vec<i64> = stmt
+            .query_map([folder_id], |r| Ok((r.get::<_, i64>(0)?, r.get::<_, String>(1)?)))
+            .map(|it| it.flatten().filter(|(_, path)| !seen.contains(path)).map(|(id, _)| id).collect())
             .unwrap_or_default();
-        for (id, path) in rows {
-            if !seen.contains(&path) {
-                let _ = self.db.execute("UPDATE videos SET missing = 1 WHERE id = ?1", [id]);
-            }
+        drop(stmt);
+        if missing_ids.is_empty() {
+            return;
         }
+        self.begin();
+        for id in missing_ids {
+            let _ = self.db.execute("UPDATE videos SET missing = 1 WHERE id = ?1", [id]);
+        }
+        self.commit();
     }
 
     /// Videos still waiting for duration/thumbnail, newest first.
@@ -545,6 +557,9 @@ impl Library {
 /// rest of the app (and mpv) uses.
 pub fn display_path(p: &Path) -> String {
     let s = p.to_string_lossy();
+    if let Some(rest) = s.strip_prefix(r"\\?\UNC\") {
+        return format!(r"\\{rest}");
+    }
     s.strip_prefix(r"\\?\").unwrap_or(&s).to_string()
 }
 
@@ -627,11 +642,15 @@ mod tests {
         let folder = lib.add_folder(dir.to_str().unwrap()).unwrap();
         lib.upsert_file(folder, &file, 1, 1);
         lib.add_tag(lib.videos()[0].id, "t");
+        lib.create_collection("Watch later");
         lib.create_folder_set("s", &[folder]);
         lib.clear();
         assert!(lib.videos().is_empty());
         assert!(lib.folders().is_empty());
         assert!(lib.folder_sets().is_empty());
+        let colls = lib.collections();
+        assert_eq!(colls.len(), 1);
+        assert_eq!(colls[0].name, "Favorites");
         assert!(file.exists());
 
         // A scan still running when the library was cleared.
@@ -642,6 +661,45 @@ mod tests {
         lib.remove_orphans();
         assert!(lib.pending_probe().is_empty());
         let _ = std::fs::remove_dir_all(&dir);
+    }
+
+    #[test]
+    fn move_rolls_back_history_when_target_path_clashes() {
+        let dir = std::env::temp_dir().join(format!("tinyplayer-lib-clash-{}", std::process::id()));
+        let _ = std::fs::remove_dir_all(&dir);
+        std::fs::create_dir_all(&dir).unwrap();
+        let db = dir.join("t.db");
+        let store = crate::history::Store::open(&db).unwrap();
+        let lib = Library::open(&db).unwrap();
+
+        let a = dir.join("a.mp4");
+        let b = dir.join("b.mp4");
+        std::fs::write(&a, b"12345").unwrap();
+        std::fs::write(&b, b"67890").unwrap();
+        let folder = lib.add_folder(dir.to_str().unwrap()).unwrap();
+        lib.upsert_file(folder, &a, 5, 1);
+        lib.upsert_file(folder, &b, 5, 1);
+        let videos = lib.videos();
+        let id_a = videos.iter().find(|v| v.title == "a").unwrap().id;
+        let old = crate::history::file_key(a.to_str().unwrap()).unwrap();
+        store.save_position(&old, a.to_str().unwrap(), "a", 20.0, 60.0);
+        store.add_bookmark(&old, a.to_str().unwrap(), 5.0, "m");
+        store.set_value(&format!("vr:{old}"), "180");
+
+        // Target path already belongs to another row: must roll back completely.
+        lib.record_move(id_a, &b, folder);
+
+        assert!(store.position(&old).is_some());
+        assert_eq!(store.bookmarks(&old).len(), 1);
+        assert_eq!(store.get_value(&format!("vr:{old}")).as_deref(), Some("180"));
+        let _ = std::fs::remove_dir_all(&dir);
+    }
+
+    #[test]
+    fn display_path_strips_windows_prefixes_and_keeps_unc() {
+        assert_eq!(display_path(Path::new(r"\\?\C:\Videos\a.mp4")), r"C:\Videos\a.mp4");
+        assert_eq!(display_path(Path::new(r"\\?\UNC\nas\media\a.mp4")), r"\\nas\media\a.mp4");
+        assert_eq!(display_path(Path::new("/tmp/a.mp4")), "/tmp/a.mp4");
     }
 
     #[test]

@@ -268,10 +268,14 @@ impl Manager {
         let now = ctx.input(|i| i.time);
         let mut changed = false;
         if let Some(rx) = &self.disks.looking {
-            if let Ok(offline) = rx.try_recv() {
-                self.disks.looking = None;
-                changed = offline != self.disks.offline;
-                self.disks.offline = offline;
+            match rx.try_recv() {
+                Ok(offline) => {
+                    self.disks.looking = None;
+                    changed = offline != self.disks.offline;
+                    self.disks.offline = offline;
+                }
+                Err(mpsc::TryRecvError::Disconnected) => self.disks.looking = None,
+                Err(mpsc::TryRecvError::Empty) => {}
             }
         } else if now - self.disks.checked_at >= DISK_CHECK_SECS {
             self.disks.checked_at = now;
@@ -294,17 +298,17 @@ impl Manager {
         let Some(mover) = &self.mover else { return false };
         let mut changed = false;
         let mut finished = false;
-        while let Ok(msg) = mover.rx.try_recv() {
-            match msg {
-                Msg::Started { name } => {
+        loop {
+            match mover.rx.try_recv() {
+                Ok(Msg::Started { name }) => {
                     self.progress.name = name;
                     self.progress.done = 0;
                     self.progress.total = 0;
                     self.progress.verifying = false;
                 }
-                Msg::Copied { done, total } => (self.progress.done, self.progress.total) = (done, total),
-                Msg::Verifying => self.progress.verifying = true,
-                Msg::Moved { job, to } => {
+                Ok(Msg::Copied { done, total }) => (self.progress.done, self.progress.total) = (done, total),
+                Ok(Msg::Verifying) => self.progress.verifying = true,
+                Ok(Msg::Moved { job, to }) => {
                     if let Some(lib) = lib {
                         lib.record_move(job.id, &to, job.folder_id);
                     }
@@ -314,7 +318,7 @@ impl Manager {
                     self.progress.moved += 1;
                     changed = true;
                 }
-                Msg::FolderMoved { job, to } => {
+                Ok(Msg::FolderMoved { job, to }) => {
                     let mut origin = job.folder_id;
                     for v in videos {
                         if let Ok(rest) = Path::new(&v.path).strip_prefix(&job.from) {
@@ -330,8 +334,12 @@ impl Manager {
                     self.progress.moved += 1;
                     changed = true;
                 }
-                Msg::Failed => self.progress.failed += 1,
-                Msg::Finished => finished = true,
+                Ok(Msg::Failed) => self.progress.failed += 1,
+                Ok(Msg::Finished) | Err(mpsc::TryRecvError::Disconnected) => {
+                    finished = true;
+                    break;
+                }
+                Err(mpsc::TryRecvError::Empty) => break,
             }
         }
         if finished {
@@ -529,7 +537,8 @@ impl Manager {
             let mut videos: Vec<&&Video> = scoped
                 .iter()
                 .filter(|v| {
-                    let text = format!("{} {}", v.title, v.path).to_lowercase();
+                    let tags = v.tags.join(" ");
+                    let text = format!("{} {} {tags}", v.title, v.path).to_lowercase();
                     words.iter().all(|w| text.contains(w.as_str()))
                 })
                 .collect();
@@ -1121,8 +1130,8 @@ impl Manager {
 
             let on = self.marked.contains(&v.id);
             let label = if on { tr("Move to Trash") } else { tr("Keep") };
-            let mut x = r.right() - 8.0;
-            if toggle_button(ui, &p, &mut x, r.center().y, ("dup_mark", v.id), label, on) {
+            let x = r.right() - 8.0;
+            if toggle_button(ui, &p, x, r.center().y, ("dup_mark", v.id), label, on) {
                 let kept = videos.iter().filter(|o| !self.marked.contains(&o.id)).count();
                 if on {
                     self.marked.remove(&v.id);
@@ -1277,16 +1286,22 @@ impl Manager {
                                     *error = Some("A folder can't move into itself");
                                 }
                                 Some(dir) => {
-                                    let mut jobs: Vec<Task> = folders
+                                    // Drop subdirectories already inside another selected folder,
+                                    // so moving both can't tear the tree apart.
+                                    let top_folders: Vec<&PathBuf> = folders
+                                        .iter()
+                                        .filter(|f| !folders.iter().any(|other| other.as_path() != f.as_path() && f.starts_with(other)))
+                                        .collect();
+                                    let mut jobs: Vec<Task> = top_folders
                                         .iter()
                                         .filter(|f| f.parent() != Some(dir.path.as_path()))
-                                        .map(|f| Task::Folder(FolderJob { from: f.clone(), to_dir: dir.path.clone(), folder_id: dir.root }))
+                                        .map(|f| Task::Folder(FolderJob { from: (*f).clone(), to_dir: dir.path.clone(), folder_id: dir.root }))
                                         .collect();
                                     jobs.extend(
                                         chosen(ids)
                                             .iter()
                                             .filter(|v| Path::new(&v.path).parent() != Some(dir.path.as_path()))
-                                            .filter(|v| !folders.iter().any(|f| Path::new(&v.path).starts_with(f)))
+                                            .filter(|v| !top_folders.iter().any(|f| Path::new(&v.path).starts_with(f)))
                                             .map(|v| Task::File(Job { id: v.id, from: PathBuf::from(&v.path), to_dir: dir.path.clone(), folder_id: dir.root })),
                                     );
                                     if jobs.is_empty() {
@@ -1395,7 +1410,7 @@ impl Manager {
                     egui::ScrollArea::vertical().max_height(220.0).show(ui, |ui| {
                         for c in d.collections {
                             let mut on = picked.contains(&c.id);
-                            if ui.checkbox(&mut on, c.name.as_str()).changed() {
+                            if ui.checkbox(&mut on, tr(&c.name)).changed() {
                                 if on {
                                     picked.push(c.id);
                                 } else {
@@ -1630,8 +1645,8 @@ fn button(ui: &mut egui::Ui, p: &egui::Painter, x: &mut f32, y: f32, id: &str, t
     resp.clicked()
 }
 
-fn toggle_button(ui: &mut egui::Ui, p: &egui::Painter, x: &mut f32, y: f32, id: impl std::hash::Hash + std::fmt::Debug, text: &str, marked: bool) -> bool {
-    let r = Rect::from_min_size(pos2(*x - 88.0, y - 12.0), vec2(88.0, 24.0));
+fn toggle_button(ui: &mut egui::Ui, p: &egui::Painter, x: f32, y: f32, id: impl std::hash::Hash + std::fmt::Debug, text: &str, marked: bool) -> bool {
+    let r = Rect::from_min_size(pos2(x - 88.0, y - 12.0), vec2(88.0, 24.0));
     let resp = ui.interact(r, ui.scope_id().with(id), Sense::click());
     let color = if marked { MARKED } else { ACCENT };
     p.rect_stroke(r, 5.0, Stroke::new(0.5, color), StrokeKind::Inside);

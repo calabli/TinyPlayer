@@ -28,7 +28,7 @@ const GAP: f32 = 16.0;
 const META_H: f32 = 54.0;
 /// Thumbnails the loader may have waiting at once.
 const THUMB_QUEUE: usize = 12;
-const FINISHED: f32 = 0.95;
+const FINISHED: f32 = crate::history::FINISHED_FRACTION as f32;
 /// Thumbnail textures kept in memory (~0.5 MB each at 480 px). The least
 /// recently shown ones are dropped beyond this and reloaded on demand.
 const MAX_THUMBS: usize = 160;
@@ -382,10 +382,16 @@ impl LibraryView {
         out
     }
 
-    pub fn show(&mut self, ui: &mut egui::Ui, rect: Rect) -> Action {
-        if self.manager.poll(ui.ctx(), self.lib.as_ref(), &self.videos) {
+    /// Drains background move updates even when the library view isn't on
+    /// screen, so finished moves are recorded in the database right away.
+    pub fn poll_background(&mut self, ctx: &egui::Context) {
+        if self.manager.poll(ctx, self.lib.as_ref(), &self.videos) {
             self.dirty = true;
         }
+    }
+
+    pub fn show(&mut self, ui: &mut egui::Ui, rect: Rect) -> Action {
+        self.poll_background(ui.ctx());
         self.rescan |= self.manager.watch_disks(ui.ctx(), &self.folders);
         self.reload_if_dirty();
         self.receive_thumbs(ui.ctx());
@@ -412,7 +418,7 @@ impl LibraryView {
         let nav = Rect::from_min_max(pos2(rect.left(), top.bottom()), pos2(rect.left() + NAV_W, rect.bottom()));
         let status = self.status_bar(ui, &p, rect);
         let content = Rect::from_min_max(pos2(nav.right(), top.bottom()), pos2(rect.right(), rect.bottom() - status));
-        if self.mode == Mode::Manage && !self.folders.is_empty() {
+        if self.mode == Mode::Manage {
             if let Some(a) = self.manage(ui, &p, nav, content) {
                 action = a;
             }
@@ -420,9 +426,7 @@ impl LibraryView {
         }
         self.nav(ui, &p, nav);
 
-        let content_action = if self.folders.is_empty() {
-            empty_library(ui, &p, content)
-        } else if self.mode == Mode::Folders {
+        let content_action = if self.mode == Mode::Folders {
             self.folder_browser(ui, &p, content)
         } else {
             self.grid_view(ui, &p, content)
@@ -723,15 +727,17 @@ impl LibraryView {
             }
             let r = Rect::from_min_size(pos2(nav.left(), y), vec2(NAV_W, 28.0));
             let name = base_name(&f.path);
-            let on = match self.mode {
-                Mode::Grid | Mode::Manage => self.folder_sel == Some(f.id),
-                Mode::Folders => self.folder_loc.as_ref().is_some_and(|l| l.root == f.id),
+            let on = if self.mode == Mode::Folders {
+                self.folder_loc.as_ref().is_some_and(|l| l.root == f.id)
+            } else {
+                self.folder_sel == Some(f.id)
             };
             let hovered = ui.rect_contains_pointer(r);
             if nav_item(ui, &np, r, ("folder", f.id), &name, if hovered { None } else { Some(f.count as usize) }, on) {
-                match self.mode {
-                    Mode::Grid | Mode::Manage => self.folder_sel = if on { None } else { Some(f.id) },
-                    Mode::Folders => self.folder_loc = Some(FolderLoc { root: f.id, parts: Vec::new() }),
+                if self.mode == Mode::Folders {
+                    self.folder_loc = Some(FolderLoc { root: f.id, parts: Vec::new() });
+                } else {
+                    self.folder_sel = if on { None } else { Some(f.id) };
                 }
             }
             ui.interact(r, ui.scope_id().with(("folder", f.id)), Sense::click()).context_menu(|ui| {
@@ -1575,26 +1581,6 @@ fn resolution_label(w: i64, h: i64) -> String {
         x if x >= 720 => "720P".into(),
         x => format!("{x}P"),
     }
-}
-
-fn empty_library(ui: &mut egui::Ui, p: &egui::Painter, content: Rect) -> Action {
-    let c = content.center() - vec2(0.0, 30.0);
-    let frame = Rect::from_center_size(c - vec2(0.0, 30.0), vec2(240.0, 120.0));
-    icons::corner_brackets(p, frame, 12.0, Stroke::new(1.0, theme::accent_alpha(200)));
-    icons::draw(p, Icon::Folder, frame.center() - vec2(0.0, 14.0), 26.0, ACCENT);
-    p.text(frame.center() + vec2(0.0, 24.0), Align2::CENTER_CENTER, tr("Build your library"), FontId::proportional(14.0), theme::text());
-    p.text(pos2(c.x, frame.bottom() + 22.0), Align2::CENTER_CENTER, tr("Add folders of videos for automatic thumbnails, tags and search"), FontId::proportional(12.0), theme::text_2());
-    let mut action = Action::None;
-    let y = frame.bottom() + 60.0;
-    if text_btn(ui, p, pos2(c.x - 14.0, y), "empty_add", tr("+ Add folder"), ACCENT).1 {
-        action = Action::AddFolder;
-    }
-    let open_w = p.layout_no_wrap(tr("Open file").into(), FontId::proportional(13.0), theme::text()).size().x;
-    if text_btn(ui, p, pos2(c.x + 14.0 + open_w, y), "empty_open", tr("Open file"), theme::text_2()).1 {
-        action = Action::OpenFile;
-    }
-    p.text(pos2(c.x, y + 40.0), Align2::CENTER_CENTER, tr("Or just drop a video into this window"), FontId::proportional(11.0), theme::text_3());
-    action
 }
 
 // ---- Small widgets ---------------------------------------------------------

@@ -3,6 +3,7 @@
 //! so sweeping across the bar never builds a backlog. Results are cached per
 //! time bucket, and the mpv instance is freed after a short idle period.
 
+use std::collections::HashSet;
 use std::path::{Path, PathBuf};
 use std::sync::mpsc::{self, Receiver, RecvTimeoutError, Sender};
 use std::time::{Duration, Instant};
@@ -78,13 +79,14 @@ struct Job {
 struct Grabbed {
     path: String,
     bucket: i64,
-    image: ColorImage,
+    image: Option<ColorImage>,
 }
 
 pub struct HoverThumbs {
     tx: Sender<Job>,
     rx: Receiver<Grabbed>,
     cache: Lru<TextureHandle>,
+    failed: HashSet<i64>,
     path: String,
     pending: Option<i64>,
 }
@@ -97,15 +99,20 @@ impl HoverThumbs {
             .name("hover-thumbs".into())
             .spawn(move || worker(jobs, done, ctx, &work_dir.join(format!("preview-tmp{}", crate::single_instance::work_tag()))))
             .ok();
-        Self { tx, rx, cache: Lru::new(MAX_CACHED), path: String::new(), pending: None }
+        Self { tx, rx, cache: Lru::new(MAX_CACHED), failed: HashSet::new(), path: String::new(), pending: None }
     }
 
     /// Turns finished frames into textures. Frames for another file are dropped.
     pub fn receive(&mut self, ctx: &egui::Context) {
         while let Ok(g) = self.rx.try_recv() {
             if g.path == self.path {
-                let tex = ctx.load_texture("hover-thumb", g.image, TextureOptions::LINEAR);
-                self.cache.insert(g.bucket, tex);
+                if let Some(image) = g.image {
+                    let tex = ctx.load_texture("hover-thumb", image, TextureOptions::LINEAR);
+                    self.cache.insert(g.bucket, tex);
+                    self.failed.remove(&g.bucket);
+                } else {
+                    self.failed.insert(g.bucket);
+                }
                 if self.pending == Some(g.bucket) {
                     self.pending = None;
                 }
@@ -122,10 +129,11 @@ impl HoverThumbs {
         if path != self.path {
             self.path = path.to_string();
             self.cache.clear();
+            self.failed.clear();
             self.pending = None;
         }
         let bucket = bucket_of(time, duration);
-        if !self.cache.touch(bucket) && self.pending != Some(bucket) {
+        if !self.cache.touch(bucket) && !self.failed.contains(&bucket) && self.pending != Some(bucket) {
             self.pending = Some(bucket);
             let job = Job { path: path.to_string(), bucket, time: bucket_time(bucket, duration) };
             let _ = self.tx.send(job);
@@ -157,11 +165,21 @@ fn worker(jobs: Receiver<Job>, done: Sender<Grabbed>, ctx: egui::Context, dir: &
         if mpv.is_none() {
             mpv = new_grabber(dir);
         }
-        let Some(m) = &mpv else { continue };
-        if let Some(image) = grab(m, dir, &job) {
-            if done.send(Grabbed { path: job.path, bucket: job.bucket, image }).is_err() {
-                return;
+        let image = match &mpv {
+            Some(m) => {
+                let (img, healthy) = grab(m, dir, &job);
+                if !healthy {
+                    mpv = None;
+                }
+                img
             }
+            None => None,
+        };
+        let has_image = image.is_some();
+        if done.send(Grabbed { path: job.path, bucket: job.bucket, image }).is_err() {
+            return;
+        }
+        if has_image {
             ctx.request_repaint();
         }
     }
@@ -195,20 +213,29 @@ fn new_grabber(dir: &Path) -> Option<Mpv> {
     .ok()
 }
 
-fn grab(m: &Mpv, dir: &Path, job: &Job) -> Option<ColorImage> {
+/// Returns `(image, healthy)`. When `healthy` is false, the mpv instance may
+/// have stale events in flight and should be recreated.
+fn grab(m: &Mpv, dir: &Path, job: &Job) -> (Option<ColorImage>, bool) {
     clear_dir(dir);
     m.set_property_string("start", &format!("{:.3}", job.time));
-    m.command(&["loadfile", &job.path, "replace"]).ok()?;
+    if m.command(&["loadfile", &job.path, "replace"]).is_err() {
+        return (None, false);
+    }
     if !wait_end(m, GRAB_TIMEOUT) {
         // Wait for the stop too, so its EndFile can't end the next grab early.
         let _ = m.command(&["stop"]);
-        wait_end(m, Duration::from_secs(1));
-        return None;
+        let drained = wait_end(m, Duration::from_secs(1));
+        return (None, drained);
     }
-    let bytes = std::fs::read(first_jpg(dir)?).ok()?;
-    let rgba = image::load_from_memory_with_format(&bytes, image::ImageFormat::Jpeg).ok()?.to_rgba8();
-    let size = [rgba.width() as usize, rgba.height() as usize];
-    Some(ColorImage::from_rgba_unmultiplied(size, rgba.as_raw()))
+    let image = first_jpg(dir)
+        .and_then(|p| std::fs::read(p).ok())
+        .and_then(|bytes| image::load_from_memory_with_format(&bytes, image::ImageFormat::Jpeg).ok())
+        .map(|img| {
+            let rgba = img.to_rgba8();
+            let size = [rgba.width() as usize, rgba.height() as usize];
+            ColorImage::from_rgba_unmultiplied(size, rgba.as_raw())
+        });
+    (image, true)
 }
 
 fn wait_end(m: &Mpv, timeout: Duration) -> bool {
@@ -218,8 +245,10 @@ fn wait_end(m: &Mpv, timeout: Duration) -> bool {
         if left.is_zero() {
             return false;
         }
-        if matches!(m.wait_event(left.as_secs_f64()), Some(Event::EndFile)) {
-            return true;
+        match m.wait_event(left.as_secs_f64()) {
+            Some(Event::EndFile) => return true,
+            Some(Event::Shutdown) | None => return false,
+            _ => {}
         }
     }
 }

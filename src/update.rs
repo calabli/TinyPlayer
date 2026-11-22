@@ -361,7 +361,10 @@ fn stage(dmg: &Path, dir: &Path) -> Option<PathBuf> {
         return None;
     }
     let copied = Command::new("ditto").arg(mount.join("TinyPlayer.app")).arg(&staged).status();
-    let _ = Command::new("hdiutil").arg("detach").arg(&mount).stdout(Stdio::null()).stderr(Stdio::null()).status();
+    let detached = Command::new("hdiutil").arg("detach").arg(&mount).stdout(Stdio::null()).stderr(Stdio::null()).status();
+    if !detached.is_ok_and(|s| s.success()) {
+        let _ = Command::new("hdiutil").args(["detach", "-force"]).arg(&mount).stdout(Stdio::null()).stderr(Stdio::null()).status();
+    }
     let _ = std::fs::remove_file(dmg);
     let verified = Command::new("codesign").args(["--verify", "--deep", "--strict"]).arg(&staged).stderr(Stdio::null()).status();
     (copied.ok()?.success() && verified.ok()?.success()).then_some(staged)

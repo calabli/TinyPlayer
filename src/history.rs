@@ -295,14 +295,13 @@ impl Store {
 
     pub fn load_settings(&self) -> Settings {
         let d = Settings::default();
-        let get = |k: &str| -> Option<String> {
-            self.db
-                .query_row("SELECT v FROM settings WHERE k = ?1", [k], |r| r.get(0))
-                .optional()
-                .ok()
-                .flatten()
-        };
-        let flag = |k: &str, def: bool| get(k).map_or(def, |v| v == "1");
+        let map: HashMap<String, String> = self
+            .db
+            .prepare("SELECT k, v FROM settings")
+            .and_then(|mut st| st.query_map([], |r| Ok((r.get(0)?, r.get(1)?)))?.collect())
+            .unwrap_or_default();
+        let get = |k: &str| -> Option<String> { map.get(k).cloned() };
+        let flag = |k: &str, def: bool| map.get(k).map_or(def, |v| v == "1");
         let settings = Settings {
             remember: flag("remember", d.remember),
             resume_mode: match get("resume_mode").as_deref() {
@@ -348,20 +347,40 @@ impl Store {
     }
 
     pub fn save_settings(&self, s: &Settings) {
-        for (k, v) in settings_pairs(s) {
-            if self.saved.borrow().get(k) == Some(&v) {
-                continue;
+        let changed: Vec<(&'static str, String)> = {
+            let saved = self.saved.borrow();
+            settings_pairs(s).into_iter().filter(|(k, v)| saved.get(k) != Some(v)).collect()
+        };
+        if changed.is_empty() {
+            return;
+        }
+        if self.db.execute_batch("BEGIN IMMEDIATE").is_err() {
+            return;
+        }
+        let mut written = Vec::with_capacity(changed.len());
+        for (k, v) in changed {
+            if self
+                .db
+                .execute(
+                    "INSERT INTO settings (k, v) VALUES (?1, ?2) ON CONFLICT(k) DO UPDATE SET v = ?2",
+                    params![k, v],
+                )
+                .is_ok()
+            {
+                written.push((k, v));
             }
-            let _ = self.db.execute(
-                "INSERT INTO settings (k, v) VALUES (?1, ?2) ON CONFLICT(k) DO UPDATE SET v = ?2",
-                params![k, v],
-            );
-            self.saved.borrow_mut().insert(k, v);
+        }
+        if self.db.execute_batch("COMMIT").is_ok() {
+            let mut saved = self.saved.borrow_mut();
+            for (k, v) in written {
+                saved.insert(k, v);
+            }
+        } else {
+            let _ = self.db.execute_batch("ROLLBACK");
         }
     }
 
-    // ---- Bookmarks ----
-    // Kept like play counts: clearing history doesn't remove them.
+    // ---- Device volumes ----
 
     pub fn device_volumes(&self) -> HashMap<String, SavedDevice> {
         let rows = self.db.prepare("SELECT id, name, volume FROM device_volumes").and_then(|mut st| {
@@ -381,6 +400,9 @@ impl Store {
     pub fn remove_device_volume(&self, id: &str) {
         let _ = self.db.execute("DELETE FROM device_volumes WHERE id = ?1", [id]);
     }
+
+    // ---- Bookmarks ----
+    // Kept like play counts: clearing history doesn't remove them.
 
     pub fn add_bookmark(&self, key: &str, path: &str, time: f64, label: &str) {
         let _ = self.db.execute(

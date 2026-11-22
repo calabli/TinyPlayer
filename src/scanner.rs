@@ -4,7 +4,7 @@
 
 use std::collections::{HashSet, VecDeque};
 use std::path::{Path, PathBuf};
-use std::sync::Mutex;
+use std::sync::{Arc, Mutex};
 use std::sync::atomic::{AtomicBool, Ordering};
 use std::sync::mpsc::{self, Receiver, RecvTimeoutError, Sender, TryRecvError};
 use std::time::{Duration, Instant, UNIX_EPOCH};
@@ -41,17 +41,20 @@ pub enum Msg {
 pub struct Scanner {
     tx: Sender<Cmd>,
     pub rx: Receiver<Msg>,
+    quit: Arc<AtomicBool>,
 }
 
 impl Scanner {
     pub fn spawn(ctx: egui::Context) -> Self {
         let (tx, cmd_rx) = mpsc::channel();
         let (msg_tx, rx) = mpsc::channel();
+        let quit = Arc::new(AtomicBool::new(false));
+        let stop = Arc::clone(&quit);
         std::thread::Builder::new()
             .name("library-scanner".into())
-            .spawn(move || worker(cmd_rx, msg_tx, ctx))
+            .spawn(move || worker(cmd_rx, msg_tx, ctx, stop))
             .expect("spawn scanner");
-        Self { tx, rx }
+        Self { tx, rx, quit }
     }
 
     pub fn scan(&self) {
@@ -59,11 +62,12 @@ impl Scanner {
     }
 
     pub fn quit(&self) {
+        self.quit.store(true, Ordering::Relaxed);
         let _ = self.tx.send(Cmd::Quit);
     }
 }
 
-fn worker(cmds: Receiver<Cmd>, out: Sender<Msg>, ctx: egui::Context) {
+fn worker(cmds: Receiver<Cmd>, out: Sender<Msg>, ctx: egui::Context, quit: Arc<AtomicBool>) {
     let send = |m: Msg| {
         let _ = out.send(m);
         ctx.request_repaint();
@@ -71,16 +75,18 @@ fn worker(cmds: Receiver<Cmd>, out: Sender<Msg>, ctx: egui::Context) {
     let Ok(lib) = Library::open(&Library::db_path()) else { return };
 
     while let Ok(cmd) = cmds.recv() {
-        if matches!(cmd, Cmd::Quit) {
+        if matches!(cmd, Cmd::Quit) || quit.load(Ordering::Relaxed) {
             return;
         }
         let mut again = true;
         while again {
             again = false;
-            walk_all(&lib, &send);
+            if walk_all(&lib, &send, &quit) {
+                return;
+            }
             send(Msg::Changed);
             let pending = lib.pending_probe();
-            if !pending.is_empty() && probe_all(&lib, pending, &cmds, &send, &mut again) {
+            if !pending.is_empty() && probe_all(&lib, pending, &cmds, &send, &mut again, &quit) {
                 return;
             }
             send(Msg::Changed);
@@ -93,22 +99,27 @@ fn worker(cmds: Receiver<Cmd>, out: Sender<Msg>, ctx: egui::Context) {
 /// released when done (tens of MB each). If libmpv can't start, scanning still
 /// works; files just have no thumbnail or duration yet. Results are written
 /// here, on one connection. Returns true if the app is quitting.
-fn probe_all(lib: &Library, pending: Vec<(i64, String)>, cmds: &Receiver<Cmd>, send: &dyn Fn(Msg), again: &mut bool) -> bool {
+fn probe_all(lib: &Library, pending: Vec<(i64, String)>, cmds: &Receiver<Cmd>, send: &dyn Fn(Msg), again: &mut bool, quit: &AtomicBool) -> bool {
     let total = pending.len();
     let workers = std::thread::available_parallelism().map_or(1, |n| n.get() / 2).clamp(1, MAX_PROBERS);
     let thumbs = Library::thumbs_dir();
     let queue = Mutex::new(VecDeque::from(pending));
     let (tx, results) = mpsc::channel();
     let data = crate::history::data_dir();
-    let quit = AtomicBool::new(false);
 
     std::thread::scope(|scope| {
         for n in 0..workers {
-            let (tx, queue, thumbs, quit, work_dir) = (tx.clone(), &queue, &thumbs, &quit, data.join(format!("probe{}-{n}", crate::single_instance::work_tag())));
+            let (tx, queue, thumbs, work_dir) = (tx.clone(), &queue, &thumbs, data.join(format!("probe{}-{n}", crate::single_instance::work_tag())));
             scope.spawn(move || {
-                let Ok(prober) = Prober::new(&work_dir) else { return };
+                let Ok(mut prober) = Prober::new(&work_dir) else {
+                    let _ = std::fs::remove_dir_all(&work_dir);
+                    return;
+                };
                 loop {
                     crate::background::wait(quit);
+                    if quit.load(Ordering::Relaxed) {
+                        break;
+                    }
                     let next = queue.lock().ok().and_then(|mut q| q.pop_front());
                     let Some((id, path)) = next else { break };
                     let info = prober.probe(Path::new(&path), &thumbs.join(format!("{id}.jpg")));
@@ -134,15 +145,18 @@ fn probe_all(lib: &Library, pending: Vec<(i64, String)>, cmds: &Receiver<Cmd>, s
                 Err(RecvTimeoutError::Timeout) => {}
                 Err(RecvTimeoutError::Disconnected) => break,
             }
-            match cmds.try_recv() {
-                Ok(Cmd::Quit) | Err(TryRecvError::Disconnected) => {
-                    quit.store(true, Ordering::Relaxed);
-                    if let Ok(mut q) = queue.lock() {
-                        q.clear();
+            loop {
+                match cmds.try_recv() {
+                    Ok(Cmd::Quit) | Err(TryRecvError::Disconnected) => {
+                        quit.store(true, Ordering::Relaxed);
+                        if let Ok(mut q) = queue.lock() {
+                            q.clear();
+                        }
+                        break;
                     }
+                    Ok(Cmd::ScanAll) => *again = true,
+                    Err(TryRecvError::Empty) => break,
                 }
-                Ok(Cmd::ScanAll) => *again = true,
-                Err(TryRecvError::Empty) => {}
             }
             if last_report.elapsed() >= REPORT_EVERY {
                 send(Msg::Probing(done, total));
@@ -167,6 +181,9 @@ fn probe_all(lib: &Library, pending: Vec<(i64, String)>, cmds: &Receiver<Cmd>, s
 /// Writes in one short burst: holding the database between files would keep
 /// the UI's own writes waiting.
 fn save_probes(lib: &Library, results: &mut Vec<(i64, Option<Info>)>) {
+    if results.is_empty() {
+        return;
+    }
     lib.begin();
     for (id, info) in results.drain(..) {
         lib.set_probe_result(id, info.as_ref());
@@ -174,14 +191,17 @@ fn save_probes(lib: &Library, results: &mut Vec<(i64, Option<Info>)>) {
     lib.commit();
 }
 
-fn walk_all(lib: &Library, send: &dyn Fn(Msg)) {
+fn walk_all(lib: &Library, send: &dyn Fn(Msg), quit: &AtomicBool) -> bool {
     lib.remove_orphans();
     let mut count = 0;
     let mut last_report = Instant::now();
     for folder in lib.folders() {
+        if quit.load(Ordering::Relaxed) {
+            return true;
+        }
         let mut seen = HashSet::new();
         let mut found = Vec::new();
-        walk(Path::new(&folder.path), 0, &mut |path, meta| {
+        walk(Path::new(&folder.path), 0, quit, &mut |path, meta| {
             let mtime = meta
                 .modified()
                 .ok()
@@ -198,14 +218,21 @@ fn walk_all(lib: &Library, send: &dyn Fn(Msg)) {
                 last_report = Instant::now();
             }
         });
+        if quit.load(Ordering::Relaxed) {
+            return true;
+        }
         save_files(lib, folder.id, &mut found);
         lib.mark_missing(folder.id, &seen);
     }
     lib.remove_orphans();
     send(Msg::Scanning(count));
+    false
 }
 
 fn save_files(lib: &Library, folder: i64, found: &mut Vec<(PathBuf, u64, i64)>) {
+    if found.is_empty() {
+        return;
+    }
     lib.begin();
     for (path, size, mtime) in found.drain(..) {
         lib.upsert_file(folder, &path, size, mtime);
@@ -215,13 +242,16 @@ fn save_files(lib: &Library, folder: i64, found: &mut Vec<(PathBuf, u64, i64)>) 
 
 const MAX_DEPTH: usize = 12;
 
-fn walk(dir: &Path, depth: usize, f: &mut dyn FnMut(&Path, &std::fs::Metadata)) {
-    if depth > MAX_DEPTH {
+fn walk(dir: &Path, depth: usize, quit: &AtomicBool, f: &mut dyn FnMut(&Path, &std::fs::Metadata)) {
+    if depth > MAX_DEPTH || quit.load(Ordering::Relaxed) {
         return;
     }
     let Ok(rd) = std::fs::read_dir(dir) else { return };
     for entry in rd.flatten() {
-        crate::background::wait(&AtomicBool::new(false));
+        crate::background::wait(quit);
+        if quit.load(Ordering::Relaxed) {
+            return;
+        }
         let name = entry.file_name();
         let name = name.to_string_lossy();
         if name.starts_with('.') || name.starts_with('$') || name == "System Volume Information" {
@@ -230,7 +260,7 @@ fn walk(dir: &Path, depth: usize, f: &mut dyn FnMut(&Path, &std::fs::Metadata)) 
         let path = entry.path();
         let Ok(meta) = entry.metadata() else { continue };
         if meta.is_dir() {
-            walk(&path, depth + 1, f);
+            walk(&path, depth + 1, quit, f);
         } else if meta.is_file() && is_media(&path) {
             f(&path, &meta);
         }

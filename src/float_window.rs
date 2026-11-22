@@ -75,7 +75,7 @@ impl Resize {
 
 /// `start` after dragging `grip` by `moved`: same shape, with the opposite side
 /// staying put. Dragging an edge keeps the other axis centered.
-pub fn resized(start: Rect, grip: Grip, moved: Vec2, aspect: f32, min: Vec2, max: Vec2) -> Rect {
+fn resized(start: Rect, grip: Grip, moved: Vec2, aspect: f32, min: Vec2, max: Vec2) -> Rect {
     let size = start.size();
     let scale_x = (size.x + moved.x * grip.x as f32) / size.x;
     let scale_y = (size.y + moved.y * grip.y as f32) / size.y;
@@ -169,28 +169,47 @@ fn cursor_pos() -> Option<Pos2> {
     None
 }
 
+#[cfg(target_os = "macos")]
+unsafe fn mac_window() -> *mut objc2::runtime::AnyObject {
+    use objc2::msg_send;
+    use objc2::runtime::{AnyClass, AnyObject};
+
+    let Some(class) = AnyClass::get(c"NSApplication") else { return std::ptr::null_mut() };
+    unsafe {
+        let app: *mut AnyObject = msg_send![class, sharedApplication];
+        let key: *mut AnyObject = msg_send![app, keyWindow];
+        if !key.is_null() {
+            return key;
+        }
+        let main: *mut AnyObject = msg_send![app, mainWindow];
+        if !main.is_null() {
+            return main;
+        }
+        let windows: *mut AnyObject = msg_send![app, windows];
+        msg_send![windows, firstObject]
+    }
+}
+
 /// macOS keeps a window on the Desktop it was opened on. The floating one
 /// follows you to the others, and stays there if the OS allows it over another
 /// app's full-screen Space.
 #[cfg(target_os = "macos")]
 pub fn follow_spaces(on: bool) {
-    use objc2::runtime::{AnyClass, AnyObject};
     use objc2::{MainThreadMarker, msg_send};
 
     const CAN_JOIN_ALL_SPACES: usize = 1 << 0;
     const FULL_SCREEN_AUXILIARY: usize = 1 << 8;
+    const FLAGS: usize = CAN_JOIN_ALL_SPACES | FULL_SCREEN_AUXILIARY;
 
     if MainThreadMarker::new().is_none() {
         return;
     }
-    let Some(class) = AnyClass::get(c"NSApplication") else { return };
     // SAFETY: on the main thread, and every selector exists on these classes.
     unsafe {
-        let app: *mut AnyObject = msg_send![class, sharedApplication];
-        let windows: *mut AnyObject = msg_send![app, windows];
-        let window: *mut AnyObject = msg_send![windows, firstObject];
+        let window = mac_window();
         if !window.is_null() {
-            let behavior = if on { CAN_JOIN_ALL_SPACES | FULL_SCREEN_AUXILIARY } else { 0 };
+            let current: usize = msg_send![window, collectionBehavior];
+            let behavior = if on { current | FLAGS } else { current & !FLAGS };
             let _: () = msg_send![window, setCollectionBehavior: behavior];
         }
     }
@@ -203,7 +222,7 @@ pub fn follow_spaces(_on: bool) {}
 /// minimized until it's marked as able to, which winit leaves off then.
 #[cfg(target_os = "macos")]
 pub fn minimize(_ctx: &eframe::egui::Context) {
-    use objc2::runtime::{AnyClass, AnyObject};
+    use objc2::runtime::AnyObject;
     use objc2::{MainThreadMarker, msg_send};
 
     const MINIATURIZABLE: usize = 1 << 2;
@@ -211,12 +230,9 @@ pub fn minimize(_ctx: &eframe::egui::Context) {
     if MainThreadMarker::new().is_none() {
         return;
     }
-    let Some(class) = AnyClass::get(c"NSApplication") else { return };
     // SAFETY: on the main thread, and every selector exists on these classes.
     unsafe {
-        let app: *mut AnyObject = msg_send![class, sharedApplication];
-        let windows: *mut AnyObject = msg_send![app, windows];
-        let window: *mut AnyObject = msg_send![windows, firstObject];
+        let window = mac_window();
         if !window.is_null() {
             let mask: usize = msg_send![window, styleMask];
             let _: () = msg_send![window, setStyleMask: mask | MINIATURIZABLE];

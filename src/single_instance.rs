@@ -9,9 +9,8 @@
 //! data directory, so instances with a different `TINYPLAYER_DATA_DIR`
 //! (tests, portable copies) don't talk to each other.
 
-use std::hash::{Hash, Hasher};
 use std::io::{Read, Write};
-use std::net::{Ipv4Addr, SocketAddrV4, TcpListener, TcpStream};
+use std::net::{Ipv4Addr, Shutdown, SocketAddrV4, TcpListener, TcpStream};
 use std::sync::atomic::{AtomicBool, Ordering};
 use std::sync::mpsc::Sender;
 use std::time::Duration;
@@ -35,10 +34,14 @@ pub fn work_tag() -> String {
 }
 
 fn port() -> u16 {
-    let mut h = std::collections::hash_map::DefaultHasher::new();
-    crate::history::data_dir().to_string_lossy().to_lowercase().hash(&mut h);
+    // Fixed FNV-1a hash so the port stays stable across Rust versions.
+    let mut h: u64 = 0xcbf2_9ce4_8422_2325;
+    for b in crate::history::data_dir().to_string_lossy().to_lowercase().as_bytes() {
+        h ^= u64::from(*b);
+        h = h.wrapping_mul(0x0100_0000_01b3);
+    }
     // Stay in the dynamic/private range.
-    49_200 + (h.finish() % 10_000) as u16
+    49_200 + (h % 10_000) as u16
 }
 
 fn addr() -> SocketAddrV4 {
@@ -79,6 +82,9 @@ pub fn acquire(files: &[String], several: bool) -> Role {
             msg.push('\n');
         }
         if s.write_all(msg.as_bytes()).is_ok() {
+            // Signal end of request so the server responds immediately without
+            // waiting for its read timeout.
+            let _ = s.shutdown(Shutdown::Write);
             // Wait for the ack so we only exit once the files were taken.
             let _ = s.set_read_timeout(Some(Duration::from_secs(2)));
             let mut ack = [0u8; 2];
