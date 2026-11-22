@@ -4,6 +4,14 @@ English | [简体中文](CHANGELOG.md)
 
 The in-app update dialog shows the entries of the new version, so each one is written for users.
 
+## 0.1.27
+
+- Fixed crashes when hovering long chapter titles on a narrow seek bar, getting stuck after entering full screen from picture-in-picture, and losing window placement when leaving picture-in-picture
+- Fixed multi-view floating windows being covered by underlying controls, drag-and-drop highlights being hidden, Tab focus getting stuck after closing the active pane, and unreadable text in light theme
+- Fixed clearing the library leaving custom collections behind, background file moves not recording after leaving the library, and Manage search ignoring tags
+- Stopped shortcuts from firing in dialogs or idle views; made the settings panel scrollable with 21:9 aspect ratio; elided long top-bar titles; sped up opening files from outside
+- Hardened libmpv lifecycle, background probing, and scanner cleanup
+
 ## 0.1.26
 
 - The window opens smaller by default (854×480), in the middle of the screen
