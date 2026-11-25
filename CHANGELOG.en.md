@@ -4,6 +4,12 @@ English | [简体中文](CHANGELOG.md)
 
 The in-app update dialog shows the entries of the new version, so each one is written for users.
 
+## 0.1.30
+
+- Moving files or changing settings while the library scans no longer freezes the window; if the database is busy, the change is saved a moment later, and before quitting
+- Videos whose reading timed out get their thumbnail on the next scan
+- Seek-bar previews give up after three tries on files that have no frame to show, instead of reopening them in the background
+
 ## 0.1.29
 
 - Moving files or changing settings while the library is scanning is saved reliably again; moving onto a name an old entry still held no longer loses progress and bookmarks
