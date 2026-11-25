@@ -301,8 +301,10 @@ impl MultiView {
         }
     }
 
-    /// Pauses every video (the sleep timer).
-    pub fn pause_all(&self, main: &Player) {
+    /// Pauses every video (the sleep timer). Slots hidden by an enlarged one
+    /// then stay paused when it's restored.
+    pub fn pause_all(&mut self, main: &Player) {
+        self.paused_by_max.clear();
         for p in self.players(main) {
             p.mpv.set_flag("pause", true);
         }
@@ -510,12 +512,21 @@ impl MultiView {
         self.layout.contents().into_iter().filter_map(|c| self.player(c, main)).collect()
     }
 
+    /// The players linked play/pause and seeking reach: every one, or only
+    /// the enlarged video, so the slots it paused stay paused while hidden.
+    fn linked<'a>(&'a self, main: &'a Player) -> Vec<&'a Player> {
+        match self.maximized {
+            Some(c) => self.player(c, main).into_iter().collect(),
+            None => self.players(main),
+        }
+    }
+
     /// Play/pause one slot, or all of them when linked.
     fn toggle_pause(&self, content: Content, main: &Player) {
         let Some(p) = self.player(content, main) else { return };
         if self.link {
             let pause = !(p.state.paused || p.state.eof);
-            for q in self.players(main) {
+            for q in self.linked(main) {
                 // A finished video starts over, as it does when unlinked.
                 if !pause && q.state.eof {
                     q.seek_to(0.0, true);
@@ -529,7 +540,7 @@ impl MultiView {
 
     fn seek_to(&self, content: Content, main: &Player, secs: f64, exact: bool) {
         if self.link {
-            for q in self.players(main) {
+            for q in self.linked(main) {
                 q.seek_to(secs.min(q.state.duration.max(0.0)), exact);
             }
         } else if let Some(p) = self.player(content, main) {

@@ -66,6 +66,7 @@ libmpv is large, so it isn't committed to git.
 | T | Keep the window on top |
 | I | Picture in picture; Esc or a double-click leaves it |
 | H | Borderless playback; Esc leaves it |
+| Z | In multi-view: enlarge the selected video to fill the window, or go back (Esc also goes back) |
 | Ctrl/⌘ + Shift + P | Private mode |
 
 ## Performance
@@ -144,7 +145,7 @@ During playback, the **Multi-view** switch at the right of the top bar plays up 
 - **Leaving multi-view**: not possible while several videos are playing; close the others with × first. With one video left, turning **Multi-view** off makes it ordinary single-video playback, carrying on from where it was
 - **Link**: when on, play/pause, seeking and speed apply to every slot; volumes stay separate
 - **Focus sound**: with this top-bar switch on, only the selected video (blue outline) has sound and the others are muted; click another video's title bar or control bar, or press Tab, and the sound follows. A video's mute button still works in between; turning the switch off gives every video its sound back
-- In multi-view the keyboard works on the selected slot (blue outline), and Tab moves on; Space, ←/→, ↑/↓, M and , / . (frame by frame) work as with one video. The big control bar and the sidebar hide, and each slot has a small control bar of its own
+- In multi-view the keyboard works on the selected slot (blue outline), Tab moves on, and Z enlarges the selected video; Space, ←/→, ↑/↓, M and , / . (frame by frame) work as with one video. The big control bar and the sidebar hide, and each slot has a small control bar of its own
 - Measured with 4 videos of 1440p (hardware decoding) at once: about 12% of one core, about 590 MB of memory
 
 ## Picture enhancement

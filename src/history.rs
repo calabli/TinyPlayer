@@ -354,9 +354,9 @@ impl Store {
         if changed.is_empty() {
             return;
         }
-        if self.db.execute_batch("BEGIN IMMEDIATE").is_err() {
-            return;
-        }
+        // One transaction when the lock is free; if another window holds it
+        // past the busy timeout, each write still waits and goes in on its own.
+        let in_tx = self.db.execute_batch("BEGIN IMMEDIATE").is_ok();
         let mut written = Vec::with_capacity(changed.len());
         for (k, v) in changed {
             if self
@@ -370,13 +370,13 @@ impl Store {
                 written.push((k, v));
             }
         }
-        if self.db.execute_batch("COMMIT").is_ok() {
-            let mut saved = self.saved.borrow_mut();
-            for (k, v) in written {
-                saved.insert(k, v);
-            }
-        } else {
+        if in_tx && self.db.execute_batch("COMMIT").is_err() {
             let _ = self.db.execute_batch("ROLLBACK");
+            return;
+        }
+        let mut saved = self.saved.borrow_mut();
+        for (k, v) in written {
+            saved.insert(k, v);
         }
     }
 

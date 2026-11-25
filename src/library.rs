@@ -276,15 +276,23 @@ impl Library {
         let size = std::fs::metadata(to).map_or(0, |m| m.len());
         let key = crate::history::file_key(&path).unwrap_or_else(|| format!("{path}|{size}"));
         let title = to.file_stem().map(|s| s.to_string_lossy().into_owned()).unwrap_or_else(|| path.clone());
-        if self.db.execute_batch("BEGIN IMMEDIATE").is_err() {
-            return;
+        // The file has already moved, so this must be recorded even when the
+        // scanner holds the write lock past the busy timeout: then each
+        // statement waits on its own instead of in one transaction.
+        let in_tx = self.db.execute_batch("BEGIN IMMEDIATE").is_ok();
+        // A row left for a file that used to be at the new path (deleted, or
+        // not rescanned yet) would block the update; that file is gone now.
+        if let Ok(stale) = self.db.query_row("SELECT id FROM videos WHERE path = ?1 AND id != ?2", params![path, id], |r| r.get::<_, i64>(0)) {
+            self.remove_video(stale);
         }
         let updated = self.db.execute(
             "UPDATE videos SET path = ?2, key = ?3, title = ?4, folder_id = ?5 WHERE id = ?1",
             params![id, path, key, title, folder_id],
         );
         if !matches!(updated, Ok(n) if n > 0) {
-            let _ = self.db.execute_batch("ROLLBACK");
+            if in_tx {
+                let _ = self.db.execute_batch("ROLLBACK");
+            }
             return;
         }
         for table in ["history", "play_events", "bookmarks"] {
@@ -297,7 +305,9 @@ impl Library {
             "UPDATE OR REPLACE settings SET k = ?1 WHERE k = ?2",
             params![format!("vr:{key}"), format!("vr:{old}")],
         );
-        let _ = self.db.execute_batch("COMMIT");
+        if in_tx && self.db.execute_batch("COMMIT").is_err() {
+            let _ = self.db.execute_batch("ROLLBACK");
+        }
     }
 
     pub fn folders(&self) -> Vec<Folder> {
@@ -553,6 +563,12 @@ impl Library {
     }
 }
 
+/// A collection's name to show. Only the built-in "Favorites" is translated;
+/// names the viewer typed are shown as typed.
+pub fn collection_label(name: &str) -> &str {
+    if name == "Favorites" { crate::i18n::tr(name) } else { name }
+}
+
 /// Paths are stored without Windows' `\\?\` prefix so they match what the
 /// rest of the app (and mpv) uses.
 pub fn display_path(p: &Path) -> String {
@@ -664,7 +680,7 @@ mod tests {
     }
 
     #[test]
-    fn move_rolls_back_history_when_target_path_clashes() {
+    fn move_onto_a_stale_row_keeps_history() {
         let dir = std::env::temp_dir().join(format!("tinyplayer-lib-clash-{}", std::process::id()));
         let _ = std::fs::remove_dir_all(&dir);
         std::fs::create_dir_all(&dir).unwrap();
@@ -686,12 +702,18 @@ mod tests {
         store.add_bookmark(&old, a.to_str().unwrap(), 5.0, "m");
         store.set_value(&format!("vr:{old}"), "180");
 
-        // Target path already belongs to another row: must roll back completely.
+        // A row for b.mp4 is left over, but the moved file is there now: the
+        // stale row goes and the history follows the file.
         lib.record_move(id_a, &b, folder);
 
-        assert!(store.position(&old).is_some());
-        assert_eq!(store.bookmarks(&old).len(), 1);
-        assert_eq!(store.get_value(&format!("vr:{old}")).as_deref(), Some("180"));
+        let new = crate::history::file_key(b.to_str().unwrap()).unwrap();
+        assert!(store.position(&old).is_none());
+        assert!(store.position(&new).is_some());
+        assert_eq!(store.bookmarks(&new).len(), 1);
+        assert_eq!(store.get_value(&format!("vr:{new}")).as_deref(), Some("180"));
+        let videos = lib.videos();
+        assert_eq!(videos.len(), 1);
+        assert_eq!(videos[0].id, id_a);
         let _ = std::fs::remove_dir_all(&dir);
     }
 

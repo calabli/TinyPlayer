@@ -3,7 +3,7 @@
 //! so sweeping across the bar never builds a backlog. Results are cached per
 //! time bucket, and the mpv instance is freed after a short idle period.
 
-use std::collections::HashSet;
+use std::collections::HashMap;
 use std::path::{Path, PathBuf};
 use std::sync::mpsc::{self, Receiver, RecvTimeoutError, Sender};
 use std::time::{Duration, Instant};
@@ -70,6 +70,9 @@ impl<T> Lru<T> {
     }
 }
 
+/// How long a frame that couldn't be grabbed waits before another try.
+const RETRY_AFTER: Duration = Duration::from_secs(10);
+
 struct Job {
     path: String,
     bucket: i64,
@@ -86,7 +89,9 @@ pub struct HoverThumbs {
     tx: Sender<Job>,
     rx: Receiver<Grabbed>,
     cache: Lru<TextureHandle>,
-    failed: HashSet<i64>,
+    /// Buckets whose grab failed, and when; tried again after `RETRY_AFTER`,
+    /// as a failure can be a passing timeout or a restarted grabber.
+    failed: HashMap<i64, Instant>,
     path: String,
     pending: Option<i64>,
 }
@@ -99,7 +104,7 @@ impl HoverThumbs {
             .name("hover-thumbs".into())
             .spawn(move || worker(jobs, done, ctx, &work_dir.join(format!("preview-tmp{}", crate::single_instance::work_tag()))))
             .ok();
-        Self { tx, rx, cache: Lru::new(MAX_CACHED), failed: HashSet::new(), path: String::new(), pending: None }
+        Self { tx, rx, cache: Lru::new(MAX_CACHED), failed: HashMap::new(), path: String::new(), pending: None }
     }
 
     /// Turns finished frames into textures. Frames for another file are dropped.
@@ -111,7 +116,7 @@ impl HoverThumbs {
                     self.cache.insert(g.bucket, tex);
                     self.failed.remove(&g.bucket);
                 } else {
-                    self.failed.insert(g.bucket);
+                    self.failed.insert(g.bucket, Instant::now());
                 }
                 if self.pending == Some(g.bucket) {
                     self.pending = None;
@@ -133,7 +138,7 @@ impl HoverThumbs {
             self.pending = None;
         }
         let bucket = bucket_of(time, duration);
-        if !self.cache.touch(bucket) && !self.failed.contains(&bucket) && self.pending != Some(bucket) {
+        if !self.cache.touch(bucket) && !self.failed.get(&bucket).is_some_and(|at| at.elapsed() < RETRY_AFTER) && self.pending != Some(bucket) {
             self.pending = Some(bucket);
             let job = Job { path: path.to_string(), bucket, time: bucket_time(bucket, duration) };
             let _ = self.tx.send(job);

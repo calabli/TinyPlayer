@@ -1161,6 +1161,18 @@ impl App {
             }
             return;
         }
+        // The settings overlay is modal: only its own shortcuts apply,
+        // in multi-view too.
+        if keys.contains(&Key::Comma) && cmd {
+            self.settings_open = !self.settings_open;
+            return;
+        }
+        if self.settings_open {
+            if keys.contains(&Key::Escape) {
+                self.settings_open = false;
+            }
+            return;
+        }
         // In multi-view, keys (full screen too) go to the focused slot.
         if self.multi.on {
             let toggle_frameless = !cmd && keys.contains(&Key::H) && self.multi.video_count(player) > 0;
@@ -1188,17 +1200,6 @@ impl App {
         let mut want_private = false;
         let mut want_chapter: Option<bool> = None;
 
-        // The settings overlay is modal: only its own shortcuts apply.
-        if keys.contains(&Key::Comma) && cmd {
-            self.settings_open = !self.settings_open;
-            return;
-        }
-        if self.settings_open {
-            if keys.contains(&Key::Escape) {
-                self.settings_open = false;
-            }
-            return;
-        }
 
         for key in keys {
             if let Some((pos, _)) = self.resume_prompt {

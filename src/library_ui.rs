@@ -418,7 +418,7 @@ impl LibraryView {
         let nav = Rect::from_min_max(pos2(rect.left(), top.bottom()), pos2(rect.left() + NAV_W, rect.bottom()));
         let status = self.status_bar(ui, &p, rect);
         let content = Rect::from_min_max(pos2(nav.right(), top.bottom()), pos2(rect.right(), rect.bottom() - status));
-        if self.mode == Mode::Manage {
+        if self.mode == Mode::Manage && !self.folders.is_empty() {
             if let Some(a) = self.manage(ui, &p, nav, content) {
                 action = a;
             }
@@ -426,7 +426,10 @@ impl LibraryView {
         }
         self.nav(ui, &p, nav);
 
-        let content_action = if self.mode == Mode::Folders {
+        // A library with no folders yet explains how to start one.
+        let content_action = if self.folders.is_empty() {
+            empty_library(ui, &p, content)
+        } else if self.mode == Mode::Folders {
             self.folder_browser(ui, &p, content)
         } else {
             self.grid_view(ui, &p, content)
@@ -653,7 +656,7 @@ impl LibraryView {
         for c in &self.collections {
             let r = Rect::from_min_size(pos2(nav.left(), y), vec2(NAV_W, 28.0));
             let on = grid_mode && self.view == View::Favorites(Some(c.id));
-            if nav_item_indented(ui, &np, r, ("coll", c.id), tr(&c.name), Some(c.count as usize), on, 20.0) {
+            if nav_item_indented(ui, &np, r, ("coll", c.id), crate::library::collection_label(&c.name), Some(c.count as usize), on, 20.0) {
                 self.view = View::Favorites(Some(c.id));
                 self.mode = Mode::Grid;
             }
@@ -789,7 +792,7 @@ impl LibraryView {
 
         // Title for collection/most-played views.
         let title = match self.view {
-            View::Favorites(Some(c)) => self.collections.iter().find(|x| x.id == c).map(|x| tr(&x.name).to_string()),
+            View::Favorites(Some(c)) => self.collections.iter().find(|x| x.id == c).map(|x| crate::library::collection_label(&x.name).to_string()),
             View::Favorites(None) => Some(tr("All favorites").to_string()),
             View::MostPlayed => Some(tr("Most played").to_string()),
             _ => None,
@@ -1284,7 +1287,7 @@ impl LibraryView {
                         } else {
                             p.rect_stroke(bx, 3.0, Stroke::new(1.0, theme::text_3()), StrokeKind::Inside);
                         }
-                        p.text(pos2(r.left() + 28.0, r.center().y), Align2::LEFT_CENTER, tr(&c.name), FontId::proportional(13.0), theme::text());
+                        p.text(pos2(r.left() + 28.0, r.center().y), Align2::LEFT_CENTER, crate::library::collection_label(&c.name), FontId::proportional(13.0), theme::text());
                         if resp.clicked() {
                             toggles.push((c.id, !on));
                         }
@@ -1591,6 +1594,35 @@ fn resolution_label(w: i64, h: i64) -> String {
         x if x >= 720 => "720P".into(),
         x => format!("{x}P"),
     }
+}
+
+/// What a library with no folders shows: how to start one.
+fn empty_library(ui: &mut egui::Ui, p: &egui::Painter, content: Rect) -> Action {
+    let c = content.center() - vec2(0.0, 30.0);
+    let card = Rect::from_center_size(c - vec2(0.0, 10.0), vec2(380.0f32.min(content.width() - 40.0), 190.0));
+    p.rect_filled(card, 16.0, theme::panel());
+    p.rect_stroke(card, 16.0, Stroke::new(1.0, theme::line()), StrokeKind::Inside);
+    icons::corner_brackets(p, card.shrink(10.0), 10.0, Stroke::new(1.5, theme::accent_alpha(190)));
+    icons::draw(p, Icon::Folder, pos2(card.center().x, card.top() + 44.0), 26.0, ACCENT);
+    p.text(pos2(card.center().x, card.top() + 84.0), Align2::CENTER_CENTER, tr("Build your library"), FontId::proportional(15.0), theme::text());
+    p.text(
+        pos2(card.center().x, card.top() + 108.0),
+        Align2::CENTER_CENTER,
+        tr("Add folders of videos for automatic thumbnails, tags and search"),
+        FontId::proportional(12.0),
+        theme::text_2(),
+    );
+    let mut action = Action::None;
+    let y = card.top() + 148.0;
+    if text_btn(ui, p, pos2(card.center().x - 14.0, y), "empty_add", tr("+ Add folder"), ACCENT).1 {
+        action = Action::AddFolder;
+    }
+    let open_w = p.layout_no_wrap(tr("Open file").into(), FontId::proportional(13.0), theme::text()).size().x;
+    if text_btn(ui, p, pos2(card.center().x + 14.0 + open_w, y), "empty_open", tr("Open file"), theme::text_2()).1 {
+        action = Action::OpenFile;
+    }
+    p.text(pos2(c.x, card.bottom() + 24.0), Align2::CENTER_CENTER, tr("Or just drop a video into this window"), FontId::proportional(11.0), theme::text_3());
+    action
 }
 
 // ---- Small widgets ---------------------------------------------------------

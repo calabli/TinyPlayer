@@ -1410,7 +1410,7 @@ impl Manager {
                     egui::ScrollArea::vertical().max_height(220.0).show(ui, |ui| {
                         for c in d.collections {
                             let mut on = picked.contains(&c.id);
-                            if ui.checkbox(&mut on, tr(&c.name)).changed() {
+                            if ui.checkbox(&mut on, crate::library::collection_label(&c.name)).changed() {
                                 if on {
                                     picked.push(c.id);
                                 } else {

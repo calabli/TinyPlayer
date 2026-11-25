@@ -86,7 +86,8 @@ impl Prober {
                 if !wait_end(mpv, Duration::from_secs(1)) {
                     reset_mpv = true;
                 }
-                loaded = false;
+                // A file that opened keeps the duration and size already read,
+                // even with no thumbnail in time.
                 break;
             }
             match mpv.wait_event(left.as_secs_f64()) {

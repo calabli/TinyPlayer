@@ -23,6 +23,10 @@ Couldn't open: {}	无法打开：{}
 Multi-view on: click an empty slot to add a video	多屏已开启：点空白格添加视频
 Restore (Esc)	还原（Esc）
 Back to multi-view	返回多屏
+Enlarge a slot (multi-view)	放大画面（多屏）
+Build your library	建立你的媒体库
+Add folders of videos for automatic thumbnails, tags and search	添加视频所在的文件夹，自动生成缩略图，支持标签与搜索
+Or just drop a video into this window	也可以直接把视频拖进窗口播放
 Enlarge in the window	在窗口内放大
 Close video	关闭视频
 Drop to play here	松开在这里播放

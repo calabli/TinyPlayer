@@ -150,7 +150,7 @@ pub fn show(
         Page::Video | Page::Library => ROW_H * 2.0 + 16.0,
         Page::Subtitles => ROW_H * 4.0 + 16.0,
         Page::Interface => ROW_H * 7.0 + 16.0,
-        Page::Shortcuts => 15.0 * 30.0 + 24.0,
+        Page::Shortcuts => 16.0 * 30.0 + 24.0,
         Page::History => ROW_H * 6.0 + 52.0,
     };
     ui.scope_builder(egui::UiBuilder::new().max_rect(body), |ui| {
@@ -357,6 +357,7 @@ pub fn show(
             ("T".into(), tr("Always on top")),
             ("I".into(), tr("Picture-in-picture")),
             ("H".into(), tr("Frameless playback")),
+            ("Z".into(), tr("Enlarge a slot (multi-view)")),
             (format!("{cmd}O"), tr("Open file")),
             (format!("{cmd}N"), tr("New window")),
             (format!("{cmd}D"), tr("Toggle favorite")),
