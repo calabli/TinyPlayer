@@ -6,6 +6,7 @@
 //! rows in memory is well under a frame anyway.
 
 use std::path::{Path, PathBuf};
+use std::time::Duration;
 
 use rusqlite::{Connection, OptionalExtension, params};
 
@@ -65,6 +66,11 @@ pub struct FolderSet {
     pub name: String,
     pub folders: Vec<i64>,
 }
+
+/// How long a write waits for another connection (a scan, another window).
+pub const BUSY_TIMEOUT: Duration = Duration::from_secs(3);
+/// How long a move record waits on the UI thread before trying again later.
+pub const MOVE_WAIT: Duration = Duration::from_millis(200);
 
 pub struct Library {
     db: Connection,
@@ -145,7 +151,7 @@ const VIDEOS_SQL: &str = "SELECT v.id, v.path, v.title, v.folder_id, v.duration,
 impl Library {
     pub fn open(path: &Path) -> Result<Self, String> {
         let db = Connection::open(path).map_err(|e| e.to_string())?;
-        db.busy_timeout(std::time::Duration::from_secs(3)).map_err(|e| e.to_string())?;
+        db.busy_timeout(BUSY_TIMEOUT).map_err(|e| e.to_string())?;
         db.execute_batch("PRAGMA journal_mode = WAL; PRAGMA synchronous = NORMAL;")
             .map_err(|e| e.to_string())?;
         // history.rs owns these tables; make sure they exist for the joins below.
@@ -266,20 +272,32 @@ impl Library {
         let _ = self.db.execute(sql, [key]);
     }
 
+    /// Starts a write transaction, waiting at most `wait` for another
+    /// connection to let go of the lock.
+    fn begin_within(&self, wait: Duration) -> bool {
+        let _ = self.db.busy_timeout(wait);
+        let ok = self.db.execute_batch("BEGIN IMMEDIATE").is_ok();
+        let _ = self.db.busy_timeout(BUSY_TIMEOUT);
+        ok
+    }
+
     /// Records that a file now lives at `to`. History is keyed by path, so
     /// its progress, plays, bookmarks and VR format move with it.
-    pub fn record_move(&self, id: i64, to: &Path, folder_id: i64) {
+    ///
+    /// All of it happens in one transaction, waiting at most `wait` for the
+    /// lock. Returns false if the database stayed busy and nothing was
+    /// written, so the caller can try again later.
+    pub fn record_move(&self, id: i64, to: &Path, folder_id: i64, wait: Duration) -> bool {
         let Ok(old) = self.db.query_row("SELECT key FROM videos WHERE id = ?1", [id], |r| r.get::<_, String>(0)) else {
-            return;
+            return true;
         };
         let path = display_path(to);
         let size = std::fs::metadata(to).map_or(0, |m| m.len());
         let key = crate::history::file_key(&path).unwrap_or_else(|| format!("{path}|{size}"));
         let title = to.file_stem().map(|s| s.to_string_lossy().into_owned()).unwrap_or_else(|| path.clone());
-        // The file has already moved, so this must be recorded even when the
-        // scanner holds the write lock past the busy timeout: then each
-        // statement waits on its own instead of in one transaction.
-        let in_tx = self.db.execute_batch("BEGIN IMMEDIATE").is_ok();
+        if !self.begin_within(wait) {
+            return false;
+        }
         // A row left for a file that used to be at the new path (deleted, or
         // not rescanned yet) would block the update; that file is gone now.
         if let Ok(stale) = self.db.query_row("SELECT id FROM videos WHERE path = ?1 AND id != ?2", params![path, id], |r| r.get::<_, i64>(0)) {
@@ -290,10 +308,8 @@ impl Library {
             params![id, path, key, title, folder_id],
         );
         if !matches!(updated, Ok(n) if n > 0) {
-            if in_tx {
-                let _ = self.db.execute_batch("ROLLBACK");
-            }
-            return;
+            let _ = self.db.execute_batch("ROLLBACK");
+            return true;
         }
         for table in ["history", "play_events", "bookmarks"] {
             let verb = if table == "history" { "UPDATE OR REPLACE" } else { "UPDATE" };
@@ -305,9 +321,11 @@ impl Library {
             "UPDATE OR REPLACE settings SET k = ?1 WHERE k = ?2",
             params![format!("vr:{key}"), format!("vr:{old}")],
         );
-        if in_tx && self.db.execute_batch("COMMIT").is_err() {
+        if self.db.execute_batch("COMMIT").is_err() {
             let _ = self.db.execute_batch("ROLLBACK");
+            return false;
         }
+        true
     }
 
     pub fn folders(&self) -> Vec<Folder> {
@@ -402,9 +420,12 @@ impl Library {
         match info {
             Some(i) => {
                 let thumb = i.thumb.as_ref().map(|t| t.to_string_lossy().into_owned());
+                // Still waiting for a thumbnail that timed out: probed again
+                // on the next scan, keeping what was read meanwhile.
+                let probed = if i.timed_out && thumb.is_none() { 0 } else { 1 };
                 let _ = self.db.execute(
-                    "UPDATE videos SET duration = ?2, width = ?3, height = ?4, thumb = ?5, probed = 1 WHERE id = ?1",
-                    params![id, i.duration, i.width, i.height, thumb],
+                    "UPDATE videos SET duration = ?2, width = ?3, height = ?4, thumb = ?5, probed = ?6 WHERE id = ?1",
+                    params![id, i.duration, i.width, i.height, thumb, probed],
                 );
             }
             None => {
@@ -631,7 +652,7 @@ mod tests {
 
         let to = dir.join("b/film (2).mp4");
         std::fs::rename(&from, &to).unwrap();
-        lib.record_move(id, &to, folder);
+        lib.record_move(id, &to, folder, BUSY_TIMEOUT);
 
         let new = crate::history::file_key(to.to_str().unwrap()).unwrap();
         let v = &lib.videos()[0];
@@ -704,7 +725,7 @@ mod tests {
 
         // A row for b.mp4 is left over, but the moved file is there now: the
         // stale row goes and the history follows the file.
-        lib.record_move(id_a, &b, folder);
+        lib.record_move(id_a, &b, folder, BUSY_TIMEOUT);
 
         let new = crate::history::file_key(b.to_str().unwrap()).unwrap();
         assert!(store.position(&old).is_none());
@@ -714,6 +735,38 @@ mod tests {
         let videos = lib.videos();
         assert_eq!(videos.len(), 1);
         assert_eq!(videos[0].id, id_a);
+        let _ = std::fs::remove_dir_all(&dir);
+    }
+
+    #[test]
+    fn move_waits_for_a_busy_database_without_half_writing() {
+        let dir = std::env::temp_dir().join(format!("tinyplayer-lib-busy-{}", std::process::id()));
+        let _ = std::fs::remove_dir_all(&dir);
+        std::fs::create_dir_all(&dir).unwrap();
+        let db = dir.join("t.db");
+        let store = crate::history::Store::open(&db).unwrap();
+        let lib = Library::open(&db).unwrap();
+        let a = dir.join("a.mp4");
+        let b = dir.join("b.mp4");
+        std::fs::write(&a, b"12345").unwrap();
+        let folder = lib.add_folder(dir.to_str().unwrap()).unwrap();
+        lib.upsert_file(folder, &a, 5, 1);
+        let id = lib.videos()[0].id;
+        let old = crate::history::file_key(a.to_str().unwrap()).unwrap();
+        store.save_position(&old, a.to_str().unwrap(), "a", 20.0, 60.0);
+        std::fs::rename(&a, &b).unwrap();
+
+        // Another connection (a scan) holds the write lock.
+        let other = Connection::open(&db).unwrap();
+        other.execute_batch("BEGIN IMMEDIATE").unwrap();
+        assert!(!lib.record_move(id, &b, folder, MOVE_WAIT));
+        assert_eq!(lib.videos()[0].path, display_path(&a));
+        assert!(store.position(&old).is_some());
+
+        other.execute_batch("COMMIT").unwrap();
+        assert!(lib.record_move(id, &b, folder, MOVE_WAIT));
+        assert_eq!(lib.videos()[0].path, display_path(&b));
+        assert!(store.position(&old).is_none());
         let _ = std::fs::remove_dir_all(&dir);
     }
 

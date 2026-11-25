@@ -72,6 +72,9 @@ impl<T> Lru<T> {
 
 /// How long a frame that couldn't be grabbed waits before another try.
 const RETRY_AFTER: Duration = Duration::from_secs(10);
+/// Tries for one frame before giving up on it for this file (e.g. a file
+/// with no video never gives one).
+const MAX_TRIES: u32 = 3;
 
 struct Job {
     path: String,
@@ -89,9 +92,10 @@ pub struct HoverThumbs {
     tx: Sender<Job>,
     rx: Receiver<Grabbed>,
     cache: Lru<TextureHandle>,
-    /// Buckets whose grab failed, and when; tried again after `RETRY_AFTER`,
-    /// as a failure can be a passing timeout or a restarted grabber.
-    failed: HashMap<i64, Instant>,
+    /// Buckets whose grab failed: when last, and how many times. Tried again
+    /// after `RETRY_AFTER`, as a failure can be a passing timeout or a
+    /// restarted grabber, up to `MAX_TRIES`.
+    failed: HashMap<i64, (Instant, u32)>,
     path: String,
     pending: Option<i64>,
 }
@@ -116,7 +120,8 @@ impl HoverThumbs {
                     self.cache.insert(g.bucket, tex);
                     self.failed.remove(&g.bucket);
                 } else {
-                    self.failed.insert(g.bucket, Instant::now());
+                    let tries = self.failed.get(&g.bucket).map_or(0, |f| f.1) + 1;
+                    self.failed.insert(g.bucket, (Instant::now(), tries));
                 }
                 if self.pending == Some(g.bucket) {
                     self.pending = None;
@@ -138,7 +143,7 @@ impl HoverThumbs {
             self.pending = None;
         }
         let bucket = bucket_of(time, duration);
-        if !self.cache.touch(bucket) && !self.failed.get(&bucket).is_some_and(|at| at.elapsed() < RETRY_AFTER) && self.pending != Some(bucket) {
+        if !self.cache.touch(bucket) && !self.failed.get(&bucket).is_some_and(|&(at, tries)| tries >= MAX_TRIES || at.elapsed() < RETRY_AFTER) && self.pending != Some(bucket) {
             self.pending = Some(bucket);
             let job = Job { path: path.to_string(), bucket, time: bucket_time(bucket, duration) };
             let _ = self.tx.send(job);

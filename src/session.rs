@@ -51,13 +51,15 @@ pub struct Tracker {
     pub incognito: bool,
     current: Option<Current>,
     last_tick: Option<Instant>,
+    /// Settings the database was too busy to take, and when that was tried.
+    unsaved_since: Option<Instant>,
 }
 
 impl Tracker {
     pub fn new() -> Self {
         let store = Store::open_default().ok();
         let settings = store.as_ref().map(|s| s.load_settings()).unwrap_or_default();
-        let tracker = Self { store, settings, incognito: false, current: None, last_tick: None };
+        let tracker = Self { store, settings, incognito: false, current: None, last_tick: None, unsaved_since: None };
         // If the app crashed last time, "clear on exit" never ran — do it now.
         // Not from a further window: that would wipe what the first one is using.
         if tracker.settings.clear_on_exit
@@ -72,17 +74,29 @@ impl Tracker {
     /// the main one, but without the startup clean-up `new` does (that must
     /// run once per launch, not every time a pane opens).
     pub fn for_pane(settings: Settings, incognito: bool) -> Self {
-        Self { store: Store::open_default().ok(), settings, incognito, current: None, last_tick: None }
+        Self { store: Store::open_default().ok(), settings, incognito, current: None, last_tick: None, unsaved_since: None }
     }
 
     fn writes_enabled(&self) -> bool {
         !self.incognito && self.store.is_some()
     }
 
-    pub fn save_settings(&self) {
-        if let Some(s) = &self.store {
-            s.save_settings(&self.settings);
+    /// Saves the settings without holding up the UI for long. If another
+    /// window or a scan has the database, `tick` tries again a second later.
+    pub fn save_settings(&mut self) {
+        self.write_settings(history::SETTINGS_WAIT);
+    }
+
+    /// On exit: whatever is still unsaved goes in, waiting for the lock.
+    pub fn flush_settings(&mut self) {
+        if self.unsaved_since.is_some() {
+            self.write_settings(history::BUSY_TIMEOUT);
         }
+    }
+
+    fn write_settings(&mut self, wait: std::time::Duration) {
+        let Some(s) = &self.store else { return };
+        self.unsaved_since = (!s.save_settings(&self.settings, wait)).then(Instant::now);
     }
 
     /// Call when mpv reports a newly loaded file. Returns the resume action;
@@ -129,6 +143,9 @@ impl Tracker {
     /// Call every frame / wakeup with the latest state.
     pub fn tick(&mut self, state: &State) {
         let now = Instant::now();
+        if self.unsaved_since.is_some_and(|t| now.duration_since(t).as_secs_f64() >= 1.0) {
+            self.save_settings();
+        }
         let dt = self.last_tick.map_or(0.0, |t| now.duration_since(t).as_secs_f64().min(MAX_TICK));
         self.last_tick = Some(now);
 

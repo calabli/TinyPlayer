@@ -7,7 +7,7 @@
 
 use std::collections::HashMap;
 use std::path::{Path, PathBuf};
-use std::time::{SystemTime, UNIX_EPOCH};
+use std::time::{Duration, SystemTime, UNIX_EPOCH};
 
 use rusqlite::{Connection, OptionalExtension, params};
 
@@ -181,6 +181,11 @@ pub fn file_key(path: &str) -> Option<String> {
     Some(format!("{}|{}", canon.to_string_lossy(), meta.len()))
 }
 
+/// How long a write waits for another connection (another window, a scan).
+pub const BUSY_TIMEOUT: Duration = Duration::from_secs(3);
+/// How long saving settings may hold up the UI before trying again later.
+pub const SETTINGS_WAIT: Duration = Duration::from_millis(200);
+
 pub fn data_dir() -> PathBuf {
     // Override for development and tests, so they don't touch real history.
     if let Some(dir) = std::env::var_os("TINYPLAYER_DATA_DIR") {
@@ -253,7 +258,7 @@ impl Store {
         let db = Connection::open(path).map_err(|e| e.to_string())?;
         // Several windows can share the file; wait for a write in progress
         // instead of failing at once, which would lose a saved position.
-        db.busy_timeout(std::time::Duration::from_secs(3)).map_err(|e| e.to_string())?;
+        db.busy_timeout(BUSY_TIMEOUT).map_err(|e| e.to_string())?;
         db.execute_batch(
             "PRAGMA journal_mode = WAL;
              PRAGMA synchronous = NORMAL;
@@ -346,17 +351,23 @@ impl Store {
         settings
     }
 
-    pub fn save_settings(&self, s: &Settings) {
+    /// Writes the settings that changed, in one transaction, waiting at most
+    /// `wait` for the lock. Returns false if the database stayed busy; the
+    /// unsaved ones are tried again on the next call.
+    pub fn save_settings(&self, s: &Settings, wait: Duration) -> bool {
         let changed: Vec<(&'static str, String)> = {
             let saved = self.saved.borrow();
             settings_pairs(s).into_iter().filter(|(k, v)| saved.get(k) != Some(v)).collect()
         };
         if changed.is_empty() {
-            return;
+            return true;
         }
-        // One transaction when the lock is free; if another window holds it
-        // past the busy timeout, each write still waits and goes in on its own.
-        let in_tx = self.db.execute_batch("BEGIN IMMEDIATE").is_ok();
+        let _ = self.db.busy_timeout(wait);
+        let began = self.db.execute_batch("BEGIN IMMEDIATE").is_ok();
+        let _ = self.db.busy_timeout(BUSY_TIMEOUT);
+        if !began {
+            return false;
+        }
         let mut written = Vec::with_capacity(changed.len());
         for (k, v) in changed {
             if self
@@ -370,14 +381,15 @@ impl Store {
                 written.push((k, v));
             }
         }
-        if in_tx && self.db.execute_batch("COMMIT").is_err() {
+        if self.db.execute_batch("COMMIT").is_err() {
             let _ = self.db.execute_batch("ROLLBACK");
-            return;
+            return false;
         }
         let mut saved = self.saved.borrow_mut();
         for (k, v) in written {
             saved.insert(k, v);
         }
+        true
     }
 
     // ---- Device volumes ----
@@ -544,6 +556,27 @@ mod tests {
     }
 
     #[test]
+    fn busy_database_leaves_settings_for_the_next_try() {
+        let dir = std::env::temp_dir().join(format!("tinyplayer-settings-busy-{}", std::process::id()));
+        let _ = std::fs::remove_dir_all(&dir);
+        std::fs::create_dir_all(&dir).unwrap();
+        let db = dir.join("t.db");
+        let s = Store::open(&db).unwrap();
+        s.load_settings();
+        let changed = Settings { shuffle: true, ..Settings::default() };
+
+        let other = Connection::open(&db).unwrap();
+        other.execute_batch("BEGIN IMMEDIATE").unwrap();
+        assert!(!s.save_settings(&changed, SETTINGS_WAIT));
+        other.execute_batch("COMMIT").unwrap();
+        assert!(!Store::open(&db).unwrap().load_settings().shuffle);
+
+        assert!(s.save_settings(&changed, SETTINGS_WAIT));
+        assert!(Store::open(&db).unwrap().load_settings().shuffle);
+        let _ = std::fs::remove_dir_all(&dir);
+    }
+
+    #[test]
     fn settings_round_trip() {
         let s = mem();
         assert_eq!(s.load_settings(), Settings::default());
@@ -582,7 +615,7 @@ mod tests {
             multi_window: true,
             remember_window: false,
         };
-        s.save_settings(&custom);
+        s.save_settings(&custom, BUSY_TIMEOUT);
         assert_eq!(s.load_settings(), custom);
     }
 
@@ -598,20 +631,20 @@ mod tests {
         let (mut in_a, mut in_b) = (a.load_settings(), b.load_settings());
 
         in_a.theme = "light".into();
-        a.save_settings(&in_a);
+        a.save_settings(&in_a, BUSY_TIMEOUT);
         // B still holds the old theme, and changes something else.
         in_b.language = "en".into();
-        b.save_settings(&in_b);
+        b.save_settings(&in_b, BUSY_TIMEOUT);
 
         let now = Store::open(&path).unwrap().load_settings();
         assert_eq!((now.theme.as_str(), now.language.as_str()), ("light", "en"));
         // What B changes itself is written, including back to what it held
         // at the start.
         in_b.theme = "system".into();
-        b.save_settings(&in_b);
+        b.save_settings(&in_b, BUSY_TIMEOUT);
         assert_eq!(Store::open(&path).unwrap().load_settings().theme, "system");
         in_b.theme = "dark".into();
-        b.save_settings(&in_b);
+        b.save_settings(&in_b, BUSY_TIMEOUT);
         assert_eq!(Store::open(&path).unwrap().load_settings().theme, "dark");
         let _ = std::fs::remove_dir_all(&dir);
     }

@@ -198,6 +198,10 @@ pub struct Manager {
     /// Each moved video's previous folder, for undo.
     origins: HashMap<i64, i64>,
     undo_moves: Vec<Task>,
+    /// Moves done on disk whose library record waits for the database to be
+    /// free (a scan holding it): (video, new path, folder).
+    unrecorded: Vec<(i64, PathBuf, i64)>,
+    last_record_try: f64,
     undo: Option<Undo>,
     toast: Option<Toast>,
     options: Options,
@@ -233,6 +237,8 @@ impl Manager {
             progress: Progress::default(),
             origins: HashMap::new(),
             undo_moves: Vec::new(),
+            unrecorded: Vec::new(),
+            last_record_try: 0.0,
             undo: None,
             toast: None,
             options: Options { duration: true, size: true, name: true, level: Level::Normal },
@@ -293,10 +299,47 @@ impl Manager {
         changed
     }
 
+    /// Records moves that found the database busy, trying about once a
+    /// second. Returns true if any went in.
+    fn retry_records(&mut self, ctx: &egui::Context, lib: Option<&Library>) -> bool {
+        let Some(lib) = lib else { return false };
+        if self.unrecorded.is_empty() {
+            return false;
+        }
+        let now = ctx.input(|i| i.time);
+        if now - self.last_record_try < 1.0 {
+            ctx.request_repaint_after_secs(1.0);
+            return false;
+        }
+        self.last_record_try = now;
+        let wait = crate::library::MOVE_WAIT;
+        let before = self.unrecorded.len();
+        self.unrecorded.retain(|(id, to, folder)| !lib.record_move(*id, to, *folder, wait));
+        if !self.unrecorded.is_empty() {
+            ctx.request_repaint_after_secs(1.0);
+        }
+        self.unrecorded.len() < before
+    }
+
+    /// On exit: records what's still waiting, waiting for the lock if needed.
+    pub fn flush_records(&mut self, lib: Option<&Library>) {
+        if let Some(lib) = lib {
+            self.unrecorded.retain(|(id, to, folder)| !lib.record_move(*id, to, *folder, crate::library::BUSY_TIMEOUT));
+        }
+    }
+
     /// Applies finished work. Returns true if the library changed.
     pub fn poll(&mut self, ctx: &egui::Context, lib: Option<&Library>, videos: &[Video]) -> bool {
-        let Some(mover) = &self.mover else { return false };
-        let mut changed = false;
+        let mut changed = self.retry_records(ctx, lib);
+        let Some(mover) = &self.mover else { return changed };
+        let mut later: Vec<(i64, PathBuf, i64)> = Vec::new();
+        let mut record = |id: i64, to: PathBuf, folder: i64| {
+            if let Some(lib) = lib
+                && !lib.record_move(id, &to, folder, crate::library::MOVE_WAIT)
+            {
+                later.push((id, to, folder));
+            }
+        };
         let mut finished = false;
         loop {
             match mover.rx.try_recv() {
@@ -309,9 +352,7 @@ impl Manager {
                 Ok(Msg::Copied { done, total }) => (self.progress.done, self.progress.total) = (done, total),
                 Ok(Msg::Verifying) => self.progress.verifying = true,
                 Ok(Msg::Moved { job, to }) => {
-                    if let Some(lib) = lib {
-                        lib.record_move(job.id, &to, job.folder_id);
-                    }
+                    record(job.id, to.clone(), job.folder_id);
                     if let (Some(dir), Some(folder)) = (job.from.parent(), self.origins.get(&job.id)) {
                         self.undo_moves.push(Task::File(Job { id: job.id, from: to, to_dir: dir.to_path_buf(), folder_id: *folder }));
                     }
@@ -323,9 +364,7 @@ impl Manager {
                     for v in videos {
                         if let Ok(rest) = Path::new(&v.path).strip_prefix(&job.from) {
                             origin = v.folder_id;
-                            if let Some(lib) = lib {
-                                lib.record_move(v.id, &to.join(rest), job.folder_id);
-                            }
+                            record(v.id, to.join(rest), job.folder_id);
                         }
                     }
                     if let Some(dir) = job.from.parent() {
@@ -342,6 +381,7 @@ impl Manager {
                 Err(mpsc::TryRecvError::Empty) => break,
             }
         }
+        self.unrecorded.append(&mut later);
         if finished {
             self.mover = None;
             self.selected.clear();
@@ -1370,7 +1410,9 @@ impl Manager {
                         match rename_video(Path::new(&v.path), stem) {
                             Err(e) => *error = Some(e),
                             Ok(to) => {
-                                d.lib.record_move(*id, &to, v.folder_id);
+                                if !d.lib.record_move(*id, &to, v.folder_id, crate::library::MOVE_WAIT) {
+                                    self.unrecorded.push((*id, to.clone(), v.folder_id));
+                                }
                                 self.changed = true;
                                 close = true;
                             }

@@ -390,6 +390,11 @@ impl LibraryView {
         }
     }
 
+    /// On exit: moves the library hasn't recorded yet go in now.
+    pub fn flush_moves(&mut self) {
+        self.manager.flush_records(self.lib.as_ref());
+    }
+
     pub fn show(&mut self, ui: &mut egui::Ui, rect: Rect) -> Action {
         self.poll_background(ui.ctx());
         self.rescan |= self.manager.watch_disks(ui.ctx(), &self.folders);

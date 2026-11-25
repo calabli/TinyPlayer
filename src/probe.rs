@@ -17,6 +17,9 @@ pub struct Info {
     pub height: i64,
     /// Where the thumbnail was written, if the file has video.
     pub thumb: Option<PathBuf>,
+    /// The file opened but no frame came in time: the next scan tries the
+    /// thumbnail again.
+    pub timed_out: bool,
 }
 
 pub struct Prober {
@@ -88,6 +91,7 @@ impl Prober {
                 }
                 // A file that opened keeps the duration and size already read,
                 // even with no thumbnail in time.
+                info.timed_out = true;
                 break;
             }
             match mpv.wait_event(left.as_secs_f64()) {

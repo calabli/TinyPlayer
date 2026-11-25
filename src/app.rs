@@ -2158,6 +2158,8 @@ impl eframe::App for App {
     }
 
     fn on_exit(&mut self, gl: Option<&glow::Context>) {
+        self.library.flush_moves();
+        self.tracker.flush_settings();
         // Only the first window's place is kept; the others open beside it.
         if let (Some(place), Some(store)) = (self.window_place, &self.tracker.store)
             && !crate::single_instance::is_extra()
