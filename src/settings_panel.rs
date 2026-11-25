@@ -74,13 +74,14 @@ pub fn show(
         out.close = true;
     }
 
-    p.rect_filled(panel, 10.0, theme::panel());
-    p.rect_stroke(panel, 10.0, Stroke::new(0.5, theme::line()), StrokeKind::Inside);
+    p.rect_filled(panel, 16.0, theme::panel());
+    p.rect_stroke(panel, 16.0, Stroke::new(1.0, theme::line()), StrokeKind::Inside);
 
     // ---- Nav ----
     let nav = Rect::from_min_size(panel.min, vec2(NAV_W, panel.height()));
-    p.line_segment([nav.right_top(), nav.right_bottom()], Stroke::new(0.5, theme::line()));
-    p.text(nav.min + vec2(16.0, 22.0), Align2::LEFT_CENTER, "SETTINGS", FontId::monospace(10.0), theme::text_3());
+    p.rect_filled(nav, egui::CornerRadius { nw: 16, sw: 16, ne: 0, se: 0 }, theme::surface());
+    p.line_segment([nav.right_top(), nav.right_bottom()], Stroke::new(1.0, theme::line()));
+    p.text(nav.min + vec2(16.0, 24.0), Align2::LEFT_CENTER, "SETTINGS", FontId::monospace(10.0), ACCENT);
     let pages = [
         (Page::Playback, tr("Play")),
         (Page::Audio, tr("Audio")),
@@ -92,23 +93,32 @@ pub fn show(
         (Page::Shortcuts, tr("Shortcuts")),
     ];
     for (i, (page, name)) in pages.into_iter().enumerate() {
-        let item = Rect::from_min_size(nav.min + vec2(0.0, 44.0 + 34.0 * i as f32), vec2(NAV_W, 32.0));
+        let item = Rect::from_min_size(nav.min + vec2(8.0, 44.0 + 34.0 * i as f32), vec2(NAV_W - 16.0, 30.0));
         let resp = ui.interact(item, ui.scope_id().with(("settings_nav", i)), Sense::click());
         let on = st.page == page;
         if on {
-            p.rect_filled(item, 0.0, theme::accent_alpha(12));
-            p.line_segment([item.left_top(), item.left_bottom()], Stroke::new(2.0, ACCENT));
+            p.rect_filled(item, 8.0, theme::accent_alpha(28));
+            p.rect_stroke(item, 8.0, theme::accent_stroke(105), StrokeKind::Inside);
+        } else if resp.hovered() {
+            p.rect_filled(item, 8.0, theme::tint(14));
         }
-        let c = if on || resp.hovered() { theme::text() } else { theme::text_2() };
-        p.text(item.left_center() + vec2(16.0, 0.0), Align2::LEFT_CENTER, name, FontId::proportional(13.0), c);
+        let c = if on { ACCENT } else if resp.hovered() { theme::text() } else { theme::text_2() };
+        p.text(item.left_center() + vec2(12.0, 0.0), Align2::LEFT_CENTER, name, FontId::proportional(13.0), c);
+        if resp.hovered() {
+            ui.ctx().set_cursor_icon(egui::CursorIcon::PointingHand);
+        }
         if resp.clicked() {
             st.page = page;
         }
     }
 
     // Close button
-    let close = Rect::from_center_size(pos2(panel.right() - 22.0, panel.top() + 22.0), vec2(24.0, 24.0));
+    let close = Rect::from_center_size(pos2(panel.right() - 22.0, panel.top() + 22.0), vec2(26.0, 26.0));
     let cresp = ui.interact(close, ui.scope_id().with("settings_close"), Sense::click());
+    if cresp.hovered() {
+        p.circle_filled(close.center(), 13.0, theme::tint(18));
+        ui.ctx().set_cursor_icon(egui::CursorIcon::PointingHand);
+    }
     let cc = if cresp.hovered() { ACCENT } else { theme::text_2() };
     let d = 5.0;
     p.line_segment([close.center() + vec2(-d, -d), close.center() + vec2(d, d)], Stroke::new(1.4, cc));
@@ -361,10 +371,11 @@ pub fn show(
             let rowi = (i % per_col) as f32;
             let x = left + col * col_w;
             let yy = y + 14.0 + rowi * 30.0;
-            let g = p.layout_no_wrap(k.clone(), FontId::monospace(11.0), theme::text());
-            let kr = Rect::from_min_size(pos2(x, yy - g.size().y / 2.0 - 3.0), g.size() + vec2(10.0, 6.0));
-            p.rect_filled(kr, 4.0, theme::tint(12));
-            p.galley(kr.min + vec2(5.0, 3.0), g, theme::text());
+            let g = p.layout_no_wrap(k.clone(), FontId::monospace(10.5), ACCENT);
+            let kr = Rect::from_min_size(pos2(x, yy - g.size().y / 2.0 - 3.0), g.size() + vec2(12.0, 6.0));
+            p.rect_filled(kr, 6.0, theme::surface());
+            p.rect_stroke(kr, 6.0, Stroke::new(1.0, theme::line()), StrokeKind::Inside);
+            p.galley(kr.min + vec2(6.0, 3.0), g, ACCENT);
             p.text(pos2(x + 122.0, yy), Align2::LEFT_CENTER, *what, FontId::proportional(12.0), theme::text_2());
         }
         return;
@@ -568,22 +579,21 @@ fn text_link(ui: &mut egui::Ui, p: &egui::Painter, right_center: egui::Pos2, id:
 
 /// Toggle switch at the right edge of `row`. Returns true when clicked.
 fn toggle(ui: &mut egui::Ui, p: &egui::Painter, row: Rect, id: &str, on: bool, enabled: bool) -> bool {
-    let rect = Rect::from_center_size(pos2(row.right() - 17.0, row.center().y), vec2(34.0, 18.0));
+    let rect = Rect::from_center_size(pos2(row.right() - 19.0, row.center().y), vec2(38.0, 20.0));
     let resp = ui.interact(rect.expand(6.0), ui.scope_id().with(id), Sense::click());
     let t = ui.ctx().animate_bool_with_time(ui.scope_id().with(id).with("anim"), on, 0.12);
     let a = if enabled { 1.0 } else { 0.35 };
-    let track = theme::line().lerp_to_gamma(theme::accent_alpha(64), t);
-    p.rect_filled(rect, 9.0, track.gamma_multiply(a));
-    let knob_x = rect.left() + 9.0 + t * (rect.width() - 18.0);
-    let knob = Color32::from_rgb(0x6E, 0x76, 0x81).lerp_to_gamma(ACCENT, t);
-    p.circle_filled(pos2(knob_x, rect.center().y), 6.0, knob.gamma_multiply(a));
+    let track = theme::line().lerp_to_gamma(ACCENT, t);
+    p.rect_filled(rect, 10.0, track.gamma_multiply(a));
+    let knob_x = rect.left() + 10.0 + t * (rect.width() - 20.0);
+    p.circle_filled(pos2(knob_x, rect.center().y), 7.0, Color32::WHITE.gamma_multiply(a));
     if enabled && resp.hovered() {
         ui.ctx().set_cursor_icon(egui::CursorIcon::PointingHand);
     }
     enabled && resp.clicked()
 }
 
-/// Segmented choice at the right edge of `row`. Returns the clicked index.
+/// Segmented pill track at the right edge of `row`. Returns the clicked index.
 fn segment(
     ui: &mut egui::Ui,
     p: &egui::Painter,
@@ -598,19 +608,29 @@ fn segment(
         .iter()
         .map(|l| p.layout_no_wrap(l.to_string(), font.clone(), theme::text()).size().x + 18.0)
         .collect();
-    let total: f32 = widths.iter().sum::<f32>() + 2.0 * (labels.len() as f32 - 1.0);
-    let mut x = row.right() - total;
+    let total: f32 = widths.iter().sum::<f32>() + 2.0 * (labels.len() as f32 - 1.0) + 6.0;
+    let track = Rect::from_min_size(pos2(row.right() - total, row.center().y - 14.0), vec2(total, 28.0));
     let a = if enabled { 1.0 } else { 0.35 };
+    p.rect_filled(track, 9.0, theme::surface().gamma_multiply(a));
+    p.rect_stroke(track, 9.0, Stroke::new(1.0, theme::line().gamma_multiply(a)), StrokeKind::Inside);
+
+    let mut x = track.left() + 3.0;
     let mut clicked = None;
     for (i, (label, w)) in labels.iter().zip(&widths).enumerate() {
-        let rect = Rect::from_min_size(pos2(x, row.center().y - 13.0), vec2(*w, 26.0));
+        let rect = Rect::from_min_size(pos2(x, track.top() + 3.0), vec2(*w, 22.0));
         let resp = ui.interact(rect, ui.scope_id().with(id).with(i), Sense::click());
         let on = i == selected;
         if on {
-            p.rect_filled(rect, 4.0, theme::accent_alpha(22).gamma_multiply(a));
+            p.rect_filled(rect, 7.0, theme::accent_alpha(34).gamma_multiply(a));
+            p.rect_stroke(rect, 7.0, Stroke::new(1.0, theme::accent_alpha(110).gamma_multiply(a)), StrokeKind::Inside);
+        } else if enabled && resp.hovered() {
+            p.rect_filled(rect, 7.0, theme::tint(14));
         }
         let color = if on { ACCENT } else if enabled && resp.hovered() { theme::text() } else { theme::text_2() };
         p.text(rect.center(), Align2::CENTER_CENTER, *label, font.clone(), color.gamma_multiply(a));
+        if enabled && resp.hovered() {
+            ui.ctx().set_cursor_icon(egui::CursorIcon::PointingHand);
+        }
         if enabled && resp.clicked() && !on {
             clicked = Some(i);
         }

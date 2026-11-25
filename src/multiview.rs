@@ -156,8 +156,10 @@ pub struct MultiView {
     spare: Vec<VideoTarget>,
     /// The area slots were laid out in last frame.
     grid: Rect,
-    /// One video blown up to fill the whole area; the others keep playing.
+    /// One video blown up to fill the whole area; the others are paused.
     maximized: Option<Content>,
+    /// Slots paused automatically on maximize, resumed on restore.
+    paused_by_max: Vec<Content>,
     /// Per-slot control bars only show when the pointer is at a slot's bottom.
     hide_bars: bool,
     /// Videos enlarged to fill their slot, black bars cropped away.
@@ -187,6 +189,7 @@ impl Default for MultiView {
             spare: Vec::new(),
             grid: Rect::NOTHING,
             maximized: None,
+            paused_by_max: Vec::new(),
             hide_bars: false,
             filled: Vec::new(),
             focus_sound: false,
@@ -228,6 +231,7 @@ impl MultiView {
         self.menu = None;
         self.drag = None;
         self.maximized = None;
+        self.paused_by_max.clear();
     }
 
     /// What turning multi-view off would do now.
@@ -304,10 +308,51 @@ impl MultiView {
         }
     }
 
-    fn toggle_max(&mut self, content: Content) {
-        self.maximized = if self.maximized == Some(content) { None } else { Some(content) };
+    fn enter_max(&mut self, content: Content, main: &Player) {
+        self.maximized = Some(content);
+        self.focus = content;
         self.menu = None;
         self.drag = None;
+        let mut paused = Vec::new();
+        for c in self.layout.contents() {
+            let Some(p) = self.player(c, main) else { continue };
+            if c == content {
+                if p.state.eof {
+                    p.seek_to(0.0, true);
+                }
+                p.mpv.set_flag("pause", false);
+            } else {
+                if !p.state.idle && !p.state.paused && !p.state.eof {
+                    paused.push(c);
+                }
+                p.mpv.set_flag("pause", true);
+            }
+        }
+        self.paused_by_max = paused;
+    }
+
+    fn exit_max(&mut self, main: &Player) -> bool {
+        if self.maximized.take().is_none() {
+            return false;
+        }
+        let to_resume = std::mem::take(&mut self.paused_by_max);
+        for c in to_resume {
+            if let Some(p) = self.player(c, main)
+                && !p.state.idle
+                && !p.state.eof
+            {
+                p.mpv.set_flag("pause", false);
+            }
+        }
+        true
+    }
+
+    fn toggle_max(&mut self, content: Content, main: &Player) {
+        if self.maximized == Some(content) {
+            self.exit_max(main);
+        } else {
+            self.enter_max(content, main);
+        }
     }
 
     /// The toolbar overlays the slots when the window has no title bar.
@@ -429,7 +474,7 @@ impl MultiView {
             Content::Empty => {}
         }
         if self.maximized == Some(content) {
-            self.maximized = None;
+            self.exit_max(main);
         }
         self.filled.retain(|c| *c != content);
         self.menu = None;
@@ -513,13 +558,25 @@ impl MultiView {
                     self.toggle_fill(focus, main);
                     continue;
                 }
+                // Toggle single-screen full-player view for the focused slot.
+                Key::Z => {
+                    if !self.is_empty(focus, main) {
+                        self.toggle_max(focus, main);
+                        osd = Some(if self.maximized.is_some() {
+                            tr("Enlarge in the window").into()
+                        } else {
+                            tr("Back to multi-view").into()
+                        });
+                    }
+                    continue;
+                }
                 Key::Escape => {
                     if self.menu.take().is_some() {
                         continue;
                     }
                     if self.is_filled(focus) {
                         self.toggle_fill(focus, main);
-                    } else if self.maximized.take().is_none() && ctx.input(|i| i.viewport().fullscreen.unwrap_or(false)) {
+                    } else if !self.exit_max(main) && ctx.input(|i| i.viewport().fullscreen.unwrap_or(false)) {
                         ctx.send_viewport_cmd(ViewportCommand::Fullscreen(false));
                     }
                     continue;
@@ -594,7 +651,8 @@ impl MultiView {
         }
     }
 
-    fn apply_preset(&mut self, preset: Preset) {
+    fn apply_preset(&mut self, preset: Preset, main: &Player) {
+        self.exit_max(main);
         let mut order = vec![Content::Main];
         order.extend(self.layout.contents().into_iter().filter(|c| matches!(c, Content::Pane(_))));
         let leftover = self.layout.apply_preset(preset, &order);
@@ -650,13 +708,16 @@ impl MultiView {
 
         // ---- One video filling the area ----
         if self.maximized.is_some() && self.max_slot().is_none() {
-            self.maximized = None;
+            self.exit_max(main);
         }
         if let Some((id, content)) = self.max_slot() {
             self.focus = content;
             let empty = self.is_empty(content, main);
             self.draw_video(&p, frame, content, grid, main_texture, ppp, empty);
             self.slot_chrome(ui, &p, id, content, grid, false, main, chrome, pointer, frameless);
+            if frameless && chrome {
+                self.floating_restore_pill(ui, &p, grid, main);
+            }
             if show_toolbar {
                 self.top_bar(ui, &p, stage, main, &mut out, frameless);
             }
@@ -844,7 +905,7 @@ impl MultiView {
         let at_top = hovered && pointer.is_some_and(|q| q.y <= r.top() + HEADER_H + 6.0);
         let at_bottom = hovered && pointer.is_some_and(|q| q.y >= r.bottom() - MINI_H - 24.0);
         if focused && (!frameless || at_top || at_bottom) {
-            p.rect_stroke(r, 3.0, Stroke::new(2.0, ACCENT), StrokeKind::Inside);
+            p.rect_stroke(r, 6.0, Stroke::new(2.0, ACCENT), StrokeKind::Inside);
         }
 
         // ---- Header: title (drag to swap / move) and tools ----
@@ -852,7 +913,7 @@ impl MultiView {
         let show_header = if frameless { at_top } else { (hovered && chrome) || floating };
         if show_header {
             let head = Rect::from_min_size(r.min, vec2(r.width(), HEADER_H));
-            p.rect_filled(head, 0.0, theme::scrim(150));
+            p.rect_filled(head, 0.0, theme::glass(195));
             let tools = self.tool_list(content, floating);
             let tools_w = tools.len() as f32 * 26.0 + 4.0;
             let title_w = (r.width() - tools_w - 16.0).max(20.0);
@@ -893,7 +954,7 @@ impl MultiView {
                             self.layout.dock(id, beside);
                         }
                         Tool::Close => self.clear_slot(id, content, main),
-                        Tool::Max | Tool::Restore => self.toggle_max(content),
+                        Tool::Max | Tool::Restore => self.toggle_max(content, main),
                         Tool::Fill | Tool::Unfill => self.toggle_fill(content, main),
                     }
                 }
@@ -933,7 +994,7 @@ impl MultiView {
             return;
         }
         let bar = Rect::from_min_max(pos2(r.left(), r.bottom() - MINI_H), r.max);
-        p.rect_filled(bar, 0.0, theme::scrim(170));
+        p.rect_filled(bar, 0.0, theme::glass(210));
         let cy = bar.center().y;
         let mut x = bar.left() + 6.0;
         // Play / pause
@@ -949,8 +1010,9 @@ impl MultiView {
         let vol_w = if narrow { 0.0 } else { 56.0 };
         let time_txt = format!("{} / {}", fmt_time(s.position), fmt_time(s.duration));
         let time_w = if narrow { 0.0 } else { 92.0 };
-        let fs_w = 26.0;
-        let right_w = 22.0 + vol_w + if narrow { 0.0 } else { 34.0 } + fs_w;
+        let fs_w = 24.0;
+        let max_w = 26.0;
+        let right_w = 22.0 + vol_w + if narrow { 0.0 } else { 34.0 } + fs_w + max_w;
         // Progress
         let track = Rect::from_min_max(pos2(x, cy - 8.0), pos2(bar.right() - right_w - time_w - 10.0, cy + 8.0));
         if track.width() > 20.0 && s.duration > 0.0 {
@@ -1006,7 +1068,7 @@ impl MultiView {
             p.text(pos2(vol.right() + 6.0, cy), Align2::LEFT_CENTER, pct, FontId::monospace(10.0), TEXT_2);
         }
         // Fill the slot, cropping the black bars, or fit back
-        let fs = Rect::from_center_size(pos2(bar.right() - fs_w / 2.0 - 2.0, cy), vec2(22.0, 22.0));
+        let fs = Rect::from_center_size(pos2(bar.right() - max_w - fs_w / 2.0 - 2.0, cy), vec2(22.0, 22.0));
         let fr = ui.interact(fs, ui.scope_id().with(("mv_fs", id)), Sense::click());
         let filled = self.is_filled(content);
         icons::draw(p, if filled { Icon::ExitFullscreen } else { Icon::Fullscreen }, fs.center(), 13.0, if fr.hovered() { ACCENT } else { TEXT });
@@ -1015,6 +1077,24 @@ impl MultiView {
         }
         if fr.on_hover_text(fill_tip(filled)).clicked() {
             self.toggle_fill(content, main);
+        }
+        // Maximize this screen to occupy the entire player, or restore back to multi-view
+        let is_max = self.maximized == Some(content);
+        let mx = Rect::from_center_size(pos2(bar.right() - max_w / 2.0 - 2.0, cy), vec2(22.0, 22.0));
+        let mr_max = ui.interact(mx, ui.scope_id().with(("mv_max_bar", id)), Sense::click());
+        if is_max {
+            p.rect_filled(mx, 5.0, theme::accent_alpha(40));
+            p.rect_stroke(mx, 5.0, theme::accent_stroke(130), StrokeKind::Inside);
+        } else if mr_max.hovered() {
+            p.rect_filled(mx, 5.0, Color32::from_white_alpha(20));
+        }
+        draw_max_icon(p, mx.center(), is_max, if is_max || mr_max.hovered() { ACCENT } else { TEXT });
+        if mr_max.hovered() {
+            ctx.set_cursor_icon(CursorIcon::PointingHand);
+        }
+        let max_tip = if is_max { tr("Restore (Esc)") } else { tr("Enlarge in the window") };
+        if mr_max.on_hover_text(max_tip).clicked() {
+            self.toggle_max(content, main);
         }
     }
 
@@ -1127,24 +1207,42 @@ impl MultiView {
             out.back = true;
         }
 
-        // Presets
+        // Presets or one-click restore pill when a single screen is maximized
         let mut x = back.right() + 16.0;
-        p.text(pos2(x, cy), Align2::LEFT_CENTER, tr("Preset"), FontId::proportional(11.0), theme::text_3());
-        x += 30.0;
-        for preset in Preset::ALL {
-            let label = preset.label();
-            let w = p.layout_no_wrap(label.to_string(), FontId::proportional(12.0), TEXT).size().x + 16.0;
-            let r = Rect::from_min_size(pos2(x, cy - 12.0), vec2(w, 24.0));
-            let resp = ui.interact(r, ui.scope_id().with(("mv_preset", preset as u8)), Sense::click());
+        if self.maximized.is_some() {
+            let label = tr("Back to multi-view");
+            let tw = p.layout_no_wrap(label.to_string(), FontId::proportional(12.0), ACCENT).size().x;
+            let pill = Rect::from_min_size(pos2(x, cy - 12.0), vec2(tw + 32.0, 24.0));
+            let resp = ui.interact(pill, ui.scope_id().with("mv_restore_pill"), Sense::click());
+            p.rect_filled(pill, 12.0, theme::accent_alpha(if resp.hovered() { 58 } else { 36 }));
+            p.rect_stroke(pill, 12.0, theme::accent_stroke(140), StrokeKind::Inside);
+            draw_max_icon(p, pos2(pill.left() + 14.0, cy), true, ACCENT);
+            p.text(pos2(pill.left() + 25.0, cy), Align2::LEFT_CENTER, label, FontId::proportional(12.0), ACCENT);
             if resp.hovered() {
-                p.rect_filled(r, 12.0, theme::tint(18));
                 ctx.set_cursor_icon(CursorIcon::PointingHand);
             }
-            p.text(r.center(), Align2::CENTER_CENTER, label, FontId::proportional(12.0), if resp.hovered() { theme::text() } else { theme::text_2() });
-            if resp.clicked() {
-                self.apply_preset(preset);
+            if resp.on_hover_text(tr("Restore (Esc)")).clicked() {
+                self.exit_max(main);
             }
-            x = r.right() + 2.0;
+            x = pill.right() + 10.0;
+        } else {
+            p.text(pos2(x, cy), Align2::LEFT_CENTER, tr("Preset"), FontId::proportional(11.0), theme::text_3());
+            x += 30.0;
+            for preset in Preset::ALL {
+                let label = preset.label();
+                let w = p.layout_no_wrap(label.to_string(), FontId::proportional(12.0), TEXT).size().x + 16.0;
+                let r = Rect::from_min_size(pos2(x, cy - 12.0), vec2(w, 24.0));
+                let resp = ui.interact(r, ui.scope_id().with(("mv_preset", preset as u8)), Sense::click());
+                if resp.hovered() {
+                    p.rect_filled(r, 12.0, theme::tint(18));
+                    ctx.set_cursor_icon(CursorIcon::PointingHand);
+                }
+                p.text(r.center(), Align2::CENTER_CENTER, label, FontId::proportional(12.0), if resp.hovered() { theme::text() } else { theme::text_2() });
+                if resp.clicked() {
+                    self.apply_preset(preset, main);
+                }
+                x = r.right() + 2.0;
+            }
         }
 
         // Right side: multi-view switch, divider, link switch, count
@@ -1181,6 +1279,25 @@ impl MultiView {
         }
         if frameless {
             crate::app::draw_frameless_window_controls(ui, stage, 1.0, fg);
+        }
+    }
+
+    /// Floating one-click restore pill in frameless mode while a slot is maximized.
+    fn floating_restore_pill(&mut self, ui: &mut egui::Ui, p: &egui::Painter, grid: Rect, main: &Player) {
+        let label = tr("Back to multi-view");
+        let tw = p.layout_no_wrap(label.to_string(), FontId::proportional(12.0), TEXT).size().x;
+        let pill = Rect::from_min_size(pos2(grid.left() + 14.0, grid.top() + HEADER_H + 10.0), vec2(tw + 36.0, 28.0));
+        let resp = ui.interact(pill, ui.scope_id().with("mv_float_restore"), Sense::click());
+        let hot = resp.hovered();
+        p.rect_filled(pill, 14.0, if hot { theme::accent_alpha(52) } else { theme::glass(222) });
+        p.rect_stroke(pill, 14.0, if hot { theme::accent_stroke(150) } else { theme::glass_stroke() }, StrokeKind::Inside);
+        draw_max_icon(p, pos2(pill.left() + 16.0, pill.center().y), true, ACCENT);
+        p.text(pos2(pill.left() + 28.0, pill.center().y), Align2::LEFT_CENTER, label, FontId::proportional(12.0), if hot { ACCENT } else { TEXT });
+        if hot {
+            ui.ctx().set_cursor_icon(CursorIcon::PointingHand);
+        }
+        if resp.on_hover_text(tr("Restore (Esc)")).clicked() {
+            self.exit_max(main);
         }
     }
 
@@ -1274,21 +1391,35 @@ fn tool_button(ui: &mut egui::Ui, p: &egui::Painter, r: Rect, id: impl std::hash
         Tool::Close => icons::draw(p, Icon::Close, c, 10.0, Color32::WHITE),
         Tool::Fill => icons::draw(p, Icon::Fullscreen, c, 11.0, Color32::WHITE),
         Tool::Unfill => icons::draw(p, Icon::ExitFullscreen, c, 11.0, Color32::WHITE),
-        Tool::Max | Tool::Restore => {
-            // Four corners pointing out (enlarge) or in (restore).
-            let (o, i) = (6.0, 2.5);
-            for (sx, sy) in [(-1.0, -1.0), (1.0, -1.0), (-1.0, 1.0), (1.0, 1.0)] {
-                let corner = if tool == Tool::Max { c + vec2(sx * o, sy * o * 0.8) } else { c + vec2(sx * i, sy * i * 0.8) };
-                let toward = if tool == Tool::Max { -1.0 } else { 1.0 };
-                p.line_segment([corner, corner + vec2(toward * sx * 3.5, 0.0)], st);
-                p.line_segment([corner, corner + vec2(0.0, toward * sy * 3.0)], st);
-            }
-        }
+        Tool::Max => draw_max_icon(p, c, false, Color32::WHITE),
+        Tool::Restore => draw_max_icon(p, c, true, Color32::WHITE),
     }
     if hot {
         ui.ctx().set_cursor_icon(CursorIcon::PointingHand);
     }
     resp.on_hover_text(tip).clicked()
+}
+
+/// Icon for single-screen maximize (outer screen frame + diagonal expand)
+/// or restore to multi-view (crisp 2×2 grid).
+fn draw_max_icon(p: &egui::Painter, c: Pos2, restore: bool, color: Color32) {
+    if restore {
+        let s = 4.2;
+        let g = 1.6;
+        for (dx, dy) in [(-s - g * 0.5, -s - g * 0.5), (g * 0.5, -s - g * 0.5), (-s - g * 0.5, g * 0.5), (g * 0.5, g * 0.5)] {
+            p.rect_filled(Rect::from_min_size(c + vec2(dx, dy), vec2(s, s)), 1.0, color);
+        }
+    } else {
+        let st = Stroke::new(1.3, color);
+        let box_ = Rect::from_center_size(c, vec2(12.0, 9.5));
+        p.rect_stroke(box_, 1.5, st, StrokeKind::Middle);
+        // Inner expand corner marks (top-right and bottom-left).
+        let (tr_, bl) = (box_.right_top() + vec2(-2.2, 2.2), box_.left_bottom() + vec2(2.2, -2.2));
+        p.line_segment([tr_, tr_ + vec2(-3.0, 0.0)], st);
+        p.line_segment([tr_, tr_ + vec2(0.0, 2.8)], st);
+        p.line_segment([bl, bl + vec2(3.0, 0.0)], st);
+        p.line_segment([bl, bl + vec2(0.0, -2.8)], st);
+    }
 }
 
 /// A labeled switch ending at `right_center`. Returns (left edge, clicked).

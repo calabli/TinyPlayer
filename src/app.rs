@@ -43,10 +43,10 @@ const RESUME_PROMPT_SECS: f64 = 10.0;
 const SIDEBAR_W: f32 = 280.0;
 const SIDEBAR_HANDLE_W: f32 = 22.0;
 pub(crate) const WINDOW_CONTROLS_W: f32 = 76.0;
-/// Height of the bottom control bar (seek line + button row).
-const BAR_H: f32 = 64.0;
-/// Below this width the control bar has no room for the optional buttons.
-const WIDE_BAR: f32 = 820.0;
+/// Height reserved for the floating bottom control island + bottom margin.
+const BAR_H: f32 = 80.0;
+/// Below this width the floating control island hides optional buttons.
+const WIDE_BAR: f32 = 680.0;
 const AB_COLOR: Color32 = Color32::from_rgb(0xFF, 0xC1, 0x4D);
 const BOOKMARK_COLOR: Color32 = Color32::from_rgb(0xFF, 0x8A, 0x65);
 const HOVER_THUMB_W: f32 = 200.0;
@@ -2198,8 +2198,8 @@ impl eframe::App for App {
 // ---- Controls --------------------------------------------------------------
 
 impl App {
-    /// Bottom control bar: a full-width seek line on top, then
-    /// time on the left, transport + volume in the middle, tools on the right.
+    /// Bottom floating HUD island: precision scrubber on top,
+    /// volume & speed on the left, hero transport in the middle, tools on the right.
     fn draw_controls(&mut self, ui: &mut egui::Ui, chrome: Rect, alpha: f32) {
         let Some(player) = &self.player else { return };
         let s = player.state.clone();
@@ -2207,11 +2207,21 @@ impl App {
         let a = |c: Color32| c.gamma_multiply(alpha);
         let ctx = ui.ctx().clone();
 
-        let bar = Rect::from_min_max(pos2(chrome.left(), chrome.bottom() - BAR_H), chrome.max);
-        // Soft fade above the bar, then a solid band so text stays readable.
-        let fade = Rect::from_min_max(pos2(bar.left(), bar.top() - 28.0), pos2(bar.right(), bar.top()));
-        painter.rect_filled(fade, 0.0, theme::scrim((70.0 * alpha) as u8));
-        painter.rect_filled(bar, 0.0, theme::scrim((215.0 * alpha) as u8));
+        // Smooth ambient vignette at bottom edge.
+        let vig = Rect::from_min_max(pos2(chrome.left(), chrome.bottom() - 112.0), chrome.max);
+        theme::vertical_gradient(&painter, vig, Color32::TRANSPARENT, theme::scrim((210.0 * alpha) as u8));
+
+        // Centered floating obsidian glass island.
+        let margin_x = if chrome.width() > 640.0 { 20.0 } else { 10.0 };
+        let bar_w = (chrome.width() - margin_x * 2.0).clamp(260.0, 880.0);
+        let bar_h = 66.0;
+        let bar = Rect::from_min_size(
+            pos2(chrome.center().x - bar_w / 2.0, chrome.bottom() - bar_h - 12.0),
+            vec2(bar_w, bar_h),
+        );
+        let bar_radius = 16.0;
+        painter.rect_filled(bar, bar_radius, theme::glass((224.0 * alpha) as u8));
+        painter.rect_stroke(bar, bar_radius, Stroke::new(1.0, Color32::from_white_alpha((32.0 * alpha) as u8)), StrokeKind::Inside);
 
         let mut osd: Option<String> = None;
         let mut want_prev = false;
@@ -2223,23 +2233,37 @@ impl App {
 
         let full_top = chrome.top();
 
-        // ---- Seek line ----
-        let line_y = bar.top() + 3.0;
-        let track = Rect::from_min_max(pos2(bar.left(), line_y - 8.0), pos2(bar.right(), line_y + 8.0));
+        // ---- Row 1: Inline timecodes + precision scrubber ----
+        let line_y = bar.top() + 17.0;
         let cur = self.seek_preview.map_or(s.position, |f| f * s.duration);
-        if s.duration > 0.0 {
+        let cur_g = painter.layout_no_wrap(fmt_time(cur), FontId::monospace(11.0), a(TEXT));
+        let dur_g = painter.layout_no_wrap(fmt_time(s.duration), FontId::monospace(11.0), a(TEXT_2));
+        let cur_w = cur_g.size().x;
+        let dur_w = dur_g.size().x;
+        painter.galley(pos2(bar.left() + 16.0, line_y - cur_g.size().y / 2.0), cur_g, TEXT);
+        painter.galley(pos2(bar.right() - 16.0 - dur_w, line_y - dur_g.size().y / 2.0), dur_g, TEXT_2);
+
+        let track_left = bar.left() + 16.0 + cur_w + 12.0;
+        let track_right = bar.right() - 16.0 - dur_w - 12.0;
+        let track = Rect::from_min_max(pos2(track_left, line_y - 9.0), pos2(track_right.max(track_left + 10.0), line_y + 9.0));
+        if s.duration > 0.0 && track.width() > 12.0 {
             let tresp = ui.interact(track, ui.scope_id().with("track"), Sense::click_and_drag());
             let hot = tresp.hovered() || tresp.dragged();
             let thick = if hot { 5.0 } else { 3.0 };
             let at = |f: f64| track.left() + (f.clamp(0.0, 1.0) as f32) * track.width();
             let seg = |from: f32, to: f32, c: Color32| {
                 if to > from {
-                    painter.line_segment([pos2(from, line_y), pos2(to, line_y)], Stroke::new(thick, a(c)));
+                    let r = Rect::from_min_max(pos2(from, line_y - thick / 2.0), pos2(to, line_y + thick / 2.0));
+                    painter.rect_filled(r, thick / 2.0, a(c));
                 }
             };
             let frac = cur / s.duration;
             seg(track.left(), track.right(), Color32::from_white_alpha(38));
-            seg(track.left(), at(s.cached_until / s.duration), Color32::from_white_alpha(80));
+            seg(track.left(), at(s.cached_until / s.duration), Color32::from_white_alpha(78));
+            if hot {
+                let glow = Rect::from_min_max(pos2(track.left(), line_y - 4.5), pos2(at(frac), line_y + 4.5));
+                painter.rect_filled(glow, 4.5, theme::accent_alpha((44.0 * alpha) as u8));
+            }
             seg(track.left(), at(frac), ACCENT);
             if let Some(a_pos) = self.ab.a {
                 let ax = at(a_pos / s.duration);
@@ -2251,14 +2275,14 @@ impl App {
                     painter.line_segment([pos2(x, line_y - 6.0), pos2(x, line_y + 6.0)], Stroke::new(2.0, a(AB_COLOR)));
                 }
             }
-            knob(&painter, pos2(at(frac), line_y), if hot { 7.0 } else { 6.0 }, alpha);
+            knob(&painter, pos2(at(frac), line_y), if hot { 6.5 } else { 5.0 }, alpha);
 
             for t in self.marks.chapters.iter().map(|c| c.time).filter(|t| *t > 0.0) {
                 let x = at(t / s.duration);
-                painter.line_segment([pos2(x, line_y - 3.0), pos2(x, line_y + 3.0)], Stroke::new(1.5, a(Color32::BLACK)));
+                painter.line_segment([pos2(x, line_y - 2.5), pos2(x, line_y + 2.5)], Stroke::new(1.5, a(Color32::from_black_alpha(190))));
             }
             for b in &self.marks.bookmarks {
-                painter.circle_filled(pos2(at(b.time / s.duration), line_y), 3.5, a(BOOKMARK_COLOR));
+                painter.circle_filled(pos2(at(b.time / s.duration), line_y), 3.2, a(BOOKMARK_COLOR));
             }
 
             let pointer_frac = tresp
@@ -2274,17 +2298,18 @@ impl App {
                     };
                     let g = painter.layout_no_wrap(label, FontId::monospace(11.0), TEXT);
                     let x = clamp_inside(at(f), track.left() + g.size().x / 2.0 + 6.0, track.right() - g.size().x / 2.0 - 6.0);
-                    let r = Rect::from_center_size(pos2(x, line_y - 20.0), g.size() + vec2(12.0, 6.0));
-                    painter.rect_filled(r, 4.0, theme::scrim(225));
-                    painter.galley(r.min + vec2(6.0, 3.0), g, TEXT);
+                    let r = Rect::from_center_size(pos2(x, bar.top() - 16.0), g.size() + vec2(14.0, 8.0));
+                    painter.rect_filled(r, 8.0, theme::glass(236));
+                    painter.rect_stroke(r, 8.0, theme::glass_stroke(), StrokeKind::Inside);
+                    painter.galley(r.min + vec2(7.0, 4.0), g, TEXT);
                     ctx.set_cursor_icon(CursorIcon::PointingHand);
                     if let Some(tex) = self.hover_thumbs.lookup(&s.path, f * s.duration, s.duration) {
                         let size = tex.size_vec2() * (HOVER_THUMB_W / tex.size_vec2().x);
                         let half = size.x / 2.0 + 6.0;
                         let tx = clamp_inside(at(f), track.left() + half, track.right() - half);
-                        let thumb = Rect::from_center_size(pos2(tx, r.top() - 6.0 - size.y / 2.0), size);
+                        let thumb = Rect::from_center_size(pos2(tx, r.top() - 8.0 - size.y / 2.0), size);
                         painter.image(tex.id(), thumb, Rect::from_min_max(pos2(0.0, 0.0), pos2(1.0, 1.0)), Color32::WHITE);
-                        painter.rect_stroke(thumb, 3.0, Stroke::new(1.0, Color32::from_white_alpha(70)), StrokeKind::Outside);
+                        painter.rect_stroke(thumb, 6.0, Stroke::new(1.0, Color32::from_white_alpha(80)), StrokeKind::Outside);
                     }
                 }
                 if tresp.dragged() {
@@ -2299,11 +2324,15 @@ impl App {
             }
         }
 
-        let cy = bar.top() + 37.0;
+        // ---- Row 2: 3-zone controls ----
+        let cy = bar.top() + 45.0;
         let button = |ui: &mut egui::Ui, center: egui::Pos2, id: &str, icon: Icon, size: f32, enabled: bool| -> bool {
-            let rect = Rect::from_center_size(center, vec2(34.0, 34.0));
+            let rect = Rect::from_center_size(center, vec2(30.0, 30.0));
             let resp = ui.interact(rect, ui.scope_id().with(id), Sense::click());
             let hovered = enabled && resp.hovered();
+            if hovered {
+                painter.circle_filled(center, 14.0, Color32::from_white_alpha((22.0 * alpha) as u8));
+            }
             let color = if !enabled {
                 TEXT_3
             } else if hovered {
@@ -2318,91 +2347,54 @@ impl App {
             enabled && resp.clicked()
         };
 
-        // ---- Left: time ----
-        let cur_g = painter.layout_no_wrap(fmt_time(cur), FontId::monospace(13.0), a(TEXT));
-        let cur_w = cur_g.size().x;
-        painter.galley(pos2(bar.left() + 18.0, cy - cur_g.size().y / 2.0), cur_g, TEXT);
-        painter.text(
-            pos2(bar.left() + 18.0 + cur_w + 6.0, cy),
-            Align2::LEFT_CENTER,
-            format!("/  {}", fmt_time(s.duration)),
-            FontId::monospace(13.0),
-            a(TEXT_2),
-        );
-
-        // ---- Middle: stop, prev, play, next, volume ----
-        let group_w = 36.0 * 4.0 + 12.0 + 30.0 + 84.0;
-        let mut x = bar.center().x - group_w / 2.0;
-        // Keep clear of the time on narrow windows.
-        x = x.max(bar.left() + 200.0);
-        if button(ui, pos2(x + 18.0, cy), "stop", Icon::Stop, 15.0, true) {
-            want_stop = true;
-        }
-        x += 36.0;
-        if button(ui, pos2(x + 18.0, cy), "prev", Icon::Prev, 15.0, self.playlist.has_prev()) {
-            want_prev = true;
-        }
-        x += 36.0;
-        let pp_icon = if s.paused || s.eof { Icon::Play } else { Icon::Pause };
-        if button(ui, pos2(x + 18.0, cy), "pp", pp_icon, 26.0, true) {
-            player.toggle_pause();
-        }
-        x += 36.0;
-        if button(ui, pos2(x + 18.0, cy), "next", Icon::Next, 15.0, self.playlist.has_next()) {
-            want_next = true;
-        }
-        x += 36.0 + 12.0;
+        // ---- Left zone: volume capsule + speed pill ----
+        let mut lx = bar.left() + 14.0;
         let vol_icon = if s.muted || s.volume <= 0.0 { Icon::Muted } else { Icon::Volume };
-        if button(ui, pos2(x + 15.0, cy), "mute", vol_icon, 17.0, true) {
+        if button(ui, pos2(lx + 14.0, cy), "mute", vol_icon, 16.0, true) {
             player.toggle_mute();
         }
-        x += 32.0;
-        let vol = Rect::from_min_size(pos2(x, cy - 10.0), vec2(80.0, 20.0));
-        let vresp = ui.interact(vol, ui.scope_id().with("vol"), Sense::click_and_drag());
-        let vol_frac = if s.muted { 0.0 } else { (s.volume / 100.0).clamp(0.0, 1.0) as f32 };
-        let vx = vol.left() + vol_frac * vol.width();
-        painter.line_segment([pos2(vol.left(), cy), pos2(vol.right(), cy)], Stroke::new(3.0, a(Color32::from_white_alpha(45))));
-        painter.line_segment([pos2(vol.left(), cy), pos2(vx, cy)], Stroke::new(3.0, a(ACCENT)));
-        knob(&painter, pos2(vx, cy), 5.0, alpha);
-        if let Some(p) = vresp.interact_pointer_pos()
-            && (vresp.dragged() || vresp.clicked()) {
-                let v = ((p.x - vol.left()) / vol.width()).clamp(0.0, 1.0) as f64 * 100.0;
-                player.set_volume(v);
-                osd = Some(format!("VOLUME  {}%", v.round()));
+        lx += 30.0;
+        if bar.width() >= 540.0 {
+            let vol = Rect::from_min_size(pos2(lx, cy - 10.0), vec2(66.0, 20.0));
+            let vresp = ui.interact(vol, ui.scope_id().with("vol"), Sense::click_and_drag());
+            let vol_frac = if s.muted { 0.0 } else { (s.volume / 100.0).clamp(0.0, 1.0) as f32 };
+            let vx = vol.left() + vol_frac * vol.width();
+            painter.rect_filled(Rect::from_min_max(pos2(vol.left(), cy - 1.5), pos2(vol.right(), cy + 1.5)), 1.5, a(Color32::from_white_alpha(42)));
+            if vx > vol.left() {
+                painter.rect_filled(Rect::from_min_max(pos2(vol.left(), cy - 1.5), pos2(vx, cy + 1.5)), 1.5, a(ACCENT));
             }
-        if vresp.hovered() {
-            ctx.set_cursor_icon(CursorIcon::PointingHand);
+            knob(&painter, pos2(vx, cy), if vresp.hovered() || vresp.dragged() { 5.0 } else { 4.2 }, alpha);
+            if let Some(p) = vresp.interact_pointer_pos()
+                && (vresp.dragged() || vresp.clicked()) {
+                    let v = ((p.x - vol.left()) / vol.width()).clamp(0.0, 1.0) as f64 * 100.0;
+                    player.set_volume(v);
+                    osd = Some(format!("VOLUME  {}%", v.round()));
+                }
+            if vresp.hovered() {
+                ctx.set_cursor_icon(CursorIcon::PointingHand);
+            }
+            lx += 78.0;
+        } else {
+            lx += 8.0;
         }
 
-        // ---- Right: CC, speed, playlist, settings, fullscreen ----
-        let mut rx = bar.right() - 14.0 - 18.0;
-        let fs = ctx.input(|i| i.viewport().fullscreen.unwrap_or(false));
-        if button(ui, pos2(rx, cy), "fs", if fs { Icon::ExitFullscreen } else { Icon::Fullscreen }, 16.0, true) {
-            ctx.send_viewport_cmd(ViewportCommand::Fullscreen(!fs));
-        }
-        rx -= 40.0;
-        if bar.width() >= WIDE_BAR {
-            if button(ui, pos2(rx, cy), "pip", Icon::PictureInPicture, 17.0, true) {
-                want_pip = true;
-            }
-            rx -= 40.0;
-        }
-        if button(ui, pos2(rx, cy), "settings", Icon::Settings, 17.0, true) {
-            open_settings = true;
-        }
-        rx -= 40.0;
-        if button(ui, pos2(rx, cy), "playlist", Icon::List, 17.0, true) {
-            toggle_list = true;
-        }
-
-        // Speed: outlined pill that opens a small menu.
-        rx -= 50.0;
-        let pill = Rect::from_center_size(pos2(rx, cy), vec2(54.0, 24.0));
-        let presp = ui.interact(pill, ui.scope_id().with("speed"), Sense::click());
-        let pc = if presp.hovered() || self.speed_menu { ACCENT } else { TEXT_2 };
-        painter.rect_stroke(pill, 12.0, Stroke::new(1.0, a(pc)), StrokeKind::Inside);
-        let label = if (s.speed - 1.0).abs() < 0.01 { tr("Speed").to_string() } else { fmt_speed(s.speed) };
-        painter.text(pill.center(), Align2::CENTER_CENTER, label, FontId::proportional(12.0), a(if presp.hovered() { ACCENT } else { TEXT }));
+        // Speed pill
+        let pill = Rect::from_min_size(pos2(lx, cy - 11.5), vec2(52.0, 23.0));
+        let presp = ui.interact(pill, ui.scope_id().with("speed"), Sense::click()).on_hover_text(tr("Speed"));
+        let speed_active = self.speed_menu || (s.speed - 1.0).abs() >= 0.01;
+        painter.rect_filled(
+            pill,
+            11.5,
+            if speed_active { theme::accent_alpha((32.0 * alpha) as u8) } else { Color32::from_white_alpha((14.0 * alpha) as u8) },
+        );
+        painter.rect_stroke(
+            pill,
+            11.5,
+            Stroke::new(1.0, if presp.hovered() || speed_active { theme::accent_alpha((130.0 * alpha) as u8) } else { Color32::from_white_alpha((26.0 * alpha) as u8) }),
+            StrokeKind::Inside,
+        );
+        let label = if (s.speed - 1.0).abs() < 0.01 { "1.0×".to_string() } else { fmt_speed(s.speed) };
+        painter.text(pill.center(), Align2::CENTER_CENTER, label, FontId::monospace(11.0), a(if presp.hovered() || speed_active { ACCENT } else { TEXT }));
         if presp.hovered() {
             ctx.set_cursor_icon(CursorIcon::PointingHand);
         }
@@ -2410,44 +2402,109 @@ impl App {
             self.speed_menu = !self.speed_menu;
         }
 
-        // Room for the English label, which is wider than the pill's gap.
-        rx -= 60.0;
-        let cc = Rect::from_center_size(pos2(rx, cy), vec2(52.0, 34.0));
-        let ccresp = ui.interact(cc, ui.scope_id().with("cc"), Sense::click());
-        painter.text(cc.center(), Align2::CENTER_CENTER, tr("Subtitles"), FontId::proportional(12.0), a(if ccresp.hovered() { ACCENT } else { TEXT }));
-        if ccresp.clicked() {
-            player.cycle_subtitles();
-            osd = Some("SUBTITLE  NEXT".into());
+        // ---- Center zone: hero transport cluster ----
+        let cx = bar.center().x;
+        if button(ui, pos2(cx - 72.0, cy), "stop", Icon::Stop, 14.0, true) {
+            want_stop = true;
+        }
+        if button(ui, pos2(cx - 38.0, cy), "prev", Icon::Prev, 15.0, self.playlist.has_prev()) {
+            want_prev = true;
+        }
+        // Accent circular Play / Pause hero button
+        let pp_rect = Rect::from_center_size(pos2(cx, cy), vec2(34.0, 34.0));
+        let pp_resp = ui.interact(pp_rect, ui.scope_id().with("pp"), Sense::click());
+        let pp_hot = pp_resp.hovered();
+        if pp_hot {
+            painter.circle_filled(pp_rect.center(), 19.0, theme::accent_alpha((44.0 * alpha) as u8));
+            ctx.set_cursor_icon(CursorIcon::PointingHand);
+        }
+        painter.circle_filled(pp_rect.center(), 15.5, a(ACCENT));
+        let pp_icon = if s.paused || s.eof { Icon::Play } else { Icon::Pause };
+        let icon_pos = if matches!(pp_icon, Icon::Play) { pp_rect.center() + vec2(1.0, 0.0) } else { pp_rect.center() };
+        icons::draw(&painter, pp_icon, icon_pos, 16.0, Color32::from_rgb(0x05, 0x07, 0x0B).gamma_multiply(alpha));
+        if pp_resp.clicked() {
+            player.toggle_pause();
+        }
+        if button(ui, pos2(cx + 38.0, cy), "next", Icon::Next, 15.0, self.playlist.has_next()) {
+            want_next = true;
+        }
+
+        // ---- Right zone: CC, playlist, quick panel, pip, fullscreen ----
+        let mut rx = bar.right() - 26.0;
+        let fs = ctx.input(|i| i.viewport().fullscreen.unwrap_or(false));
+        if button(ui, pos2(rx, cy), "fs", if fs { Icon::ExitFullscreen } else { Icon::Fullscreen }, 15.0, true) {
+            ctx.send_viewport_cmd(ViewportCommand::Fullscreen(!fs));
+        }
+        rx -= 34.0;
+        if bar.width() >= WIDE_BAR {
+            if button(ui, pos2(rx, cy), "pip", Icon::PictureInPicture, 16.0, true) {
+                want_pip = true;
+            }
+            rx -= 34.0;
+        }
+        // Quick panel button (highlighted when open)
+        let qp_c = pos2(rx, cy);
+        if self.quick.open {
+            painter.circle_filled(qp_c, 14.0, theme::accent_alpha((38.0 * alpha) as u8));
+            painter.circle_stroke(qp_c, 14.0, Stroke::new(1.0, theme::accent_alpha((120.0 * alpha) as u8)));
+        }
+        if button(ui, qp_c, "settings", Icon::Settings, 16.0, true) {
+            open_settings = true;
+        }
+        rx -= 34.0;
+        let pl_c = pos2(rx, cy);
+        if self.sidebar_open {
+            painter.circle_filled(pl_c, 14.0, theme::accent_alpha((38.0 * alpha) as u8));
+            painter.circle_stroke(pl_c, 14.0, Stroke::new(1.0, theme::accent_alpha((120.0 * alpha) as u8)));
+        }
+        if button(ui, pl_c, "playlist", Icon::List, 16.0, true) {
+            toggle_list = true;
+        }
+        rx -= 44.0;
+        if bar.width() >= 580.0 {
+            let cc = Rect::from_center_size(pos2(rx, cy), vec2(48.0, 24.0));
+            let ccresp = ui.interact(cc, ui.scope_id().with("cc"), Sense::click());
+            if ccresp.hovered() {
+                painter.rect_filled(cc, 12.0, Color32::from_white_alpha((18.0 * alpha) as u8));
+                ctx.set_cursor_icon(CursorIcon::PointingHand);
+            }
+            painter.text(cc.center(), Align2::CENTER_CENTER, tr("Subtitles"), FontId::proportional(11.5), a(if ccresp.hovered() { ACCENT } else { TEXT_2 }));
+            if ccresp.clicked() {
+                player.cycle_subtitles();
+                osd = Some("SUBTITLE  NEXT".into());
+            }
         }
 
         // Speed menu, opening upward from the pill.
         if self.speed_menu {
             let speeds: Vec<f64> = crate::player::SPEEDS.iter().rev().copied().collect();
-            // Fits the menu above the pill on short windows.
-            let item_h = ((pill.top() - full_top - 24.0) / speeds.len() as f32).clamp(16.0, 26.0);
+            let item_h = ((pill.top() - full_top - 24.0) / speeds.len() as f32).clamp(18.0, 26.0);
             let menu = Rect::from_min_size(
-                pos2(pill.center().x - 36.0, pill.top() - 10.0 - item_h * speeds.len() as f32 - 8.0),
-                vec2(72.0, item_h * speeds.len() as f32 + 8.0),
+                pos2(pill.center().x - 38.0, pill.top() - 10.0 - item_h * speeds.len() as f32 - 8.0),
+                vec2(76.0, item_h * speeds.len() as f32 + 8.0),
             );
-            painter.rect_filled(menu, 8.0, Color32::from_rgba_unmultiplied(0x16, 0x1A, 0x20, 245));
-            painter.rect_stroke(menu, 8.0, Stroke::new(0.5, Color32::from_white_alpha(30)), StrokeKind::Inside);
+            painter.rect_filled(menu, 10.0, theme::glass(244));
+            painter.rect_stroke(menu, 10.0, theme::glass_stroke(), StrokeKind::Inside);
             let _blocker = ui.interact(menu, ui.scope_id().with("speed_menu"), Sense::click());
             for (i, sp) in speeds.iter().enumerate() {
-                let r = Rect::from_min_size(pos2(menu.left() + 4.0, menu.top() + 4.0 + i as f32 * item_h), vec2(64.0, item_h));
+                let r = Rect::from_min_size(pos2(menu.left() + 4.0, menu.top() + 4.0 + i as f32 * item_h), vec2(68.0, item_h));
                 let resp = ui.interact(r, ui.scope_id().with(("speed_item", i)), Sense::click());
                 let on = (sp - s.speed).abs() < 0.01;
+                if on {
+                    painter.rect_filled(r, 6.0, theme::accent_alpha(34));
+                } else if resp.hovered() {
+                    painter.rect_filled(r, 6.0, Color32::from_white_alpha(16));
+                }
                 if resp.hovered() {
-                    painter.rect_filled(r, 5.0, Color32::from_white_alpha(14));
                     ctx.set_cursor_icon(CursorIcon::PointingHand);
                 }
-                painter.text(r.center(), Align2::CENTER_CENTER, fmt_speed(*sp), FontId::monospace(12.0), if on { ACCENT } else { TEXT });
+                painter.text(r.center(), Align2::CENTER_CENTER, fmt_speed(*sp), FontId::monospace(11.5), if on { ACCENT } else { TEXT });
                 if resp.clicked() {
                     player.set_speed(*sp);
                     osd = Some(format!("SPEED  {}", fmt_speed(*sp)));
                     self.speed_menu = false;
                 }
             }
-            // Any click elsewhere closes the menu.
             let clicked_outside = ctx.input(|i| i.pointer.any_click())
                 && ctx.input(|i| i.pointer.interact_pos()).is_some_and(|p| !menu.contains(p) && !pill.contains(p));
             if clicked_outside {
@@ -2512,25 +2569,28 @@ impl App {
 
         let msg = tf("Stopped at {}", &[&fmt_time(pos)]);
         let font = FontId::proportional(12.0);
-        let mg = p.layout_no_wrap(msg, FontId::monospace(12.0), TEXT.gamma_multiply(a));
-        let rg = p.layout_no_wrap(tr("Resume  Enter").into(), font.clone(), ACCENT);
+        let mg = p.layout_no_wrap(msg, FontId::monospace(11.5), TEXT.gamma_multiply(a));
+        let rg = p.layout_no_wrap(tr("Resume  Enter").into(), font.clone(), Color32::from_rgb(0x05, 0x07, 0x0B));
         let sg = p.layout_no_wrap(tr("Start over").into(), font.clone(), TEXT_2);
-        let h = 34.0;
-        let w = 14.0 + mg.size().x + 18.0 + rg.size().x + 16.0 + sg.size().x + 14.0;
-        let rect = Rect::from_min_size(pos2(full.left() + 16.0, full.bottom() - BAR_H - 24.0 - h), vec2(w, h));
-        p.rect_filled(rect, 0.0, theme::scrim((210.0 * a) as u8));
-        p.line_segment([rect.left_top(), rect.left_bottom()], Stroke::new(2.0, ACCENT.gamma_multiply(a)));
+        let h = 36.0;
+        let btn_w = rg.size().x + 18.0;
+        let w = 24.0 + mg.size().x + 14.0 + btn_w + 14.0 + sg.size().x + 16.0;
+        let rect = Rect::from_min_size(pos2(full.left() + 20.0, full.bottom() - BAR_H - 18.0 - h), vec2(w, h));
+        p.rect_filled(rect, 18.0, theme::glass((232.0 * a) as u8));
+        p.rect_stroke(rect, 18.0, Stroke::new(1.0, Color32::from_white_alpha((30.0 * a) as u8)), StrokeKind::Inside);
 
         let cy = rect.center().y;
-        let mut x = rect.left() + 14.0;
+        p.circle_filled(pos2(rect.left() + 14.0, cy), 3.0, ACCENT.gamma_multiply(a));
+        let mut x = rect.left() + 24.0;
         p.galley(pos2(x, cy - mg.size().y / 2.0), mg.clone(), TEXT);
-        x += mg.size().x + 18.0;
+        x += mg.size().x + 14.0;
 
-        let resume_r = Rect::from_min_size(pos2(x, cy - 12.0), vec2(rg.size().x, 24.0));
+        let resume_r = Rect::from_min_size(pos2(x, cy - 12.0), vec2(btn_w, 24.0));
         let rr = ui.interact(resume_r, ui.scope_id().with("resume_yes"), Sense::click());
-        let rc = if rr.hovered() { TEXT } else { ACCENT };
-        p.text(pos2(x, cy), Align2::LEFT_CENTER, tr("Resume  Enter"), font.clone(), rc.gamma_multiply(a));
-        x += rg.size().x + 16.0;
+        let rbg = if rr.hovered() { ACCENT.lerp_to_gamma(Color32::WHITE, 0.15) } else { ACCENT };
+        p.rect_filled(resume_r, 12.0, rbg.gamma_multiply(a));
+        p.text(resume_r.center(), Align2::CENTER_CENTER, tr("Resume  Enter"), font.clone(), Color32::from_rgb(0x05, 0x07, 0x0B).gamma_multiply(a));
+        x += btn_w + 14.0;
 
         let start_r = Rect::from_min_size(pos2(x, cy - 12.0), vec2(sg.size().x, 24.0));
         let sr = ui.interact(start_r, ui.scope_id().with("resume_no"), Sense::click());
@@ -2624,62 +2684,75 @@ pub(crate) fn draw_frameless_window_controls(ui: &mut egui::Ui, stage: Rect, alp
     }
 }
 
-/// "‹ Library" at the top-left of the player. Returns true when clicked.
+/// "‹ Library" floating glass pill at the top-left of the player.
 fn back_button(ui: &mut egui::Ui, stage: Rect, alpha: f32) -> bool {
-    let r = Rect::from_min_size(pos2(stage.left() + 8.0, stage.top() + 8.0), vec2(74.0, 28.0));
+    let r = Rect::from_min_size(pos2(stage.left() + 12.0, stage.top() + 10.0), vec2(78.0, 28.0));
     let resp = ui.interact(r, ui.scope_id().with("back_to_library"), Sense::click());
     let p = ui.painter();
-    let c = if resp.hovered() { ACCENT } else { TEXT };
-    if resp.hovered() {
-        p.rect_filled(r, 14.0, theme::accent_alpha((30.0 * alpha) as u8));
+    let hovered = resp.hovered();
+    let c = if hovered { ACCENT } else { TEXT };
+    p.rect_filled(r, 14.0, if hovered { theme::accent_alpha((34.0 * alpha) as u8) } else { theme::glass((190.0 * alpha) as u8) });
+    p.rect_stroke(
+        r,
+        14.0,
+        Stroke::new(1.0, if hovered { theme::accent_alpha((120.0 * alpha) as u8) } else { Color32::from_white_alpha((26.0 * alpha) as u8) }),
+        StrokeKind::Inside,
+    );
+    if hovered {
         ui.ctx().set_cursor_icon(CursorIcon::PointingHand);
     }
     let cy = r.center().y;
-    let x = r.left() + 14.0;
-    let st = Stroke::new(1.8, c.gamma_multiply(alpha));
-    p.line_segment([pos2(x + 4.0, cy - 6.0), pos2(x - 2.0, cy)], st);
-    p.line_segment([pos2(x - 2.0, cy), pos2(x + 4.0, cy + 6.0)], st);
-    p.text(pos2(x + 12.0, cy), Align2::LEFT_CENTER, tr("Library"), FontId::proportional(13.0), c.gamma_multiply(alpha));
+    let x = r.left() + 15.0;
+    let st = Stroke::new(1.6, c.gamma_multiply(alpha));
+    p.line_segment([pos2(x + 3.5, cy - 5.0), pos2(x - 1.5, cy)], st);
+    p.line_segment([pos2(x - 1.5, cy), pos2(x + 3.5, cy + 5.0)], st);
+    p.text(pos2(x + 11.0, cy), Align2::LEFT_CENTER, tr("Library"), FontId::proportional(12.5), c.gamma_multiply(alpha));
     resp.clicked()
 }
 
 #[allow(clippy::too_many_arguments)]
 fn draw_top_bar(p: &egui::Painter, full: Rect, s: &crate::player::State, plays: i64, private: bool, alpha: f32, right_gap: f32, has_fav: bool) -> f32 {
     let a = |c: Color32| c.gamma_multiply(alpha);
-    let band = Rect::from_min_max(full.min, pos2(full.right(), full.top() + 44.0));
-    p.rect_filled(band, 0.0, theme::scrim((110.0 * alpha) as u8));
-    let y = full.top() + 22.0;
+    let band = Rect::from_min_max(full.min, pos2(full.right(), full.top() + 60.0));
+    theme::vertical_gradient(p, band, theme::scrim((185.0 * alpha) as u8), Color32::TRANSPARENT);
+    let y = full.top() + 24.0;
 
-    let mut tags: Vec<(String, Color32)> = Vec::new();
+    let mut tags: Vec<(String, Color32, bool)> = Vec::new();
     if private {
-        tags.push(("PRIVATE".into(), ACCENT));
+        tags.push(("PRIVATE".into(), ACCENT, true));
     }
     if plays > 0 {
-        tags.push((format!("PLAYED {plays}×"), TEXT_2));
+        tags.push((format!("PLAYED {plays}×"), TEXT_2, false));
     }
     if !s.codec.is_empty() {
-        tags.push((s.codec.clone(), ACCENT));
+        tags.push((s.codec.clone(), ACCENT, true));
     }
     if s.height > 0 {
-        tags.push((format!("{}P", s.height), TEXT_2));
+        tags.push((format!("{}P", s.height), TEXT, false));
     }
+    let is_hw = !s.hwdec.is_empty();
     tags.push((
-        if s.hwdec.is_empty() { "SW".into() } else { format!("HW · {}", s.hwdec.to_uppercase()) },
-        TEXT_2,
+        if is_hw { format!("HW · {}", s.hwdec.to_uppercase()) } else { "SW".into() },
+        if is_hw { TEXT } else { TEXT_2 },
+        is_hw,
     ));
 
     let mut x = full.right() - right_gap;
     let font = FontId::monospace(10.0);
-    for (i, (t, c)) in tags.iter().rev().enumerate() {
-        let r = p.text(pos2(x, y), Align2::RIGHT_CENTER, t, font.clone(), a(*c));
-        x = r.left() - 9.0;
-        if i + 1 < tags.len() {
-            p.line_segment([pos2(x + 4.5, y - 5.0), pos2(x + 4.5, y + 5.0)], Stroke::new(1.0, a(Color32::from_rgb(0x30, 0x36, 0x3D))));
-        }
+    for (t, c, accent_pill) in tags.iter().rev() {
+        let g = p.layout_no_wrap(t.clone(), font.clone(), a(*c));
+        let pw = g.size().x + 14.0;
+        let pill = Rect::from_min_size(pos2(x - pw, y - 10.0), vec2(pw, 20.0));
+        let bg = if *accent_pill { theme::accent_alpha((28.0 * alpha) as u8) } else { theme::glass((185.0 * alpha) as u8) };
+        let st = if *accent_pill { theme::accent_alpha((90.0 * alpha) as u8) } else { Color32::from_white_alpha((24.0 * alpha) as u8) };
+        p.rect_filled(pill, 10.0, bg);
+        p.rect_stroke(pill, 10.0, Stroke::new(1.0, st), StrokeKind::Inside);
+        p.galley(pos2(pill.left() + 7.0, y - g.size().y / 2.0), g, *c);
+        x = pill.left() - 6.0;
     }
 
-    let title_left = full.left() + 92.0;
-    let reserve = if has_fav { 38.0 } else { 12.0 };
+    let title_left = full.left() + 100.0;
+    let reserve = if has_fav { 38.0 } else { 14.0 };
     let max_title_w = (x - reserve - title_left).max(20.0);
     let title = elide(p, &s.title, FontId::proportional(13.0), max_title_w);
     let r = p.text(pos2(title_left, y), Align2::LEFT_CENTER, title, FontId::proportional(13.0), a(TEXT));
@@ -2687,13 +2760,15 @@ fn draw_top_bar(p: &egui::Painter, full: Rect, s: &crate::player::State, plays: 
 }
 
 fn draw_osd(p: &egui::Painter, full: Rect, text: &str, alpha: f32) {
-    let font = FontId::monospace(12.0);
+    let font = FontId::monospace(11.5);
     let galley = p.layout_no_wrap(text.to_string(), font, TEXT.gamma_multiply(alpha));
-    let origin = pos2(full.left() + 16.0, full.top() + 54.0);
-    let rect = Rect::from_min_size(origin, galley.size() + vec2(22.0, 12.0));
-    p.rect_filled(rect, 0.0, theme::scrim((190.0 * alpha) as u8));
-    p.line_segment([rect.left_top(), rect.left_bottom()], Stroke::new(2.0, ACCENT.gamma_multiply(alpha)));
-    p.galley(origin + vec2(12.0, 6.0), galley, TEXT);
+    let origin = pos2(full.left() + 18.0, full.top() + 56.0);
+    let rect = Rect::from_min_size(origin, galley.size() + vec2(30.0, 14.0));
+    let radius = rect.height() / 2.0;
+    p.rect_filled(rect, radius, theme::glass((228.0 * alpha) as u8));
+    p.rect_stroke(rect, radius, Stroke::new(1.0, Color32::from_white_alpha((30.0 * alpha) as u8)), StrokeKind::Inside);
+    p.circle_filled(pos2(rect.left() + 12.0, rect.center().y), 3.0, ACCENT.gamma_multiply(alpha));
+    p.galley(origin + vec2(20.0, 7.0), galley, TEXT);
 }
 
 enum UpdateAction {
@@ -2716,24 +2791,43 @@ enum EmptyAction {
 
 fn draw_empty_state(ui: &mut egui::Ui, full: Rect, recent: &[Entry], has_library: bool) -> EmptyAction {
     let p = ui.painter().clone();
-    let list_h = if recent.is_empty() { 0.0 } else { 34.0 + 26.0 * recent.len() as f32 };
+    let list_h = if recent.is_empty() { 0.0 } else { 36.0 + 34.0 * recent.len() as f32 };
     let c = full.center() - vec2(0.0, list_h / 2.0);
-    let frame = Rect::from_center_size(c - vec2(0.0, 24.0), vec2(220.0, 112.0));
-    icons::corner_brackets(&p, frame, 11.0, Stroke::new(1.0, theme::accent_alpha(200)));
-    icons::draw(&p, Icon::Drop, frame.center() - vec2(0.0, 14.0), 24.0, ACCENT);
-    p.text(frame.center() + vec2(0.0, 22.0), Align2::CENTER_CENTER, tr("Drop media files here"), FontId::proportional(13.0), theme::text());
 
-    let open_rect = Rect::from_center_size(pos2(c.x - 84.0, frame.bottom() + 26.0), vec2(150.0, 28.0));
+    // Subtle brand mark at top-left.
+    p.circle_filled(pos2(full.left() + 20.0, full.top() + 24.0), 3.0, ACCENT);
+    p.text(pos2(full.left() + 30.0, full.top() + 24.0), Align2::LEFT_CENTER, "TINYPLAYER", FontId::monospace(11.0), theme::text_2());
+
+    // Precision drop-zone card with viewfinder corner brackets.
+    let card_w = 380.0f32.min(full.width() - 40.0);
+    let frame = Rect::from_center_size(c - vec2(0.0, 18.0), vec2(card_w, 168.0));
+    p.rect_filled(frame, 16.0, theme::panel());
+    p.rect_stroke(frame, 16.0, Stroke::new(1.0, theme::line()), StrokeKind::Inside);
+    icons::corner_brackets(&p, frame.shrink(10.0), 10.0, Stroke::new(1.5, theme::accent_alpha(190)));
+
+    let badge = Rect::from_center_size(pos2(frame.center().x, frame.top() + 44.0), vec2(44.0, 44.0));
+    p.rect_filled(badge, 12.0, theme::accent_alpha(26));
+    p.rect_stroke(badge, 12.0, theme::accent_stroke(95), StrokeKind::Inside);
+    icons::draw(&p, Icon::Drop, badge.center(), 22.0, ACCENT);
+
+    p.text(pos2(frame.center().x, frame.top() + 86.0), Align2::CENTER_CENTER, tr("Drop media files here"), FontId::proportional(14.0), theme::text());
+
+    // Primary & secondary pill action buttons inside the card.
+    let btn_y = frame.top() + 128.0;
+    let open_rect = Rect::from_center_size(pos2(c.x - 82.0, btn_y), vec2(148.0, 30.0));
     let resp = ui.interact(open_rect, ui.scope_id().with("open"), Sense::click());
-    let color = if resp.hovered() { ACCENT } else { theme::text_2() };
+    let open_bg = if resp.hovered() { ACCENT.lerp_to_gamma(Color32::WHITE, 0.14) } else { ACCENT };
+    p.rect_filled(open_rect, 15.0, open_bg);
     if resp.hovered() {
         ui.ctx().set_cursor_icon(CursorIcon::PointingHand);
     }
     let shortcut = format!("{}O", theme::CMD);
-    p.text(open_rect.center(), Align2::CENTER_CENTER, tf("Open file  {}", &[&shortcut]), FontId::monospace(11.0), color);
+    p.text(open_rect.center(), Align2::CENTER_CENTER, tf("Open file  {}", &[&shortcut]), FontId::monospace(11.0), Color32::from_rgb(0x05, 0x07, 0x0B));
 
-    let lib_rect = Rect::from_center_size(pos2(c.x + 84.0, frame.bottom() + 26.0), vec2(150.0, 28.0));
+    let lib_rect = Rect::from_center_size(pos2(c.x + 82.0, btn_y), vec2(148.0, 30.0));
     let lresp = ui.interact(lib_rect, ui.scope_id().with("add_folder"), Sense::click());
+    p.rect_filled(lib_rect, 15.0, if lresp.hovered() { theme::accent_alpha(28) } else { theme::surface() });
+    p.rect_stroke(lib_rect, 15.0, Stroke::new(1.0, if lresp.hovered() { theme::accent_alpha(120) } else { theme::line() }), StrokeKind::Inside);
     if lresp.hovered() {
         ui.ctx().set_cursor_icon(CursorIcon::PointingHand);
     }
@@ -2742,11 +2836,11 @@ fn draw_empty_state(ui: &mut egui::Ui, full: Rect, recent: &[Entry], has_library
         Align2::CENTER_CENTER,
         if has_library { tr("Open library") } else { tr("+ Create library") },
         FontId::proportional(12.0),
-        if lresp.hovered() { theme::text() } else { ACCENT },
+        if lresp.hovered() { ACCENT } else { theme::text() },
     );
 
     p.text(
-        pos2(c.x, frame.bottom() + 64.0),
+        pos2(c.x, frame.bottom() + 24.0),
         Align2::CENTER_CENTER,
         tr("Space play/pause · ←/→ seek · ↑/↓ volume · F full screen"),
         FontId::monospace(10.0),
@@ -2761,47 +2855,52 @@ fn draw_empty_state(ui: &mut egui::Ui, full: Rect, recent: &[Entry], has_library
         EmptyAction::None
     };
 
-    // Settings link, top-right corner.
+    // Settings button, top-right corner pill.
     let gear = Rect::from_center_size(pos2(full.right() - 24.0, full.top() + 24.0), vec2(30.0, 30.0));
     let gresp = ui.interact(gear, ui.scope_id().with("empty_settings"), Sense::click());
+    p.circle_filled(gear.center(), 15.0, if gresp.hovered() { theme::accent_alpha(26) } else { theme::surface() });
+    p.circle_stroke(gear.center(), 15.0, Stroke::new(1.0, theme::line()));
     icons::draw(&p, Icon::Settings, gear.center(), 15.0, if gresp.hovered() { ACCENT } else { theme::text_2() });
+    if gresp.hovered() {
+        ui.ctx().set_cursor_icon(CursorIcon::PointingHand);
+    }
     if gresp.clicked() {
         action = EmptyAction::Settings;
     }
 
-    // Continue watching.
+    // Continue watching cards.
     if !recent.is_empty() {
-        let w = 360.0f32.min(full.width() - 40.0);
-        let mut y = frame.bottom() + 100.0;
-        p.text(pos2(c.x - w / 2.0, y), Align2::LEFT_CENTER, "CONTINUE", FontId::monospace(10.0), theme::text_3());
+        let w = card_w;
+        let mut y = frame.bottom() + 56.0;
+        p.text(pos2(c.x - w / 2.0 + 4.0, y), Align2::LEFT_CENTER, "CONTINUE", FontId::monospace(10.0), theme::text_3());
         y += 22.0;
         for (i, e) in recent.iter().enumerate() {
-            let row = Rect::from_min_size(pos2(c.x - w / 2.0, y - 12.0), vec2(w, 24.0));
+            let row = Rect::from_min_size(pos2(c.x - w / 2.0, y - 14.0), vec2(w, 30.0));
             let r = ui.interact(row, ui.scope_id().with(("recent", i)), Sense::click());
             let hovered = r.hovered();
+            p.rect_filled(row, 8.0, if hovered { theme::accent_alpha(20) } else { theme::panel() });
+            p.rect_stroke(row, 8.0, Stroke::new(1.0, if hovered { theme::accent_alpha(110) } else { theme::line() }), StrokeKind::Inside);
             if hovered {
-                p.rect_filled(row, 0.0, theme::accent_alpha(10));
-                p.line_segment([row.left_top(), row.left_bottom()], Stroke::new(2.0, ACCENT));
                 ui.ctx().set_cursor_icon(CursorIcon::PointingHand);
             }
             let time = format!("{} / {}", fmt_time(e.position), fmt_time(e.duration));
-            let tg = p.layout_no_wrap(time, FontId::monospace(11.0), if hovered { ACCENT } else { theme::text_3() });
+            let tg = p.layout_no_wrap(time, FontId::monospace(10.5), if hovered { ACCENT } else { theme::text_3() });
             let title_w = w - tg.size().x - 28.0;
             let title = elide(&p, &e.title, FontId::proportional(12.0), title_w);
-            p.text(pos2(row.left() + 10.0, y), Align2::LEFT_CENTER, title, FontId::proportional(12.0), if hovered { theme::text() } else { theme::text_2() });
-            p.galley(pos2(row.right() - tg.size().x - 6.0, y - tg.size().y / 2.0), tg, theme::text());
-            // Thin progress line under each entry.
+            p.text(pos2(row.left() + 12.0, y - 1.0), Align2::LEFT_CENTER, title, FontId::proportional(12.0), if hovered { theme::text() } else { theme::text_2() });
+            p.galley(pos2(row.right() - tg.size().x - 10.0, y - 1.0 - tg.size().y / 2.0), tg, theme::text());
             let frac = if e.duration > 0.0 { (e.position / e.duration).clamp(0.0, 1.0) as f32 } else { 0.0 };
-            let ly = row.bottom() - 1.0;
-            p.line_segment([pos2(row.left() + 10.0, ly), pos2(row.right() - 6.0, ly)], Stroke::new(1.0, theme::line()));
-            p.line_segment(
-                [pos2(row.left() + 10.0, ly), pos2(row.left() + 10.0 + frac * (row.width() - 16.0), ly)],
-                Stroke::new(1.0, theme::accent_alpha(160)),
-            );
+            let ly = row.bottom() - 2.0;
+            let bar_r = Rect::from_min_max(pos2(row.left() + 12.0, ly - 1.0), pos2(row.right() - 10.0, ly + 1.0));
+            p.rect_filled(bar_r, 1.0, theme::line());
+            if frac > 0.0 {
+                let fill_r = Rect::from_min_max(bar_r.min, pos2(bar_r.left() + frac * bar_r.width(), bar_r.max.y));
+                p.rect_filled(fill_r, 1.0, ACCENT);
+            }
             if r.clicked() {
                 action = EmptyAction::Recent(e.path.clone());
             }
-            y += 26.0;
+            y += 34.0;
         }
     }
     action
@@ -2869,26 +2968,28 @@ impl App {
         let ctx = ui.ctx().clone();
         let p = ui.painter_at(side);
         self.side_rect = side;
-        p.rect_filled(side, 0.0, Color32::from_rgba_unmultiplied(0x0B, 0x0E, 0x12, 236));
-        p.line_segment([side.left_top(), side.left_bottom()], Stroke::new(0.5, Color32::from_rgb(0x16, 0x1B, 0x22)));
+        p.rect_filled(side, 0.0, theme::glass(242));
+        p.line_segment([side.left_top(), side.left_bottom()], Stroke::new(1.0, Color32::from_white_alpha(22)));
         let a = t.clamp(0.0, 1.0);
         let left = side.left();
         let right = left + SIDEBAR_W;
         let mut action: Option<SideAction> = None;
 
-        // Header
-        let hy = side.top() + 24.0;
+        // Header segmented pill tabs
+        let hy = side.top() + 26.0;
         let n = self.playlist.len();
-        let tabs = [(false, format!("PLAYLIST · {n:02}"), left + 16.0), (true, format!("MARKS · {:02}", self.marks.len()), left + 116.0)];
-        for (marks, label, x) in tabs {
+        let seg = Rect::from_min_size(pos2(left + 12.0, hy - 13.0), vec2(188.0, 26.0));
+        p.rect_filled(seg, 13.0, Color32::from_white_alpha(12));
+        p.rect_stroke(seg, 13.0, Stroke::new(1.0, Color32::from_white_alpha(18)), StrokeKind::Inside);
+        let tabs = [(false, format!("PLAYLIST · {n:02}")), (true, format!("MARKS · {:02}", self.marks.len()))];
+        for (idx, (marks, label)) in tabs.into_iter().enumerate() {
             let on = self.side_marks == marks;
-            let g = p.layout_no_wrap(label, FontId::monospace(10.0), if on { TEXT } else { TEXT_3 });
-            let r = Rect::from_min_size(pos2(x, hy - g.size().y / 2.0), g.size()).expand2(vec2(6.0, 8.0));
+            let r = Rect::from_min_size(seg.min + vec2(2.0 + idx as f32 * 92.0, 2.0), vec2(92.0, 22.0));
             let resp = ui.interact(r, ui.scope_id().with(("side_tab", marks)), Sense::click());
-            p.galley(pos2(x, hy - g.size().y / 2.0), g, TEXT);
             if on {
-                p.line_segment([pos2(r.left() + 6.0, r.bottom()), pos2(r.right() - 6.0, r.bottom())], Stroke::new(1.5, ACCENT.gamma_multiply(a)));
+                p.rect_filled(r, 11.0, theme::accent_alpha((38.0 * a) as u8));
             }
+            p.text(r.center(), Align2::CENTER_CENTER, label, FontId::monospace(9.5), if on { ACCENT } else if resp.hovered() { TEXT } else { TEXT_2 });
             if resp.hovered() {
                 ctx.set_cursor_icon(CursorIcon::PointingHand);
             }

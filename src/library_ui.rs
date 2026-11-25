@@ -515,13 +515,15 @@ impl LibraryView {
 
     fn top_bar(&mut self, ui: &mut egui::Ui, p: &egui::Painter, top: Rect) -> Option<Action> {
         let mut action = None;
-        p.line_segment([top.left_bottom(), top.right_bottom()], Stroke::new(0.5, theme::line()));
-        p.text(pos2(top.left() + 20.0, top.center().y), Align2::LEFT_CENTER, "TINYPLAYER", FontId::monospace(12.0), ACCENT);
+        p.rect_filled(top, 0.0, theme::panel());
+        p.line_segment([top.left_bottom(), top.right_bottom()], Stroke::new(1.0, theme::line()));
+        p.circle_filled(pos2(top.left() + 18.0, top.center().y), 3.0, ACCENT);
+        p.text(pos2(top.left() + 28.0, top.center().y), Align2::LEFT_CENTER, "TINYPLAYER", FontId::monospace(12.0), ACCENT);
 
         let search_w = (top.width() - NAV_W - 730.0).clamp(120.0, 380.0);
         let search_rect = Rect::from_min_size(pos2(top.left() + NAV_W + 16.0, top.center().y - 15.0), vec2(search_w, 30.0));
-        p.rect_filled(search_rect, 15.0, theme::panel());
-        p.rect_stroke(search_rect, 15.0, Stroke::new(0.5, theme::line()), StrokeKind::Inside);
+        p.rect_filled(search_rect, 15.0, theme::surface());
+        p.rect_stroke(search_rect, 15.0, Stroke::new(1.0, theme::line()), StrokeKind::Inside);
         search_icon(p, pos2(search_rect.left() + 16.0, search_rect.center().y), theme::text_3());
         let edit_rect = Rect::from_min_max(search_rect.min + vec2(30.0, 5.0), search_rect.max - vec2(12.0, 5.0));
         let mut search_resp = None;
@@ -553,17 +555,22 @@ impl LibraryView {
         }
 
         // Mode switch: Library | Folders | Manage
-        let seg = Rect::from_min_size(pos2(search_rect.right() + 16.0, top.center().y - 14.0), vec2(196.0, 28.0));
-        p.rect_filled(seg, 14.0, theme::panel());
+        let seg = Rect::from_min_size(pos2(search_rect.right() + 16.0, top.center().y - 15.0), vec2(198.0, 30.0));
+        p.rect_filled(seg, 15.0, theme::surface());
+        p.rect_stroke(seg, 15.0, Stroke::new(1.0, theme::line()), StrokeKind::Inside);
         for (i, (mode, label)) in [(Mode::Grid, tr("Library")), (Mode::Folders, tr("Folders")), (Mode::Manage, tr("Manage"))].into_iter().enumerate() {
-            let r = Rect::from_min_size(seg.min + vec2(2.0 + i as f32 * 64.0, 2.0), vec2(64.0, 24.0));
+            let r = Rect::from_min_size(seg.min + vec2(3.0 + i as f32 * 64.0, 3.0), vec2(64.0, 24.0));
             let resp = ui.interact(r, ui.scope_id().with(("mode", i)), Sense::click());
             let on = self.mode == mode;
             if on {
-                p.rect_filled(r, 12.0, theme::accent_alpha(36));
+                p.rect_filled(r, 12.0, theme::accent_alpha(34));
+                p.rect_stroke(r, 12.0, theme::accent_stroke(105), StrokeKind::Inside);
             }
             let c = if on { ACCENT } else if resp.hovered() { theme::text() } else { theme::text_2() };
             p.text(r.center(), Align2::CENTER_CENTER, label, FontId::proportional(12.0), c);
+            if resp.hovered() {
+                ui.ctx().set_cursor_icon(CursorIcon::PointingHand);
+            }
             if resp.clicked() {
                 self.mode = mode;
             }
@@ -1367,28 +1374,31 @@ fn draw_card(
             p.image(t, thumb, Rect::from_min_max(pos2(0.0, 0.0), pos2(1.0, 1.0)), Color32::WHITE);
         }
         None => {
-            p.rect_filled(thumb, 6.0, placeholder_color(v.id));
+            p.rect_filled(thumb, 10.0, placeholder_color(v.id));
             let label = if v.duration > 0.0 { "" } else { tr("Generating…") };
             p.text(thumb.center(), Align2::CENTER_CENTER, label, FontId::proportional(11.0), theme::text_3());
         }
     }
+    p.rect_stroke(thumb, 10.0, Stroke::new(1.0, if hovered { ACCENT } else { theme::line() }), StrokeKind::Inside);
     if hovered {
-        p.rect_stroke(thumb, 6.0, Stroke::new(1.5, ACCENT), StrokeKind::Inside);
-        icons::draw(p, Icon::Play, thumb.center(), 30.0, Color32::from_white_alpha(230));
+        p.rect_filled(thumb, 10.0, Color32::from_black_alpha(72));
+        p.circle_filled(thumb.center(), 18.0, ACCENT);
+        icons::draw(p, Icon::Play, thumb.center() + vec2(1.0, 0.0), 17.0, Color32::from_rgb(0x05, 0x07, 0x0B));
         ui.ctx().set_cursor_icon(CursorIcon::PointingHand);
     }
 
     // Top-left: rank (most played) or resolution.
     let (badge, badge_bg) = match rank {
-        Some(r) => (format!("#{r}"), if r <= 3 { ACCENT } else { theme::scrim(190) }),
-        None => (resolution_label(v.width, v.height), theme::scrim(190)),
+        Some(r) => (format!("#{r}"), if r <= 3 { ACCENT } else { theme::glass(210) }),
+        None => (resolution_label(v.width, v.height), theme::glass(210)),
     };
     if !badge.is_empty() {
-        let font = FontId::monospace(if rank.is_some() { 11.0 } else { 9.0 });
+        let font = FontId::monospace(if rank.is_some() { 10.5 } else { 9.5 });
         let g = p.layout_no_wrap(badge, font, TEXT);
-        let r = Rect::from_min_size(thumb.min + vec2(6.0, 6.0), g.size() + vec2(8.0, 4.0));
-        p.rect_filled(r, 3.0, badge_bg);
-        p.galley(r.min + vec2(4.0, 2.0), g, Color32::WHITE);
+        let r = Rect::from_min_size(thumb.min + vec2(7.0, 7.0), g.size() + vec2(10.0, 5.0));
+        p.rect_filled(r, 6.0, badge_bg);
+        p.rect_stroke(r, 6.0, Stroke::new(1.0, Color32::from_white_alpha(26)), StrokeKind::Inside);
+        p.galley(r.min + vec2(5.0, 2.5), g, Color32::WHITE);
     }
 
     // Top-right: favorite star (always shown once favorited).

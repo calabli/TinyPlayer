@@ -13,19 +13,29 @@ use crate::history::Settings;
 use crate::i18n::{tf, tr};
 use crate::player::{Player, Track};
 use crate::sleep_timer::{self, Mode as Sleep};
-use crate::theme::ACCENT;
+use crate::theme::{self, ACCENT, TEXT, TEXT_2};
 use crate::view::{View, ZOOM_STEP};
 use crate::vr::{self, Format, Layout, Span};
 
-const W: f32 = 500.0;
-const H: f32 = 392.0;
-const NAV_W: f32 = 112.0;
+const W: f32 = 520.0;
+const H: f32 = 408.0;
+const NAV_W: f32 = 118.0;
 
-const NAV_BG: Color32 = Color32::from_rgb(0x26, 0x26, 0x26);
-const BODY_BG: Color32 = Color32::from_rgb(0x30, 0x30, 0x30);
-const TXT: Color32 = Color32::from_rgb(0xE4, 0xE4, 0xE4);
-const TXT_2: Color32 = Color32::from_rgb(0xA0, 0xA0, 0xA0);
-const BORDER: Color32 = Color32::from_rgb(0x6A, 0x6A, 0x6A);
+fn nav_bg() -> Color32 {
+    Color32::from_rgba_unmultiplied(6, 9, 15, 232)
+}
+
+fn body_bg() -> Color32 {
+    theme::glass(242)
+}
+
+fn chip_bg() -> Color32 {
+    Color32::from_white_alpha(14)
+}
+
+fn border() -> Color32 {
+    Color32::from_white_alpha(30)
+}
 
 #[derive(Clone, Copy, PartialEq, Default)]
 enum Page {
@@ -125,25 +135,29 @@ impl QuickPanel {
         let _blocker = ui.interact(panel, ui.scope_id().with("qp_blocker"), Sense::click_and_drag());
 
         let p = ui.painter_at(panel.expand(2.0));
-        p.rect_filled(panel, 8.0, BODY_BG);
+        p.rect_filled(panel, 14.0, body_bg());
         let nav = Rect::from_min_size(panel.min, vec2(NAV_W, panel.height()));
-        p.rect_filled(nav, egui::CornerRadius { nw: 8, sw: 8, ne: 0, se: 0 }, NAV_BG);
+        p.rect_filled(nav, egui::CornerRadius { nw: 14, sw: 14, ne: 0, se: 0 }, nav_bg());
+        p.line_segment([nav.right_top(), nav.right_bottom()], Stroke::new(1.0, Color32::from_white_alpha(18)));
+        p.rect_stroke(panel, 14.0, theme::glass_stroke(), StrokeKind::Inside);
 
         // Nav
         let items = [(Page::Subtitles, tr("Subtitles")), (Page::SubStyle, tr("Styling")), (Page::Audio, tr("Audio")), (Page::Equalizer, tr("EQ")), (Page::Video, tr("Video")), (Page::Enhance, tr("Enhance")), (Page::Color, tr("Color")), (Page::Vr, tr("VR panorama")), (Page::Timer, tr("Timer"))];
         // Rows close up when the panel is too short for all of them.
-        let step = (nav.height() / items.len() as f32).min(48.0);
+        let step = ((nav.height() - 20.0) / items.len() as f32).min(40.0);
         let top = nav.center().y - items.len() as f32 * step / 2.0;
         for (i, (page, label)) in items.into_iter().enumerate() {
-            let r = Rect::from_min_size(pos2(nav.left(), top + i as f32 * step + (step - 40.0).clamp(0.0, 8.0) / 2.0), vec2(NAV_W, step.min(40.0)));
+            let r = Rect::from_min_size(pos2(nav.left() + 8.0, top + i as f32 * step + 2.0), vec2(NAV_W - 16.0, (step - 4.0).max(24.0)));
             let resp = ui.interact(r, ui.scope_id().with(("qp_nav", i)), Sense::click());
             let on = self.page == page;
             if on {
-                p.rect_filled(r, 0.0, ACCENT);
+                p.rect_filled(r, 8.0, theme::accent_alpha(34));
+                p.rect_stroke(r, 8.0, theme::accent_stroke(115), StrokeKind::Inside);
+                p.circle_filled(pos2(r.right() - 10.0, r.center().y), 2.5, ACCENT);
             } else if resp.hovered() {
-                p.rect_filled(r, 0.0, Color32::from_white_alpha(10));
+                p.rect_filled(r, 8.0, Color32::from_white_alpha(12));
             }
-            p.text(pos2(r.left() + 40.0, r.center().y), Align2::LEFT_CENTER, label, FontId::proportional(15.0), if on { Color32::WHITE } else { TXT });
+            p.text(pos2(r.left() + 12.0, r.center().y), Align2::LEFT_CENTER, label, FontId::proportional(13.0), if on { Color32::WHITE } else if resp.hovered() { TEXT } else { TEXT_2 });
             if resp.clicked() {
                 self.page = page;
             }
@@ -151,17 +165,20 @@ impl QuickPanel {
         }
 
         // Close
-        let x = Rect::from_center_size(pos2(panel.right() - 18.0, panel.top() + 18.0), vec2(22.0, 22.0));
+        let x = Rect::from_center_size(pos2(panel.right() - 20.0, panel.top() + 20.0), vec2(24.0, 24.0));
         let xr = ui.interact(x, ui.scope_id().with("qp_close"), Sense::click());
-        let xc = if xr.hovered() { Color32::WHITE } else { TXT_2 };
-        p.line_segment([x.center() + vec2(-6.0, -6.0), x.center() + vec2(6.0, 6.0)], Stroke::new(1.3, xc));
-        p.line_segment([x.center() + vec2(-6.0, 6.0), x.center() + vec2(6.0, -6.0)], Stroke::new(1.3, xc));
+        if xr.hovered() {
+            p.circle_filled(x.center(), 12.0, Color32::from_white_alpha(18));
+        }
+        let xc = if xr.hovered() { Color32::WHITE } else { TEXT_2 };
+        p.line_segment([x.center() + vec2(-5.0, -5.0), x.center() + vec2(5.0, 5.0)], Stroke::new(1.4, xc));
+        p.line_segment([x.center() + vec2(-5.0, 5.0), x.center() + vec2(5.0, -5.0)], Stroke::new(1.4, xc));
         if xr.clicked() {
             self.open = false;
         }
 
-        let body = Rect::from_min_max(pos2(nav.right() + 20.0, panel.top() + 14.0), pos2(panel.right() - 20.0, panel.bottom() - 14.0));
-        let mut c = Cursor { ui, p: &p, body, y: body.top() + 8.0, ctx: ctx.clone() };
+        let body = Rect::from_min_max(pos2(nav.right() + 20.0, panel.top() + 16.0), pos2(panel.right() - 20.0, panel.bottom() - 16.0));
+        let mut c = Cursor { ui, p: &p, body, y: body.top() + 6.0, ctx: ctx.clone() };
         match self.page {
             Page::Subtitles => self.subtitles(&mut c, player, s, &mut out),
             Page::SubStyle => self.sub_style(&mut c, player, s, &mut out),
@@ -176,9 +193,9 @@ impl QuickPanel {
 
         // "More settings" bottom-left of the body.
         let ui = c.ui;
-        let more = Rect::from_min_size(pos2(body.left(), body.bottom() - 22.0), vec2(70.0, 22.0));
+        let more = Rect::from_min_size(pos2(body.left(), body.bottom() - 22.0), vec2(96.0, 22.0));
         let mr = ui.interact(more, ui.scope_id().with("qp_more"), Sense::click());
-        p.text(more.left_center(), Align2::LEFT_CENTER, tr("More settings"), FontId::proportional(12.0), if mr.hovered() { ACCENT } else { TXT_2 });
+        p.text(more.left_center(), Align2::LEFT_CENTER, tr("More settings"), FontId::proportional(12.0), if mr.hovered() { ACCENT } else { TEXT_2 });
         hover_hand(&ctx, &mr);
         if mr.clicked() {
             out.more_settings = true;
@@ -532,49 +549,50 @@ impl Cursor<'_> {
     }
 
     fn section(&mut self, title: &str) {
-        self.p.text(pos2(self.body.left(), self.y + 8.0), Align2::LEFT_CENTER, title, FontId::proportional(13.5), Color32::WHITE);
-        self.y += 26.0;
+        self.p.text(pos2(self.body.left(), self.y + 8.0), Align2::LEFT_CENTER, title, FontId::proportional(13.0), TEXT);
+        self.y += 24.0;
     }
 
     fn note(&mut self, text: &str) {
-        self.p.text(pos2(self.body.left(), self.y + 9.0), Align2::LEFT_CENTER, text, FontId::proportional(12.5), TXT_2);
-        self.y += 22.0;
+        self.p.text(pos2(self.body.left(), self.y + 8.0), Align2::LEFT_CENTER, text, FontId::proportional(12.0), TEXT_2);
+        self.y += 20.0;
     }
 
-    /// Radio buttons laid out left-to-right, wrapping. Returns the clicked index.
+    /// Selectable pill chips laid out left-to-right, wrapping. Returns the clicked index.
     fn radios(&mut self, id: &str, opts: &[(&str, bool)]) -> Option<usize> {
         let mut x = self.body.left();
         let mut clicked = None;
         for (i, (label, on)) in opts.iter().enumerate() {
-            let tw = self.p.layout_no_wrap(label.to_string(), FontId::proportional(13.0), TXT).size().x;
-            let w = 22.0 + tw + 22.0;
+            let tw = self.p.layout_no_wrap(label.to_string(), FontId::proportional(12.5), TEXT).size().x;
+            let w = (tw + 20.0).min(self.body.width());
             if x + w > self.body.right() && x > self.body.left() {
                 x = self.body.left();
                 self.y += 30.0;
             }
-            if self.radio((id, i), pos2(x, self.y), label, *on) {
+            if self.pill_chip((id, i), Rect::from_min_size(pos2(x, self.y), vec2(w, 24.0)), label, *on) {
                 clicked = Some(i);
             }
-            x += w;
+            x += w + 6.0;
         }
-        self.y += 32.0;
+        self.y += 30.0;
         clicked
     }
 
-    /// Radio buttons for a setting's possible values. Returns the clicked value.
+    /// Pill choices for a setting's possible values. Returns the clicked value.
     fn choice<T: Copy + PartialEq>(&mut self, id: &str, opts: &[(&str, T)], cur: T) -> Option<T> {
         let labels: Vec<(&str, bool)> = opts.iter().map(|(l, v)| (*l, *v == cur)).collect();
         self.radios(id, &labels).map(|i| opts[i].1)
     }
 
-    /// Radio buttons in a fixed number of columns (as in the reference).
+    /// Pill chips in a fixed number of columns.
     fn radios_cols(&mut self, id: &str, opts: &[(&str, bool)], cols: usize) -> Option<usize> {
-        let col_w = self.body.width() / cols as f32;
+        let gap = 6.0;
+        let col_w = (self.body.width() - gap * (cols.saturating_sub(1) as f32)) / cols as f32;
         let mut clicked = None;
         for (i, (label, on)) in opts.iter().enumerate() {
-            let x = self.body.left() + (i % cols) as f32 * col_w;
+            let x = self.body.left() + (i % cols) as f32 * (col_w + gap);
             let y = self.y + (i / cols) as f32 * 30.0;
-            if self.radio((id, i), pos2(x, y), label, *on) {
+            if self.pill_chip((id, i), Rect::from_min_size(pos2(x, y), vec2(col_w, 24.0)), label, *on) {
                 clicked = Some(i);
             }
         }
@@ -582,40 +600,38 @@ impl Cursor<'_> {
         clicked
     }
 
-    fn radio(&mut self, id: impl std::hash::Hash + std::fmt::Debug, at: Pos2, label: &str, on: bool) -> bool {
-        let tw = self.p.layout_no_wrap(label.to_string(), FontId::proportional(13.0), TXT).size().x;
-        let r = Rect::from_min_size(at, vec2(22.0 + tw, 22.0));
+    fn pill_chip(&mut self, id: impl std::hash::Hash + std::fmt::Debug, r: Rect, label: &str, on: bool) -> bool {
         let resp = self.ui.interact(r, self.ui.scope_id().with(id), Sense::click());
-        let c = pos2(at.x + 8.0, r.center().y);
+        let hot = resp.hovered();
         if on {
-            self.p.circle_stroke(c, 7.0, Stroke::new(1.5, ACCENT));
-            self.p.circle_filled(c, 3.5, ACCENT);
+            self.p.rect_filled(r, 7.0, theme::accent_alpha(36));
+            self.p.rect_stroke(r, 7.0, theme::accent_stroke(130), StrokeKind::Inside);
         } else {
-            self.p.circle_stroke(c, 7.0, Stroke::new(1.0, if resp.hovered() { TXT } else { BORDER }));
+            self.p.rect_filled(r, 7.0, if hot { Color32::from_white_alpha(24) } else { chip_bg() });
+            self.p.rect_stroke(r, 7.0, Stroke::new(1.0, if hot { border() } else { Color32::from_white_alpha(18) }), StrokeKind::Inside);
         }
-        self.p.text(pos2(at.x + 22.0, r.center().y), Align2::LEFT_CENTER, label, FontId::proportional(13.0), if on || resp.hovered() { TXT } else { TXT_2 });
+        let c = if on { ACCENT } else if hot { TEXT } else { TEXT_2 };
+        self.p.text(r.center(), Align2::CENTER_CENTER, label, FontId::proportional(12.5), c);
         hover_hand(&self.ctx, &resp);
         resp.clicked()
     }
 
-    /// Outlined buttons in a row (fixed width, like the reference).
+    /// Pill action buttons in a row.
     fn buttons(&mut self, id: &str, labels: &[&str]) -> Option<usize> {
         let mut x = self.body.left();
         let mut clicked = None;
-        let gap = 24.0;
+        let gap = 10.0;
         let n = labels.len() as f32;
         let fit = (self.body.width() - gap * (n - 1.0)) / n;
         for (i, label) in labels.iter().enumerate() {
-            let tw = self.p.layout_no_wrap(label.to_string(), FontId::proportional(13.0), TXT).size().x;
-            let w = (tw + 32.0).max(110.0).min(fit);
+            let tw = self.p.layout_no_wrap(label.to_string(), FontId::proportional(12.5), TEXT).size().x;
+            let w = (tw + 28.0).max(96.0).min(fit);
             let r = Rect::from_min_size(pos2(x, self.y), vec2(w, 28.0));
             let resp = self.ui.interact(r, self.ui.scope_id().with((id, i)), Sense::click());
             let hot = resp.hovered();
-            if hot {
-                self.p.rect_filled(r, 4.0, Color32::from_white_alpha(10));
-            }
-            self.p.rect_stroke(r, 4.0, Stroke::new(1.0, if hot { ACCENT } else { BORDER }), StrokeKind::Inside);
-            self.p.text(r.center(), Align2::CENTER_CENTER, *label, FontId::proportional(13.0), if hot { Color32::WHITE } else { TXT });
+            self.p.rect_filled(r, 8.0, if hot { theme::accent_alpha(30) } else { chip_bg() });
+            self.p.rect_stroke(r, 8.0, Stroke::new(1.0, if hot { theme::accent_alpha(130) } else { border() }), StrokeKind::Inside);
+            self.p.text(r.center(), Align2::CENTER_CENTER, *label, FontId::proportional(12.5), if hot { ACCENT } else { TEXT });
             hover_hand(&self.ctx, &resp);
             if resp.clicked() {
                 clicked = Some(i);
@@ -629,14 +645,14 @@ impl Cursor<'_> {
     /// "label  [toggle] on/off". Returns true when clicked.
     fn toggle_row(&mut self, id: &str, label: &str, on: bool) -> bool {
         let cy = self.y + 12.0;
-        self.p.text(pos2(self.body.left(), cy), Align2::LEFT_CENTER, label, FontId::proportional(13.0), TXT);
-        let r = Rect::from_center_size(pos2(self.body.left() + 106.0, cy), vec2(40.0, 22.0));
+        self.p.text(pos2(self.body.left(), cy), Align2::LEFT_CENTER, label, FontId::proportional(13.0), TEXT);
+        let r = Rect::from_center_size(pos2(self.body.left() + 116.0, cy), vec2(38.0, 20.0));
         let resp = self.ui.interact(r.expand(4.0), self.ui.scope_id().with(id), Sense::click());
         let t = self.ctx.animate_bool_with_time(self.ui.scope_id().with((id, "anim")), on, 0.12);
-        let track = Color32::from_rgb(0x55, 0x55, 0x55).lerp_to_gamma(ACCENT, t);
-        self.p.rect_filled(r, 11.0, track);
-        self.p.circle_filled(pos2(r.left() + 11.0 + t * (r.width() - 22.0), cy), 8.0, Color32::WHITE);
-        self.p.text(pos2(r.right() + 10.0, cy), Align2::LEFT_CENTER, if on { tr("On") } else { tr("Off|short") }, FontId::proportional(13.0), TXT);
+        let track = Color32::from_white_alpha(36).lerp_to_gamma(ACCENT, t);
+        self.p.rect_filled(r, 10.0, track);
+        self.p.circle_filled(pos2(r.left() + 10.0 + t * (r.width() - 20.0), cy), 7.0, Color32::WHITE);
+        self.p.text(pos2(r.right() + 10.0, cy), Align2::LEFT_CENTER, if on { tr("On") } else { tr("Off|short") }, FontId::proportional(12.5), if on { ACCENT } else { TEXT_2 });
         hover_hand(&self.ctx, &resp);
         self.y += 26.0;
         resp.clicked()
@@ -650,14 +666,15 @@ impl Cursor<'_> {
         for (i, label) in ["−", "+"].iter().enumerate() {
             if i == 1 {
                 let txt = tf("{} s", &[&format!("{value:+.1}")]);
-                self.p.text(pos2(x + 40.0, cy), Align2::CENTER_CENTER, txt, FontId::monospace(13.0), TXT);
-                x += 80.0;
+                self.p.text(pos2(x + 38.0, cy), Align2::CENTER_CENTER, txt, FontId::monospace(12.5), TEXT);
+                x += 76.0;
             }
-            let r = Rect::from_min_size(pos2(x, cy - 14.0), vec2(36.0, 28.0));
+            let r = Rect::from_min_size(pos2(x, cy - 13.0), vec2(34.0, 26.0));
             let resp = self.ui.interact(r, self.ui.scope_id().with((id, i)), Sense::click());
             let hot = resp.hovered();
-            self.p.rect_stroke(r, 4.0, Stroke::new(1.0, if hot { ACCENT } else { BORDER }), StrokeKind::Inside);
-            self.p.text(r.center(), Align2::CENTER_CENTER, *label, FontId::proportional(16.0), TXT);
+            self.p.rect_filled(r, 7.0, if hot { theme::accent_alpha(30) } else { chip_bg() });
+            self.p.rect_stroke(r, 7.0, Stroke::new(1.0, if hot { theme::accent_alpha(130) } else { border() }), StrokeKind::Inside);
+            self.p.text(r.center(), Align2::CENTER_CENTER, *label, FontId::proportional(15.0), if hot { ACCENT } else { TEXT });
             hover_hand(&self.ctx, &resp);
             if resp.clicked() {
                 let v = if i == 0 { value - step } else { value + step };
@@ -665,32 +682,37 @@ impl Cursor<'_> {
             }
             x = r.right();
         }
-        let reset = Rect::from_min_size(pos2(x + 18.0, cy - 11.0), vec2(40.0, 22.0));
+        let reset = Rect::from_min_size(pos2(x + 16.0, cy - 11.0), vec2(46.0, 22.0));
         let rr = self.ui.interact(reset, self.ui.scope_id().with((id, "reset")), Sense::click());
-        self.p.text(reset.left_center(), Align2::LEFT_CENTER, tr("Reset"), FontId::proportional(12.5), if rr.hovered() { ACCENT } else { TXT_2 });
+        self.p.text(reset.left_center(), Align2::LEFT_CENTER, tr("Reset"), FontId::proportional(12.0), if rr.hovered() { ACCENT } else { TEXT_2 });
         hover_hand(&self.ctx, &rr);
         if rr.clicked() {
             out = Some(0.0);
         }
-        self.y += 34.0;
+        self.y += 32.0;
         out
     }
 
     /// Labeled slider for -100..=100. Returns the new value while dragging.
     fn slider(&mut self, id: impl std::hash::Hash + std::fmt::Debug + Copy, label: &str, value: i64, text: String) -> Option<i64> {
         let cy = self.y + 12.0;
-        self.p.text(pos2(self.body.left(), cy), Align2::LEFT_CENTER, label, FontId::proportional(13.0), TXT);
-        let track = Rect::from_min_max(pos2(self.body.left() + 64.0, cy - 10.0), pos2(self.body.right() - 48.0, cy + 10.0));
+        self.p.text(pos2(self.body.left(), cy), Align2::LEFT_CENTER, label, FontId::proportional(12.5), TEXT_2);
+        let track = Rect::from_min_max(pos2(self.body.left() + 64.0, cy - 10.0), pos2(self.body.right() - 50.0, cy + 10.0));
         let resp = self.ui.interact(track, self.ui.scope_id().with(id), Sense::click_and_drag());
         let f = (value + 100) as f32 / 200.0;
         let mid = track.center().x;
         let kx = track.left() + f * track.width();
-        self.p.line_segment([pos2(track.left(), cy), pos2(track.right(), cy)], Stroke::new(3.0, Color32::from_rgb(0x55, 0x55, 0x55)));
-        self.p.line_segment([pos2(mid.min(kx), cy), pos2(mid.max(kx), cy)], Stroke::new(3.0, ACCENT));
-        self.p.line_segment([pos2(mid, cy - 5.0), pos2(mid, cy + 5.0)], Stroke::new(1.0, BORDER));
-        self.p.circle_filled(pos2(kx, cy), 7.0, Color32::WHITE);
-        self.p.circle_stroke(pos2(kx, cy), 7.0, Stroke::new(2.0, ACCENT));
-        self.p.text(pos2(self.body.right(), cy), Align2::RIGHT_CENTER, text, FontId::monospace(12.0), TXT_2);
+        self.p.rect_filled(Rect::from_min_max(pos2(track.left(), cy - 1.75), pos2(track.right(), cy + 1.75)), 1.75, Color32::from_white_alpha(32));
+        if (kx - mid).abs() > 0.5 {
+            self.p.rect_filled(Rect::from_min_max(pos2(mid.min(kx), cy - 1.75), pos2(mid.max(kx), cy + 1.75)), 1.75, ACCENT);
+        }
+        self.p.line_segment([pos2(mid, cy - 5.0), pos2(mid, cy + 5.0)], Stroke::new(1.0, Color32::from_white_alpha(60)));
+        if resp.hovered() || resp.dragged() {
+            self.p.circle_filled(pos2(kx, cy), 9.0, theme::accent_alpha(48));
+        }
+        self.p.circle_filled(pos2(kx, cy), 5.5, Color32::WHITE);
+        self.p.circle_stroke(pos2(kx, cy), 5.5, Stroke::new(1.8, ACCENT));
+        self.p.text(pos2(self.body.right(), cy), Align2::RIGHT_CENTER, text, FontId::monospace(11.5), if value != 0 { ACCENT } else { TEXT_2 });
         hover_hand(&self.ctx, &resp);
         self.y += 26.0;
         if let Some(pos) = resp.interact_pointer_pos()
@@ -704,23 +726,26 @@ impl Cursor<'_> {
         None
     }
 
-    /// "⟳ Reset" at the bottom-right. Returns true when clicked.
+    /// "⟳ Reset" pill at the bottom-right. Returns true when clicked.
     fn reset_button(&mut self, id: &str) -> bool {
-        let r = Rect::from_min_size(pos2(self.body.right() - 60.0, self.body.bottom() - 24.0), vec2(60.0, 24.0));
+        let r = Rect::from_min_size(pos2(self.body.right() - 72.0, self.body.bottom() - 25.0), vec2(72.0, 24.0));
         let resp = self.ui.interact(r, self.ui.scope_id().with(id), Sense::click());
-        let c = if resp.hovered() { ACCENT } else { TXT };
-        let ic = pos2(r.left() + 9.0, r.center().y);
+        let hot = resp.hovered();
+        self.p.rect_filled(r, 12.0, if hot { theme::accent_alpha(30) } else { chip_bg() });
+        self.p.rect_stroke(r, 12.0, Stroke::new(1.0, if hot { theme::accent_alpha(120) } else { border() }), StrokeKind::Inside);
+        let c = if hot { ACCENT } else { TEXT_2 };
+        let ic = pos2(r.left() + 14.0, r.center().y);
         // Circular arrow.
         let pts: Vec<Pos2> = (0..=14)
             .map(|i| {
                 let a = 0.6 + i as f32 / 14.0 * 5.0;
-                pos2(ic.x + 6.0 * a.cos(), ic.y + 6.0 * a.sin())
+                pos2(ic.x + 5.0 * a.cos(), ic.y + 5.0 * a.sin())
             })
             .collect();
         let end = pts[0];
-        self.p.add(egui::Shape::line(pts, Stroke::new(1.5, c)));
-        self.p.add(egui::Shape::convex_polygon(vec![end + vec2(3.5, -2.0), end + vec2(-2.0, -3.5), end + vec2(0.5, 3.0)], c, Stroke::NONE));
-        self.p.text(pos2(r.left() + 22.0, r.center().y), Align2::LEFT_CENTER, tr("Reset"), FontId::proportional(13.0), c);
+        self.p.add(egui::Shape::line(pts, Stroke::new(1.4, c)));
+        self.p.add(egui::Shape::convex_polygon(vec![end + vec2(3.0, -1.8), end + vec2(-1.8, -3.0), end + vec2(0.4, 2.5)], c, Stroke::NONE));
+        self.p.text(pos2(r.left() + 26.0, r.center().y), Align2::LEFT_CENTER, tr("Reset"), FontId::proportional(12.0), c);
         hover_hand(&self.ctx, &resp);
         resp.clicked()
     }

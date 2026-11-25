@@ -3,22 +3,24 @@
 use std::sync::Arc;
 use std::sync::atomic::{AtomicBool, Ordering};
 
-use eframe::egui::{self, Color32, FontData, FontDefinitions, FontFamily};
+use eframe::egui::{self, Color32, FontData, FontDefinitions, FontFamily, Mesh, Rect, Stroke, epaint::Vertex, pos2};
 
-const BG: Color32 = Color32::from_rgb(0x07, 0x09, 0x0C);
-const PANEL: Color32 = Color32::from_rgb(0x0D, 0x11, 0x17);
-pub const ACCENT: Color32 = Color32::from_rgb(0x3D, 0x8E, 0xF0);
-pub const TEXT: Color32 = Color32::from_rgb(0xE6, 0xED, 0xF3);
-pub const TEXT_2: Color32 = Color32::from_rgb(0x8B, 0x94, 0x9E);
-pub const TEXT_3: Color32 = Color32::from_rgb(0x48, 0x4F, 0x58);
-const LINE: Color32 = Color32::from_rgb(0x21, 0x26, 0x2D);
+const BG: Color32 = Color32::from_rgb(0x05, 0x07, 0x0B);
+const PANEL: Color32 = Color32::from_rgb(0x0B, 0x10, 0x18);
+const SURFACE: Color32 = Color32::from_rgb(0x12, 0x19, 0x26);
+pub const ACCENT: Color32 = Color32::from_rgb(0x2F, 0xB8, 0xF5);
+pub const TEXT: Color32 = Color32::from_rgb(0xEF, 0xF4, 0xFA);
+pub const TEXT_2: Color32 = Color32::from_rgb(0x8A, 0x99, 0xAE);
+pub const TEXT_3: Color32 = Color32::from_rgb(0x4D, 0x5B, 0x70);
+const LINE: Color32 = Color32::from_rgb(0x1D, 0x26, 0x36);
 
-const LIGHT_BG: Color32 = Color32::from_rgb(0xF5, 0xF6, 0xF8);
+const LIGHT_BG: Color32 = Color32::from_rgb(0xF2, 0xF5, 0xFA);
 const LIGHT_PANEL: Color32 = Color32::from_rgb(0xFF, 0xFF, 0xFF);
-const LIGHT_TEXT: Color32 = Color32::from_rgb(0x1B, 0x1F, 0x24);
-const LIGHT_TEXT_2: Color32 = Color32::from_rgb(0x57, 0x60, 0x6A);
-const LIGHT_TEXT_3: Color32 = Color32::from_rgb(0x7D, 0x85, 0x8E);
-const LIGHT_LINE: Color32 = Color32::from_rgb(0xD8, 0xDE, 0xE4);
+const LIGHT_SURFACE: Color32 = Color32::from_rgb(0xE8, 0xED, 0xF5);
+const LIGHT_TEXT: Color32 = Color32::from_rgb(0x0F, 0x17, 0x2A);
+const LIGHT_TEXT_2: Color32 = Color32::from_rgb(0x52, 0x60, 0x75);
+const LIGHT_TEXT_3: Color32 = Color32::from_rgb(0x8B, 0x9A, 0xB0);
+const LIGHT_LINE: Color32 = Color32::from_rgb(0xD6, 0xDF, 0xEC);
 
 /// Only the library, the settings window and the empty page follow the theme.
 /// The player's chrome sits on top of video, so it stays dark.
@@ -34,6 +36,10 @@ pub fn bg() -> Color32 {
 
 pub fn panel() -> Color32 {
     pick(PANEL, LIGHT_PANEL)
+}
+
+pub fn surface() -> Color32 {
+    pick(SURFACE, LIGHT_SURFACE)
 }
 
 pub fn text() -> Color32 {
@@ -74,13 +80,39 @@ pub fn wants_light(choice: &str, system: Option<egui::Theme>) -> bool {
     }
 }
 
-/// Semi-transparent black used behind overlays.
+/// Semi-transparent obsidian used behind overlays.
 pub fn scrim(alpha: u8) -> Color32 {
-    Color32::from_rgba_unmultiplied(7, 9, 12, alpha)
+    Color32::from_rgba_unmultiplied(5, 7, 11, alpha)
+}
+
+/// Deep translucent obsidian surface for floating HUD capsules over video.
+pub fn glass(alpha: u8) -> Color32 {
+    Color32::from_rgba_unmultiplied(10, 14, 22, alpha)
+}
+
+/// Subtle 1px specular hairline border for dark floating panels.
+pub fn glass_stroke() -> Stroke {
+    Stroke::new(1.0, Color32::from_white_alpha(28))
 }
 
 pub fn accent_alpha(alpha: u8) -> Color32 {
-    Color32::from_rgba_unmultiplied(0x3D, 0x8E, 0xF0, alpha)
+    Color32::from_rgba_unmultiplied(0x2F, 0xB8, 0xF5, alpha)
+}
+
+pub fn accent_stroke(alpha: u8) -> Stroke {
+    Stroke::new(1.0, accent_alpha(alpha))
+}
+
+/// Hardware-smooth vertical linear gradient quad.
+pub fn vertical_gradient(p: &egui::Painter, rect: Rect, top: Color32, bottom: Color32) {
+    let mut mesh = Mesh::default();
+    let uv = pos2(0.0, 0.0);
+    mesh.vertices.push(Vertex { pos: rect.left_top(), uv, color: top });
+    mesh.vertices.push(Vertex { pos: rect.right_top(), uv, color: top });
+    mesh.vertices.push(Vertex { pos: rect.right_bottom(), uv, color: bottom });
+    mesh.vertices.push(Vertex { pos: rect.left_bottom(), uv, color: bottom });
+    mesh.indices.extend_from_slice(&[0, 1, 2, 0, 2, 3]);
+    p.add(egui::Shape::mesh(mesh));
 }
 
 pub fn apply(ctx: &egui::Context, light: bool) {

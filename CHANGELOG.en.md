@@ -4,6 +4,13 @@ English | [简体中文](CHANGELOG.md)
 
 The in-app update dialog shows the entries of the new version, so each one is written for users.
 
+## 0.1.28
+
+- Modern tech-minimal UI redesign: Obsidian dark and Ceramic light themes with cyan accent, a centered floating glass control island, smooth gradient vignettes, and rounded pill badges for top telemetry, OSD, and resume prompts
+- Unified the quick panel, settings modal, idle launch page, media library, and playlist sidebar with pill segmented controls, modern toggles, and luminous sliders
+- Multi-view now lets you expand any screen to fill the entire player window with one click (mini-bar button or Z) and return to the original multi-view layout via the one-click "Back to multi-view" pill or Esc
+- Expanding a screen in multi-view automatically pauses other screens and starts playing the focused screen, then resumes the auto-paused screens when restoring multi-view
+
 ## 0.1.27
 
 - Fixed crashes when hovering long chapter titles on a narrow seek bar, getting stuck after entering full screen from picture-in-picture, and losing window placement when leaving picture-in-picture
