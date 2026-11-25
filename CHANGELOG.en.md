@@ -4,6 +4,14 @@ English | [简体中文](CHANGELOG.md)
 
 The in-app update dialog shows the entries of the new version, so each one is written for users.
 
+## 0.1.29
+
+- Moving files or changing settings while the library is scanning is saved reliably again; moving onto a name an old entry still held no longer loses progress and bookmarks
+- An empty library shows how to add a folder again
+- Slow videos keep their length and resolution when reading them times out; a seek-bar preview that failed is tried again
+- With one video enlarged in multi-view, linked play reaches only that video, and the others stay paused
+- In multi-view, keys no longer reach the videos while settings are open; your own collection names show as typed; the shortcut list includes Z
+
 ## 0.1.28
 
 - Modern tech-minimal UI redesign: Obsidian dark and Ceramic light themes with cyan accent, a centered floating glass control island, smooth gradient vignettes, and rounded pill badges for top telemetry, OSD, and resume prompts
