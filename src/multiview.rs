@@ -623,6 +623,9 @@ impl MultiView {
                     p.toggle_mute();
                     osd = Some(if p.state.muted { "UNMUTE".into() } else { "MUTE".into() });
                 }
+                Key::E if ctx.input(|i| i.modifiers.command) => {
+                    osd = Some(crate::library_ui::reveal_playing(&p.state.path).into());
+                }
                 // One frame at a time, in the focused video only (even when linked).
                 Key::Comma | Key::Period if !ctx.input(|i| i.modifiers.command) => {
                     let forward = *key == Key::Period;

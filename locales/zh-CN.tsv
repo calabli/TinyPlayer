@@ -23,6 +23,10 @@ Couldn't open: {}	无法打开：{}
 Multi-view on: click an empty slot to add a video	多屏已开启：点空白格添加视频
 Restore (Esc)	还原（Esc）
 Back to multi-view	返回多屏
+Showing in folder	已在文件夹中显示
+Not a file on this computer	不是本机文件，无法打开所在文件夹
+Show in folder ({}E)	打开所在文件夹（{}E）
+Show in folder	打开所在文件夹
 Enlarge a slot (multi-view)	放大画面（多屏）
 Build your library	建立你的媒体库
 Add folders of videos for automatic thumbnails, tags and search	添加视频所在的文件夹，自动生成缩略图，支持标签与搜索

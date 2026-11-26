@@ -49,6 +49,7 @@ libmpv is large, so it isn't committed to git.
 | N / P, PageDown / PageUp | Next / previous |
 | Ctrl/⌘ + O | Open a file |
 | Ctrl/⌘ + N | Open a new, empty window (turn on "Several windows" first) |
+| Ctrl/⌘ + E | Show the playing video in Finder / Explorer (in multi-view, the selected one) |
 | Ctrl/⌘ + S | Screenshot to the desktop |
 | Home | Back to the start |
 | Enter / Esc | When the resume prompt shows: resume / dismiss |

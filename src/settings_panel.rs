@@ -361,6 +361,7 @@ pub fn show(
             (format!("{cmd}O"), tr("Open file")),
             (format!("{cmd}N"), tr("New window")),
             (format!("{cmd}D"), tr("Toggle favorite")),
+            (format!("{cmd}E"), tr("Show in folder")),
             (format!("{cmd}S"), tr("Screenshot to desktop")),
             (format!("{cmd}K"), tr("Search library")),
             (format!("{cmd},"), tr("Settings")),

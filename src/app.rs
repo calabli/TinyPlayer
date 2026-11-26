@@ -1191,6 +1191,7 @@ impl App {
         let mut open_dialog = false;
         let (mut want_next, mut want_prev, mut want_side) = (false, false, false);
         let mut want_fav = false;
+        let mut want_reveal = false;
         let (mut want_ab, mut want_on_top, mut want_pip) = (false, false, false);
         let (mut want_bookmark, mut want_marks) = (false, false);
         let mut want_frameless: Option<bool> = None;
@@ -1221,6 +1222,7 @@ impl App {
                 Key::O if cmd => open_dialog = true,
                 Key::P if cmd && shift => want_private = true,
                 Key::D if cmd && !s.idle => want_fav = true,
+                Key::E if cmd && !s.idle => want_reveal = true,
                 Key::Home if !s.idle => {
                     player.seek_to(0.0, true);
                     self.resume_prompt = None;
@@ -1342,6 +1344,9 @@ impl App {
         }
         if want_fav {
             self.toggle_favorite(ctx);
+        }
+        if want_reveal {
+            self.show_osd(ctx, crate::library_ui::reveal_playing(&s.path));
         }
         if want_ab {
             self.press_ab(ctx);
@@ -1815,15 +1820,24 @@ impl eframe::App for App {
                     self.show_osd(&ctx, tr("Multi-view on: click an empty slot to add a video"));
                 }
                 let right_gap = stage.right() - sw_left + 18.0;
-                let title_right = draw_top_bar(&painter, stage, &s, plays, private, alpha, right_gap, self.current_fav.is_some());
+                let local = crate::library_ui::is_local_file(&s.path);
+                let buttons = usize::from(self.current_fav.is_some()) + usize::from(local);
+                let title_right = draw_top_bar(&painter, stage, &s, plays, private, alpha, right_gap, buttons);
                 if frameless {
                     window_controls_alpha = alpha;
                 }
-                if let Some(fav) = self.current_fav
-                    && fav_button(ui, stage, title_right, fav, alpha) {
+                let mut button_x = title_right;
+                if let Some(fav) = self.current_fav {
+                    if fav_button(ui, stage, button_x, fav, alpha) {
                         let ctx = ui.ctx().clone();
                         self.toggle_favorite(&ctx);
                     }
+                    button_x += TITLE_BUTTON_W;
+                }
+                if local && folder_button(ui, stage, button_x, alpha) {
+                    let ctx = ui.ctx().clone();
+                    self.show_osd(&ctx, crate::library_ui::reveal_playing(&s.path));
+                }
                 if back_button(ui, stage, alpha) {
                     // Stopping returns to the library; progress is saved on EndFile.
                     if let Some(p) = &self.player {
@@ -2644,6 +2658,22 @@ fn knob(p: &egui::Painter, c: egui::Pos2, r: f32, alpha: f32) {
     p.circle_stroke(c, r, Stroke::new(2.0, ACCENT.gamma_multiply(alpha)));
 }
 
+/// Room each button after the title takes.
+const TITLE_BUTTON_W: f32 = 26.0;
+
+/// Folder button after the title: shows the playing file in Finder or
+/// Explorer (local files only).
+fn folder_button(ui: &mut egui::Ui, stage: Rect, left: f32, alpha: f32) -> bool {
+    let r = Rect::from_center_size(pos2(left + 16.0, stage.top() + 22.0), vec2(26.0, 26.0));
+    let resp = ui.interact(r, ui.scope_id().with("player_reveal"), Sense::click());
+    let c = if resp.hovered() { ACCENT } else { TEXT_2 };
+    icons::draw(ui.painter(), Icon::Folder, r.center(), 10.0, c.gamma_multiply(alpha));
+    if resp.hovered() {
+        ui.ctx().set_cursor_icon(CursorIcon::PointingHand);
+    }
+    resp.on_hover_text(tf("Show in folder ({}E)", &[&theme::CMD])).clicked()
+}
+
 /// Star right after the title (only for files in the library).
 fn fav_button(ui: &mut egui::Ui, stage: Rect, title_right: f32, fav: bool, alpha: f32) -> bool {
     let r = Rect::from_center_size(pos2(title_right + 16.0, stage.top() + 22.0), vec2(26.0, 26.0));
@@ -2714,7 +2744,7 @@ fn back_button(ui: &mut egui::Ui, stage: Rect, alpha: f32) -> bool {
 }
 
 #[allow(clippy::too_many_arguments)]
-fn draw_top_bar(p: &egui::Painter, full: Rect, s: &crate::player::State, plays: i64, private: bool, alpha: f32, right_gap: f32, has_fav: bool) -> f32 {
+fn draw_top_bar(p: &egui::Painter, full: Rect, s: &crate::player::State, plays: i64, private: bool, alpha: f32, right_gap: f32, buttons: usize) -> f32 {
     let a = |c: Color32| c.gamma_multiply(alpha);
     let band = Rect::from_min_max(full.min, pos2(full.right(), full.top() + 60.0));
     theme::vertical_gradient(p, band, theme::scrim((185.0 * alpha) as u8), Color32::TRANSPARENT);
@@ -2755,7 +2785,7 @@ fn draw_top_bar(p: &egui::Painter, full: Rect, s: &crate::player::State, plays: 
     }
 
     let title_left = full.left() + 100.0;
-    let reserve = if has_fav { 38.0 } else { 14.0 };
+    let reserve = 14.0 + TITLE_BUTTON_W * buttons as f32;
     let max_title_w = (x - reserve - title_left).max(20.0);
     let title = elide(p, &s.title, FontId::proportional(13.0), max_title_w);
     let r = p.text(pos2(title_left, y), Align2::LEFT_CENTER, title, FontId::proportional(13.0), a(TEXT));

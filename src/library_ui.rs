@@ -1803,6 +1803,23 @@ pub(crate) fn elide(p: &egui::Painter, text: &str, font: FontId, max_w: f32) -> 
     chars[..lo].iter().collect::<String>() + "…"
 }
 
+/// Whether `path` is a file on this computer (not a network stream), which
+/// the file manager can show.
+pub(crate) fn is_local_file(path: &str) -> bool {
+    !path.is_empty() && !path.contains("://")
+}
+
+/// Shows the folder holding the playing file, with the file selected, or
+/// says why not. Returns the OSD text.
+pub(crate) fn reveal_playing(path: &str) -> &'static str {
+    if is_local_file(path) {
+        reveal_in_file_manager(path);
+        tr("Showing in folder")
+    } else {
+        tr("Not a file on this computer")
+    }
+}
+
 pub(crate) fn reveal_in_file_manager(path: &str) {
     #[cfg(target_os = "windows")]
     {
@@ -1817,5 +1834,19 @@ pub(crate) fn reveal_in_file_manager(path: &str) {
         if let Some(dir) = Path::new(path).parent() {
             let _ = std::process::Command::new("xdg-open").arg(dir).spawn();
         }
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn only_local_files_can_be_shown_in_a_folder() {
+        assert!(is_local_file("/Users/me/Movies/a.mp4"));
+        assert!(is_local_file(r"C:\Videos\a.mp4"));
+        assert!(is_local_file(r"\\nas\media\a.mp4"));
+        assert!(!is_local_file("https://example.com/a.m3u8"));
+        assert!(!is_local_file(""));
     }
 }
