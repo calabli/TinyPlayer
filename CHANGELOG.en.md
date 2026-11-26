@@ -4,6 +4,10 @@ English | [简体中文](CHANGELOG.md)
 
 The in-app update dialog shows the entries of the new version, so each one is written for users.
 
+## 0.1.31
+
+- New "Show in folder": while playing, click the folder button after the title or press Ctrl/⌘+E to open the video's folder in Finder or Explorer with the file selected; in multi-view it works on the selected video
+
 ## 0.1.30
 
 - Moving files or changing settings while the library scans no longer freezes the window; if the database is busy, the change is saved a moment later, and before quitting
